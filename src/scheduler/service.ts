@@ -1,0 +1,255 @@
+import { createId } from "../shared/ids.ts";
+import type { SubagentRequest } from "../orchestration/types.ts";
+import { OrchestrationService } from "../orchestration/service.ts";
+import type { AppDatabase } from "../platform/database.ts";
+import { decodeJson, encodeJson } from "../platform/database.ts";
+
+export type JobRecord = {
+  id: string;
+  name: string;
+  message: string;
+  scheduledAt: string;
+  subagents: SubagentRequest[];
+  status: "scheduled" | "running" | "completed" | "failed";
+  createdAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+  attemptCount: number;
+  maxAttempts: number;
+  failureReason?: string;
+  lastRunId?: string;
+};
+
+type JobRow = {
+  id: string;
+  name: string;
+  message: string;
+  scheduled_at: string;
+  subagents_json: string;
+  status: JobRecord["status"];
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  attempt_count: number;
+  max_attempts: number;
+  failure_reason: string | null;
+  last_run_id: string | null;
+};
+
+export class SchedulerService {
+  private readonly timers = new Map<string, NodeJS.Timeout>();
+  private running = false;
+  private readonly database: AppDatabase;
+  private readonly orchestration: OrchestrationService;
+
+  constructor(database: AppDatabase, orchestration: OrchestrationService) {
+    this.database = database;
+    this.orchestration = orchestration;
+  }
+
+  async start(): Promise<void> {
+    if (this.running) {
+      return;
+    }
+    this.running = true;
+    const jobs = await this.list();
+    for (const job of jobs) {
+      if (job.status === "scheduled") {
+        this.arm(job);
+      }
+    }
+  }
+
+  async stop(): Promise<void> {
+    this.running = false;
+    for (const timer of this.timers.values()) {
+      clearTimeout(timer);
+    }
+    this.timers.clear();
+  }
+
+  isRunning(): boolean {
+    return this.running;
+  }
+
+  async schedule(
+    name: string,
+    message: string,
+    options: {
+      delayMs?: number;
+      scheduledAt?: string;
+      subagents?: SubagentRequest[];
+      maxAttempts?: number;
+    }
+  ): Promise<JobRecord> {
+    const now = new Date();
+    const scheduledAt = options.scheduledAt
+      ? new Date(options.scheduledAt).toISOString()
+      : new Date(now.getTime() + (options.delayMs ?? 0)).toISOString();
+    const record: JobRecord = {
+      id: createId("job"),
+      name,
+      message,
+      scheduledAt,
+      subagents: options.subagents ?? [],
+      status: "scheduled",
+      createdAt: now.toISOString(),
+      attemptCount: 0,
+      maxAttempts: options.maxAttempts ?? 1
+    };
+
+    this.database.run(
+      `
+        INSERT INTO jobs (
+          id, name, message, scheduled_at, subagents_json, status, created_at,
+          started_at, finished_at, attempt_count, max_attempts, failure_reason, last_run_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      record.id,
+      record.name,
+      record.message,
+      record.scheduledAt,
+      encodeJson(record.subagents),
+      record.status,
+      record.createdAt,
+      null,
+      null,
+      record.attemptCount,
+      record.maxAttempts,
+      null,
+      null
+    );
+
+    if (this.running) {
+      this.arm(record);
+    }
+    return record;
+  }
+
+  async list(): Promise<JobRecord[]> {
+    return this.database
+      .all<JobRow>("SELECT * FROM jobs ORDER BY scheduled_at DESC")
+      .map((row) => toJobRecord(row));
+  }
+
+  private arm(job: JobRecord): void {
+    if (this.timers.has(job.id)) {
+      clearTimeout(this.timers.get(job.id));
+    }
+
+    const delayMs = Math.max(0, Date.parse(job.scheduledAt) - Date.now());
+    const timer = setTimeout(() => {
+      void this.execute(job.id);
+    }, delayMs);
+    this.timers.set(job.id, timer);
+  }
+
+  private async execute(jobId: string): Promise<void> {
+    this.timers.delete(jobId);
+    if (!this.running) {
+      return;
+    }
+
+    const job = await this.get(jobId);
+    if (!job || job.status !== "scheduled") {
+      return;
+    }
+
+    const startedAt = new Date().toISOString();
+    await this.update({
+      ...job,
+      status: "running",
+      startedAt,
+      attemptCount: job.attemptCount + 1,
+      failureReason: undefined
+    });
+
+    try {
+      const result = await this.orchestration.runCoordinator(
+        {
+          channelId: "scheduler",
+          conversationId: job.id,
+          message: job.message,
+          subagents: job.subagents
+        },
+        async () => undefined
+      );
+
+      await this.update({
+        ...job,
+        status: "completed",
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        attemptCount: job.attemptCount + 1,
+        lastRunId: result.runId,
+        failureReason: undefined
+      });
+    } catch (error) {
+      const failureReason = error instanceof Error ? error.message : "Scheduler run failed";
+      const shouldRetry = job.attemptCount + 1 < job.maxAttempts;
+      await this.update({
+        ...job,
+        status: shouldRetry ? "scheduled" : "failed",
+        attemptCount: job.attemptCount + 1,
+        startedAt,
+        finishedAt: shouldRetry ? undefined : new Date().toISOString(),
+        scheduledAt: shouldRetry ? new Date(Date.now() + 1_000).toISOString() : job.scheduledAt,
+        failureReason
+      });
+      if (shouldRetry) {
+        const reloaded = await this.get(jobId);
+        if (reloaded) {
+          this.arm(reloaded);
+        }
+      }
+    }
+  }
+
+  private async get(jobId: string): Promise<JobRecord | null> {
+    const row = this.database.get<JobRow>("SELECT * FROM jobs WHERE id = ?", jobId);
+    return row ? toJobRecord(row) : null;
+  }
+
+  private async update(job: JobRecord): Promise<void> {
+    this.database.run(
+      `
+        UPDATE jobs
+        SET name = ?, message = ?, scheduled_at = ?, subagents_json = ?, status = ?,
+            created_at = ?, started_at = ?, finished_at = ?, attempt_count = ?, max_attempts = ?,
+            failure_reason = ?, last_run_id = ?
+        WHERE id = ?
+      `,
+      job.name,
+      job.message,
+      job.scheduledAt,
+      encodeJson(job.subagents),
+      job.status,
+      job.createdAt,
+      job.startedAt ?? null,
+      job.finishedAt ?? null,
+      job.attemptCount,
+      job.maxAttempts,
+      job.failureReason ?? null,
+      job.lastRunId ?? null,
+      job.id
+    );
+  }
+}
+
+function toJobRecord(row: JobRow): JobRecord {
+  return {
+    id: row.id,
+    name: row.name,
+    message: row.message,
+    scheduledAt: row.scheduled_at,
+    subagents: decodeJson(row.subagents_json, []),
+    status: row.status,
+    createdAt: row.created_at,
+    startedAt: row.started_at ?? undefined,
+    finishedAt: row.finished_at ?? undefined,
+    attemptCount: row.attempt_count,
+    maxAttempts: row.max_attempts,
+    failureReason: row.failure_reason ?? undefined,
+    lastRunId: row.last_run_id ?? undefined
+  };
+}

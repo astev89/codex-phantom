@@ -1,0 +1,240 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { AppConfig } from "../src/config.ts";
+import { AgentRuntime } from "../src/agent/runtime.ts";
+import type { AgentAdapter, AgentRunEvent, AgentRunRequest, AgentRunResult } from "../src/agent/types.ts";
+import { SessionStore } from "../src/chat/session-store.ts";
+import { MemoryStore } from "../src/memory/store.ts";
+import { ToolRegistry } from "../src/tools/registry.ts";
+import { DynamicToolRegistry } from "../src/tools/dynamic-registry.ts";
+import { RunGraphStore } from "../src/orchestration/run-graph-store.ts";
+import { OrchestrationService } from "../src/orchestration/service.ts";
+import { SchedulerService } from "../src/scheduler/service.ts";
+import { McpServer } from "../src/mcp/server.ts";
+import { HttpServer } from "../src/server/http-server.ts";
+import { AppDatabase } from "../src/platform/database.ts";
+import { Logger } from "../src/platform/logger.ts";
+import { MetricsStore } from "../src/platform/metrics.ts";
+import { makeConfig, makeDisabledEmbeddings, makeFakeVectorStore } from "./helpers.ts";
+
+class FakeAdapter implements AgentAdapter {
+  readonly name = "fake-codex";
+  readonly capabilities = {
+    supportsResume: true,
+    supportsStreaming: true,
+    supportsToolStreaming: true,
+    supportsStructuredOutput: true,
+    supportsParallelToolCalls: false,
+    supportsReasoningEffort: true
+  };
+
+  async run(
+    request: AgentRunRequest,
+    onEvent: (event: AgentRunEvent) => Promise<void> | void
+  ): Promise<AgentRunResult> {
+    const outputText = `assistant:${request.messages.at(-1)?.content ?? ""}`;
+    await onEvent({ type: "init", runId: request.runId, sessionId: request.sessionId });
+    await onEvent({ type: "text_delta", runId: request.runId, delta: outputText });
+    await onEvent({
+      type: "structured_message",
+      runId: request.runId,
+      message: { role: "assistant", content: outputText }
+    });
+    await onEvent({
+      type: "final",
+      runId: request.runId,
+      outputText,
+      previousResponseId: `resp_${request.runId}`,
+      providerSessionId: `provider_${request.sessionId}`
+    });
+
+    return {
+      runId: request.runId,
+      outputText,
+      previousResponseId: `resp_${request.runId}`,
+      providerSessionId: `provider_${request.sessionId}`,
+      transcript: [...request.messages, { role: "assistant", content: outputText }],
+      toolCalls: []
+    };
+  }
+}
+
+test("chat streaming, health, scheduler, and mcp routes work", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "codex-phantom-server-"));
+  const config: AppConfig = makeConfig(dataDir, { port: 0 });
+  const database = new AppDatabase(join(dataDir, "server.sqlite"));
+  const sessions = new SessionStore(database);
+  const memory = new MemoryStore(
+    database,
+    config,
+    makeDisabledEmbeddings(),
+    makeFakeVectorStore({ backend: "qdrant", available: false, configured: false }),
+    makeFakeVectorStore({ backend: "sqlite_fallback", available: true })
+  );
+  const tools = new ToolRegistry();
+  tools.register({
+    id: "echo.summary",
+    description: "echo",
+    scopes: ["read"],
+    kind: "in_process",
+    handler: async (input) => input
+  });
+
+  const runtime = new AgentRuntime(config, new FakeAdapter(), sessions, memory, tools);
+  const runs = new RunGraphStore(database);
+  const orchestration = new OrchestrationService(runtime, tools, runs);
+  const scheduler = new SchedulerService(database, orchestration);
+  await scheduler.start();
+  const mcp = new McpServer(config.mcpBearerToken, tools);
+  const dynamicTools = new DynamicToolRegistry(database, tools);
+  const server = new HttpServer(
+    config,
+    orchestration,
+    scheduler,
+    sessions,
+    runs,
+    mcp,
+    database,
+    new Logger("error"),
+    new MetricsStore(),
+    memory,
+    dynamicTools
+  );
+  const instance = await server.listen();
+  const address = instance.address();
+  if (!address || typeof address === "string") {
+    throw new Error("server failed to bind");
+  }
+  const port = address.port;
+
+  try {
+    const healthResponse = await fetch(`http://127.0.0.1:${port}/health`);
+    const healthJson = await healthResponse.json() as {
+      ok: boolean;
+      readiness: { scheduler: boolean; semanticRetrieval: boolean };
+      memory: { pendingBackfillCount: number; vectorBackend: string; qdrantConfigured: boolean };
+    };
+    assert.equal(healthJson.ok, true);
+    assert.equal(healthJson.readiness.scheduler, true);
+    assert.equal(healthJson.readiness.semanticRetrieval, false);
+    assert.equal(healthJson.memory.pendingBackfillCount, 0);
+    assert.equal(healthJson.memory.vectorBackend, "sqlite_fallback");
+    assert.equal(healthJson.memory.qdrantConfigured, false);
+
+    const streamResponse = await fetch(`http://127.0.0.1:${port}/chat/message`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        conversationId: "web-1",
+        message: "hello from web"
+      })
+    });
+    const streamText = await streamResponse.text();
+    assert.match(streamText, /"type":"init"/);
+    assert.match(streamText, /"type":"text_delta"/);
+    assert.match(streamText, /"type":"final"/);
+    assert.match(streamText, /assistant:hello from web/);
+
+    const webhookResponse = await fetch(`http://127.0.0.1:${port}/channels/webhook`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-channel-secret": config.externalChannelSecret
+      },
+      body: JSON.stringify({
+        conversationId: "hook-1",
+        message: "hello from webhook"
+      })
+    });
+    const webhookJson = await webhookResponse.json() as { sessionId: string; outputText: string };
+    assert.equal(webhookJson.outputText, "assistant:hello from webhook");
+
+    await fetch(`http://127.0.0.1:${port}/scheduler/jobs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "quick-job",
+        message: "scheduled task",
+        delayMs: 10
+      })
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const jobsResponse = await fetch(`http://127.0.0.1:${port}/scheduler/jobs`);
+    const jobsJson = await jobsResponse.json() as { jobs: Array<{ status: string }> };
+    assert.ok(jobsJson.jobs.some((job) => job.status === "completed"));
+
+    const mcpResponse = await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.mcpBearerToken}`
+      },
+      body: JSON.stringify({ method: "tools/list" })
+    });
+    const mcpJson = await mcpResponse.json() as { tools: Array<{ id: string }> };
+    assert.ok(mcpJson.tools.some((tool) => tool.id === "echo.summary"));
+
+    const dynamicToolResponse = await fetch(`http://127.0.0.1:${port}/tools/dynamic`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: "project.brief",
+        description: "Return a short project brief",
+        scopes: ["read"],
+        inputSchema: {
+          type: "object",
+          properties: {
+            topic: { type: "string" }
+          }
+        },
+        responseTemplate: "Brief for {{topic}}"
+      })
+    });
+    const dynamicToolJson = await dynamicToolResponse.json() as { tool: { id: string } };
+    assert.equal(dynamicToolJson.tool.id, "project.brief");
+
+    const dynamicToolsResponse = await fetch(`http://127.0.0.1:${port}/tools/dynamic`);
+    const dynamicToolsJson = await dynamicToolsResponse.json() as { tools: Array<{ id: string }> };
+    assert.ok(dynamicToolsJson.tools.some((tool) => tool.id === "project.brief"));
+
+    const dynamicMcpListResponse = await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.mcpBearerToken}`
+      },
+      body: JSON.stringify({ method: "tools/list" })
+    });
+    const dynamicMcpListJson = await dynamicMcpListResponse.json() as { tools: Array<{ id: string }> };
+    assert.ok(dynamicMcpListJson.tools.some((tool) => tool.id === "project.brief"));
+
+    const dynamicCallResponse = await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.mcpBearerToken}`
+      },
+      body: JSON.stringify({
+        method: "tools/call",
+        params: {
+          name: "project.brief",
+          input: { topic: "deployment" }
+        }
+      })
+    });
+    const dynamicCallJson = await dynamicCallResponse.json() as { output: { content: string } };
+    assert.equal(dynamicCallJson.output.content, "Brief for deployment");
+
+    const memoryResponse = await fetch(`http://127.0.0.1:${port}/memory`);
+    const memoryJson = await memoryResponse.json() as { entries: Array<{ id: string; category: string }> };
+    assert.ok(memoryJson.entries.length > 0);
+  } finally {
+    await scheduler.stop();
+    await server.close();
+    database.close();
+  }
+});
