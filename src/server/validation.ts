@@ -62,6 +62,12 @@ export type SlackMessageInput = {
   text: string;
 };
 
+export type OperatorSettingsInput = {
+  dashboardRefreshSeconds?: number;
+  chatDefaultConversationId?: string;
+  memoryTimelineLimit?: number;
+};
+
 export function parseJsonBody(text: string): unknown {
   if (!text) {
     throw new HttpError(400, "Request body is required");
@@ -153,6 +159,15 @@ export function validateSlackMessageBody(input: unknown): SlackMessageInput {
   return {
     channel: nonEmptyString(value.channel, "channel"),
     text: nonEmptyString(value.text, "text")
+  };
+}
+
+export function validateOperatorSettingsBody(input: unknown): OperatorSettingsInput {
+  const value = asRecord(input);
+  return {
+    dashboardRefreshSeconds: optionalPositiveInteger(value.dashboardRefreshSeconds, "dashboardRefreshSeconds"),
+    chatDefaultConversationId: optionalString(value.chatDefaultConversationId),
+    memoryTimelineLimit: optionalPositiveInteger(value.memoryTimelineLimit, "memoryTimelineLimit")
   };
 }
 

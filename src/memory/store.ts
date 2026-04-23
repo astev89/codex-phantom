@@ -308,6 +308,21 @@ export class MemoryStore {
       .map((row) => toMemoryEntry({ row, score: row.importance }));
   }
 
+  async getEntry(entryId: string): Promise<MemoryEntry | null> {
+    const row = this.database.get<MemoryRow>(
+      `
+        SELECT
+          id, category, content, created_at, source_type, importance, last_accessed_at,
+          access_count, is_summary, is_fact, parent_summary_id, embedding_model, embedding_json,
+          source_session_id, source_run_id, vector_backend, vector_synced_at, vector_sync_error, vector_point_id
+        FROM memory_entries
+        WHERE id = ?
+      `,
+      entryId
+    );
+    return row ? toMemoryEntry({ row, score: row.importance }) : null;
+  }
+
   private async compactEpisodicMemories(record: MemoryTurnRecord, summaryHint?: string): Promise<void> {
     const recentRaw = this.database.all<MemoryRow>(
       `

@@ -117,6 +117,18 @@ export function renderOperatorConsole(agentName: string): string {
           <pre id="memory">Loading...</pre>
         </section>
         <section class="panel wide">
+          <h2>Timeline</h2>
+          <pre id="timeline">Loading...</pre>
+        </section>
+        <section class="panel wide">
+          <h2>Operator Settings</h2>
+          <input id="settingsRefresh" placeholder="dashboard refresh seconds" value="5" />
+          <input id="settingsConversation" placeholder="default conversation id" value="operator-console" />
+          <input id="settingsMemoryLimit" placeholder="memory timeline limit" value="20" />
+          <button id="saveSettings">Save settings</button>
+          <pre id="settings">Loading...</pre>
+        </section>
+        <section class="panel wide">
           <h2>Dynamic Tools</h2>
           <input id="toolId" placeholder="tool id (for example project.brief)" />
           <input id="toolDescription" placeholder="description" />
@@ -169,6 +181,8 @@ export function renderOperatorConsole(agentName: string): string {
           loadJson('/runs', 'runs'),
           loadJson('/scheduler/jobs', 'jobs'),
           loadJson('/memory', 'memory'),
+          loadJson('/admin/timeline', 'timeline'),
+          loadJson('/admin/settings', 'settings'),
           loadJson('/tools/dynamic', 'tools'),
           loadJson('/admin/tools/governance', 'governance'),
           loadJson('/admin/channels', 'channels'),
@@ -239,6 +253,21 @@ export function renderOperatorConsole(agentName: string): string {
         await refresh();
       });
 
+      document.getElementById('saveSettings').addEventListener('click', async () => {
+        const response = await fetch('/admin/settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            dashboardRefreshSeconds: Number(document.getElementById('settingsRefresh').value),
+            chatDefaultConversationId: document.getElementById('settingsConversation').value,
+            memoryTimelineLimit: Number(document.getElementById('settingsMemoryLimit').value)
+          })
+        });
+        const data = await response.json();
+        document.getElementById('settings').textContent = JSON.stringify(data, null, 2);
+        await refresh();
+      });
+
       document.getElementById('sendSlack').addEventListener('click', async () => {
         const response = await fetch('/channels/slack/message', {
           method: 'POST',
@@ -253,12 +282,22 @@ export function renderOperatorConsole(agentName: string): string {
         await refresh();
       });
 
-      refresh().catch((error) => {
-        document.getElementById('health').textContent = String(error);
-      });
-      setInterval(() => {
-        refresh().catch(() => {});
-      }, 5000);
+      async function refreshLoop() {
+        try {
+          const response = await fetch('/admin/settings');
+          const data = await response.json();
+          const seconds = data && data.settings && typeof data.settings.dashboardRefreshSeconds === 'number'
+            ? data.settings.dashboardRefreshSeconds
+            : 5;
+          await refresh();
+          setTimeout(refreshLoop, seconds * 1000);
+        } catch (error) {
+          document.getElementById('health').textContent = String(error);
+          setTimeout(refreshLoop, 5000);
+        }
+      }
+
+      refreshLoop();
     </script>
   </body>
 </html>`;

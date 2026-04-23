@@ -338,6 +338,7 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
       deployment: { qdrantEnabled: boolean };
       governance: { pendingDynamicTools: number; approvedDynamicTools: number };
       channelDeliveries: { delivered: number };
+      settings: { dashboardRefreshSeconds: number };
       channels: Array<{ id: string; enabled: boolean }>;
     };
     assert.equal(adminSummaryJson.logging.provider, "pino");
@@ -345,7 +346,74 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
     assert.equal(adminSummaryJson.governance.pendingDynamicTools, 0);
     assert.equal(adminSummaryJson.governance.approvedDynamicTools, 1);
     assert.equal(adminSummaryJson.channelDeliveries.delivered, 1);
+    assert.equal(adminSummaryJson.settings.dashboardRefreshSeconds, 5);
     assert.ok(adminSummaryJson.channels.some((channel) => channel.id === "slack" && channel.enabled === true));
+
+    const timelineResponse = await fetch(`http://127.0.0.1:${port}/admin/timeline`);
+    const timelineJson = await timelineResponse.json() as {
+      sessions: Array<{ sessionId: string }>;
+      runs: Array<{ runId: string; eventCount: number }>;
+      jobs: Array<{ id: string }>;
+      memory: Array<{ id: string }>;
+      governanceAudit: Array<{ toolId: string; action: string }>;
+    };
+    assert.ok(timelineJson.sessions.length > 0);
+    assert.ok(timelineJson.runs.length > 0);
+    assert.ok(timelineJson.jobs.length > 0);
+    assert.ok(timelineJson.memory.length > 0);
+    assert.ok(timelineJson.governanceAudit.some((entry) => entry.toolId === "project.brief" && entry.action === "approved"));
+
+    const sessionDetailResponse = await fetch(`http://127.0.0.1:${port}/admin/sessions/${encodeURIComponent(webhookJson.sessionId)}`);
+    const sessionDetailJson = await sessionDetailResponse.json() as { session: { sessionId: string; runIds: string[] } };
+    assert.equal(sessionDetailJson.session.sessionId, webhookJson.sessionId);
+    assert.ok(sessionDetailJson.session.runIds.length > 0);
+
+    const runWithEvents = timelineJson.runs.find((run) => run.eventCount > 0) ?? timelineJson.runs[0];
+    const firstRunId = runWithEvents?.runId;
+    assert.ok(firstRunId);
+    const runDetailResponse = await fetch(`http://127.0.0.1:${port}/admin/runs/${encodeURIComponent(firstRunId)}`);
+    const runDetailJson = await runDetailResponse.json() as {
+      run: { runId: string };
+      events: Array<{ type: string }>;
+      children: Array<{ runId: string }>;
+    };
+    assert.equal(runDetailJson.run.runId, firstRunId);
+    assert.ok(Array.isArray(runDetailJson.events));
+
+    const firstJobId = timelineJson.jobs[0]?.id;
+    assert.ok(firstJobId);
+    const jobDetailResponse = await fetch(`http://127.0.0.1:${port}/admin/jobs/${encodeURIComponent(firstJobId)}`);
+    const jobDetailJson = await jobDetailResponse.json() as { job: { id: string; status: string } };
+    assert.equal(jobDetailJson.job.id, firstJobId);
+
+    const firstMemoryId = timelineJson.memory[0]?.id;
+    assert.ok(firstMemoryId);
+    const memoryDetailResponse = await fetch(`http://127.0.0.1:${port}/admin/memory/${encodeURIComponent(firstMemoryId)}`);
+    const memoryDetailJson = await memoryDetailResponse.json() as { entry: { id: string; category: string } };
+    assert.equal(memoryDetailJson.entry.id, firstMemoryId);
+
+    const settingsResponse = await fetch(`http://127.0.0.1:${port}/admin/settings`);
+    const settingsJson = await settingsResponse.json() as {
+      settings: { dashboardRefreshSeconds: number; chatDefaultConversationId: string };
+    };
+    assert.equal(settingsJson.settings.dashboardRefreshSeconds, 5);
+    assert.equal(settingsJson.settings.chatDefaultConversationId, "operator-console");
+
+    const settingsUpdateResponse = await fetch(`http://127.0.0.1:${port}/admin/settings`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        dashboardRefreshSeconds: 9,
+        chatDefaultConversationId: "ops-room",
+        memoryTimelineLimit: 25
+      })
+    });
+    const settingsUpdateJson = await settingsUpdateResponse.json() as {
+      settings: { dashboardRefreshSeconds: number; chatDefaultConversationId: string; memoryTimelineLimit: number };
+    };
+    assert.equal(settingsUpdateJson.settings.dashboardRefreshSeconds, 9);
+    assert.equal(settingsUpdateJson.settings.chatDefaultConversationId, "ops-room");
+    assert.equal(settingsUpdateJson.settings.memoryTimelineLimit, 25);
   } finally {
     await scheduler.stop();
     await server.close();

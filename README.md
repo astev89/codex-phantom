@@ -26,6 +26,8 @@ The service starts on `http://localhost:3210` by default.
   Runtime readiness plus memory, channel, governance, and logging summaries.
 - `GET /admin/summary`
   Deployment-oriented overview for logging, database path, Qdrant config, channels, and tool governance.
+- `GET /admin/timeline`
+  Return recent sessions, runs, jobs, memory entries, and governance audit activity in one operator-friendly payload.
 - `GET /admin/channels`
   List registered channels such as `web`, `webhook`, `scheduler`, and planned `slack`.
 - `POST /admin/channels`
@@ -34,6 +36,10 @@ The service starts on `http://localhost:3210` by default.
   Inspect recent outbound channel delivery attempts and their final status.
 - `GET /admin/tools/governance`
   Inspect dynamic tool approval state.
+- `GET /admin/settings`
+  Read persisted operator console settings.
+- `POST /admin/settings`
+  Update persisted operator settings such as refresh cadence and timeline limits.
 - `POST /admin/tools/approve`
   Approve a pending dynamic tool so it becomes visible to MCP/runtime callers.
 - `GET /tools/dynamic`
@@ -42,6 +48,11 @@ The service starts on `http://localhost:3210` by default.
   Submit a new read-only dynamic tool. New tools start in `pending` state until approved.
 - `GET /memory`
   Inspect recently persisted memory rows for operator debugging.
+- `GET /admin/sessions/:sessionId`
+- `GET /admin/runs/:runId`
+- `GET /admin/jobs/:jobId`
+- `GET /admin/memory/:memoryId`
+  Drill-down endpoints for the timeline surfaces.
 - `POST /channels/slack/message`
   Send an outbound Slack message through the configured bot token when the `slack` channel is enabled.
 
@@ -53,6 +64,8 @@ The root console at `/` now exposes panels for:
 - tool approval
 - channel enablement
 - Slack test-send and delivery log inspection
+- recent timeline activity across sessions, runs, jobs, memory, and governance
+- persisted operator settings for refresh cadence and timeline limits
 
 ## Logging
 

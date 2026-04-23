@@ -27,6 +27,24 @@ export type GovernedToolRecord = {
   updatedAt: string;
 };
 
+export type GovernanceAuditRecord = {
+  id: number;
+  toolId: string;
+  action: string;
+  actor?: string;
+  notes?: string;
+  createdAt: string;
+};
+
+type GovernanceAuditRow = {
+  id: number;
+  tool_id: string;
+  action: string;
+  actor: string | null;
+  notes: string | null;
+  created_at: string;
+};
+
 export class ToolGovernanceService {
   private readonly database: AppDatabase;
 
@@ -123,6 +141,27 @@ export class ToolGovernanceService {
       approvedDynamicTools: counts.get("approved") ?? 0,
       rejectedDynamicTools: counts.get("rejected") ?? 0
     };
+  }
+
+  listAudit(limit = 50): GovernanceAuditRecord[] {
+    return this.database
+      .all<GovernanceAuditRow>(
+        `
+          SELECT id, tool_id, action, actor, notes, created_at
+          FROM tool_governance_audit
+          ORDER BY created_at DESC, id DESC
+          LIMIT ?
+        `,
+        Math.max(1, Math.min(limit, 200))
+      )
+      .map((row) => ({
+        id: row.id,
+        toolId: row.tool_id,
+        action: row.action,
+        actor: row.actor ?? undefined,
+        notes: row.notes ?? undefined,
+        createdAt: row.created_at
+      }));
   }
 }
 

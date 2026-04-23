@@ -20,11 +20,13 @@ import { MemoryStore } from "../memory/store.ts";
 import { DynamicToolRegistry } from "../tools/dynamic-registry.ts";
 import { ToolGovernanceService } from "../tools/governance.ts";
 import { renderOperatorConsole } from "./ui.ts";
+import { OperatorSettingsStore } from "./settings.ts";
 import {
   validateChannelUpdateBody,
   validateDynamicToolBody,
   HttpError,
   parseJsonBody,
+  validateOperatorSettingsBody,
   validateSlackMessageBody,
   validateChatBody,
   validateMcpBody,
@@ -50,6 +52,7 @@ export class HttpServer {
   private readonly channelDeliveries: ChannelDeliveryStore;
   private readonly governance: ToolGovernanceService;
   private readonly slack: SlackChannel;
+  private readonly settings: OperatorSettingsStore;
 
   constructor(
     config: AppConfig,
@@ -82,6 +85,7 @@ export class HttpServer {
     this.channelDeliveries = new ChannelDeliveryStore(database);
     this.governance = governance;
     this.slack = new SlackChannel(config, channels, this.channelDeliveries, slackTransport);
+    this.settings = new OperatorSettingsStore(database);
     this.server = createServer((req, res) => {
       void this.handle(req, res);
     });
@@ -138,6 +142,7 @@ export class HttpServer {
           channels: this.channels.summary(),
           channelDeliveries: this.channelDeliveries.summary(),
           governance: this.governance.summary(),
+          settings: this.settings.get(),
           metrics: this.metrics.snapshot()
         });
         return;
@@ -159,7 +164,27 @@ export class HttpServer {
           },
           channelDeliveries: this.channelDeliveries.summary(),
           governance: this.governance.summary(),
+          settings: this.settings.get(),
           channels: this.channels.list()
+        });
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/admin/timeline") {
+        const settings = this.settings.get();
+        const runs = await this.runs.list();
+        const runsWithCounts = await Promise.all(
+          runs.slice(0, settings.memoryTimelineLimit).map(async (run) => ({
+            ...run,
+            eventCount: (await this.runs.listEvents(run.runId)).length
+          }))
+        );
+        this.json(res, 200, {
+          sessions: (await this.sessions.list()).slice(0, settings.memoryTimelineLimit),
+          runs: runsWithCounts,
+          jobs: (await this.scheduler.list()).slice(0, settings.memoryTimelineLimit),
+          memory: (await this.memory.listEntries(settings.memoryTimelineLimit)),
+          governanceAudit: this.governance.listAudit(settings.memoryTimelineLimit)
         });
         return;
       }
@@ -187,11 +212,67 @@ export class HttpServer {
         return;
       }
 
+      if (req.method === "GET" && url.pathname === "/admin/settings") {
+        this.json(res, 200, { settings: this.settings.get() });
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/admin/settings") {
+        const body = validateOperatorSettingsBody(parseJsonBody(await readTextBody(req)));
+        const settings = this.settings.update(body);
+        this.json(res, 200, { requestId, settings });
+        return;
+      }
+
       if (req.method === "POST" && url.pathname === "/admin/tools/approve") {
         const body = validateToolApprovalBody(parseJsonBody(await readTextBody(req)));
         const tool = this.governance.approve(body.toolId, body.approvedBy, body.notes);
         this.dynamicTools.activateApprovedTool(body.toolId);
         this.json(res, 200, { requestId, tool });
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname.startsWith("/admin/sessions/")) {
+        const sessionId = decodeURIComponent(url.pathname.replace("/admin/sessions/", ""));
+        const session = await this.sessions.get(sessionId);
+        if (!session) {
+          throw new HttpError(404, "Session not found");
+        }
+        this.json(res, 200, { session });
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname.startsWith("/admin/runs/")) {
+        const runId = decodeURIComponent(url.pathname.replace("/admin/runs/", ""));
+        const run = await this.runs.get(runId);
+        if (!run) {
+          throw new HttpError(404, "Run not found");
+        }
+        this.json(res, 200, {
+          run,
+          events: await this.runs.listEvents(runId),
+          children: await this.runs.listChildren(runId)
+        });
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname.startsWith("/admin/jobs/")) {
+        const jobId = decodeURIComponent(url.pathname.replace("/admin/jobs/", ""));
+        const job = (await this.scheduler.list()).find((entry) => entry.id === jobId);
+        if (!job) {
+          throw new HttpError(404, "Job not found");
+        }
+        this.json(res, 200, { job });
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname.startsWith("/admin/memory/")) {
+        const memoryId = decodeURIComponent(url.pathname.replace("/admin/memory/", ""));
+        const entry = await this.memory.getEntry(memoryId);
+        if (!entry) {
+          throw new HttpError(404, "Memory entry not found");
+        }
+        this.json(res, 200, { entry });
         return;
       }
 
