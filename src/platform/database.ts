@@ -131,11 +131,35 @@ export class AppDatabase {
         updated_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS channels (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        description TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 0,
+        secret_env_var TEXT,
+        webhook_path TEXT,
+        config_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS tool_governance_audit (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tool_id TEXT NOT NULL,
+        action TEXT NOT NULL,
+        actor TEXT,
+        notes TEXT,
+        created_at TEXT NOT NULL
+      );
+
       CREATE INDEX IF NOT EXISTS idx_runs_parent_run_id ON runs(parent_run_id);
       CREATE INDEX IF NOT EXISTS idx_run_events_run_id ON run_events(run_id, sequence);
       CREATE INDEX IF NOT EXISTS idx_jobs_status_scheduled_at ON jobs(status, scheduled_at);
       CREATE INDEX IF NOT EXISTS idx_memory_entries_category_created_at ON memory_entries(category, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_dynamic_tools_updated_at ON dynamic_tools(updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_channels_updated_at ON channels(updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_tool_governance_audit_tool_id ON tool_governance_audit(tool_id, created_at DESC);
     `);
 
     ensureColumn(this.db, "memory_entries", "embedding_json", "TEXT");
@@ -153,11 +177,16 @@ export class AppDatabase {
     ensureColumn(this.db, "memory_entries", "vector_synced_at", "TEXT");
     ensureColumn(this.db, "memory_entries", "vector_sync_error", "TEXT");
     ensureColumn(this.db, "memory_entries", "vector_point_id", "TEXT");
+    ensureColumn(this.db, "dynamic_tools", "approval_state", "TEXT NOT NULL DEFAULT 'pending'");
+    ensureColumn(this.db, "dynamic_tools", "approved_by", "TEXT");
+    ensureColumn(this.db, "dynamic_tools", "approved_at", "TEXT");
+    ensureColumn(this.db, "dynamic_tools", "governance_notes", "TEXT");
 
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_memory_entries_summary ON memory_entries(is_summary, category, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_memory_entries_embedding ON memory_entries(embedding_model, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_memory_entries_vector_sync ON memory_entries(vector_backend, vector_synced_at, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_dynamic_tools_approval_state ON dynamic_tools(approval_state, updated_at DESC);
     `);
   }
 }

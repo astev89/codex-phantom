@@ -86,6 +86,10 @@ export function renderOperatorConsole(agentName: string): string {
           <pre id="health">Loading...</pre>
         </section>
         <section class="panel">
+          <h2>Admin Summary</h2>
+          <pre id="adminSummary">Loading...</pre>
+        </section>
+        <section class="panel">
           <h2>Metrics</h2>
           <pre id="metrics">Loading...</pre>
         </section>
@@ -121,6 +125,21 @@ export function renderOperatorConsole(agentName: string): string {
           <button id="registerTool">Register dynamic tool</button>
           <pre id="tools">Loading...</pre>
         </section>
+        <section class="panel wide">
+          <h2>Tool Governance</h2>
+          <input id="approveToolId" placeholder="tool id to approve" />
+          <input id="approveToolActor" placeholder="approved by" value="operator-console" />
+          <input id="approveToolNotes" placeholder="approval notes" />
+          <button id="approveTool">Approve tool</button>
+          <pre id="governance">Loading...</pre>
+        </section>
+        <section class="panel wide">
+          <h2>Channels</h2>
+          <input id="channelId" placeholder="channel id (for example slack)" />
+          <input id="channelEnabled" placeholder="enabled: true or false" value="true" />
+          <button id="saveChannel">Save channel</button>
+          <pre id="channels">Loading...</pre>
+        </section>
       </div>
     </div>
     <script>
@@ -133,12 +152,15 @@ export function renderOperatorConsole(agentName: string): string {
       async function refresh() {
         await Promise.all([
           loadJson('/health', 'health'),
+          loadJson('/admin/summary', 'adminSummary'),
           loadJson('/metrics', 'metrics'),
           loadJson('/sessions', 'sessions'),
           loadJson('/runs', 'runs'),
           loadJson('/scheduler/jobs', 'jobs'),
           loadJson('/memory', 'memory'),
-          loadJson('/tools/dynamic', 'tools')
+          loadJson('/tools/dynamic', 'tools'),
+          loadJson('/admin/tools/governance', 'governance'),
+          loadJson('/admin/channels', 'channels')
         ]);
       }
 
@@ -172,6 +194,36 @@ export function renderOperatorConsole(agentName: string): string {
         });
         const data = await response.json();
         document.getElementById('tools').textContent = JSON.stringify(data, null, 2);
+        await refresh();
+      });
+
+      document.getElementById('approveTool').addEventListener('click', async () => {
+        const response = await fetch('/admin/tools/approve', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            toolId: document.getElementById('approveToolId').value,
+            approvedBy: document.getElementById('approveToolActor').value,
+            notes: document.getElementById('approveToolNotes').value
+          })
+        });
+        const data = await response.json();
+        document.getElementById('governance').textContent = JSON.stringify(data, null, 2);
+        await refresh();
+      });
+
+      document.getElementById('saveChannel').addEventListener('click', async () => {
+        const enabled = document.getElementById('channelEnabled').value.trim().toLowerCase() === 'true';
+        const response = await fetch('/admin/channels', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: document.getElementById('channelId').value,
+            enabled
+          })
+        });
+        const data = await response.json();
+        document.getElementById('channels').textContent = JSON.stringify(data, null, 2);
         await refresh();
       });
 

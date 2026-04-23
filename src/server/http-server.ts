@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { AppConfig } from "../config.ts";
 import { modelAdapterMode } from "../config.ts";
 import { validateWebhookSecret } from "../channels/webhook.ts";
+import { ChannelRegistry } from "../channels/registry.ts";
 import { OrchestrationService } from "../orchestration/service.ts";
 import { SchedulerService } from "../scheduler/service.ts";
 import { SessionStore } from "../chat/session-store.ts";
@@ -14,14 +15,17 @@ import { Logger } from "../platform/logger.ts";
 import { MetricsStore } from "../platform/metrics.ts";
 import { MemoryStore } from "../memory/store.ts";
 import { DynamicToolRegistry } from "../tools/dynamic-registry.ts";
+import { ToolGovernanceService } from "../tools/governance.ts";
 import { renderOperatorConsole } from "./ui.ts";
 import {
+  validateChannelUpdateBody,
   validateDynamicToolBody,
   HttpError,
   parseJsonBody,
   validateChatBody,
   validateMcpBody,
   validateScheduleBody,
+  validateToolApprovalBody,
   validateWebhookBody
 } from "./validation.ts";
 
@@ -38,6 +42,8 @@ export class HttpServer {
   private readonly metrics: MetricsStore;
   private readonly memory: MemoryStore;
   private readonly dynamicTools: DynamicToolRegistry;
+  private readonly channels: ChannelRegistry;
+  private readonly governance: ToolGovernanceService;
 
   constructor(
     config: AppConfig,
@@ -50,7 +56,9 @@ export class HttpServer {
     logger: Logger,
     metrics: MetricsStore,
     memory: MemoryStore,
-    dynamicTools: DynamicToolRegistry
+    dynamicTools: DynamicToolRegistry,
+    channels: ChannelRegistry,
+    governance: ToolGovernanceService
   ) {
     this.config = config;
     this.orchestration = orchestration;
@@ -63,6 +71,8 @@ export class HttpServer {
     this.metrics = metrics;
     this.memory = memory;
     this.dynamicTools = dynamicTools;
+    this.channels = channels;
+    this.governance = governance;
     this.server = createServer((req, res) => {
       void this.handle(req, res);
     });
@@ -85,6 +95,11 @@ export class HttpServer {
     const requestId = randomUUID();
     const startedAt = Date.now();
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+    const requestLogger = this.logger.child({
+      requestId,
+      path: url.pathname,
+      method: req.method ?? "UNKNOWN"
+    });
 
     try {
       if (req.method === "GET" && url.pathname === "/") {
@@ -106,7 +121,13 @@ export class HttpServer {
             authConfigured:
               this.config.mcpBearerToken.length > 0 && this.config.externalChannelSecret.length > 0
           },
+          logging: {
+            provider: "pino",
+            level: this.config.logLevel
+          },
           memory: this.memory.getStatus(),
+          channels: this.channels.summary(),
+          governance: this.governance.summary(),
           metrics: this.metrics.snapshot()
         });
         return;
@@ -114,6 +135,46 @@ export class HttpServer {
 
       if (req.method === "GET" && url.pathname === "/metrics") {
         this.json(res, 200, this.metrics.snapshot());
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/admin/summary") {
+        this.json(res, 200, {
+          logging: { provider: "pino", level: this.config.logLevel },
+          deployment: {
+            appEnv: this.config.appEnv,
+            qdrantEnabled: this.config.qdrantEnabled,
+            qdrantUrl: this.config.qdrantUrl ?? null,
+            databasePath: this.config.datastorePath
+          },
+          governance: this.governance.summary(),
+          channels: this.channels.list()
+        });
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/admin/channels") {
+        this.json(res, 200, { channels: this.channels.list() });
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/admin/channels") {
+        const body = validateChannelUpdateBody(parseJsonBody(await readTextBody(req)));
+        const channel = this.channels.upsert(body);
+        this.json(res, 200, { requestId, channel });
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/admin/tools/governance") {
+        this.json(res, 200, { tools: this.governance.list(), summary: this.governance.summary() });
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/admin/tools/approve") {
+        const body = validateToolApprovalBody(parseJsonBody(await readTextBody(req)));
+        const tool = this.governance.approve(body.toolId, body.approvedBy, body.notes);
+        this.dynamicTools.activateApprovedTool(body.toolId);
+        this.json(res, 200, { requestId, tool });
         return;
       }
 
@@ -254,10 +315,7 @@ export class HttpServer {
     } catch (error) {
       const status = error instanceof HttpError ? error.status : 500;
       const message = error instanceof Error ? error.message : "Internal Server Error";
-      this.logger.error("request_failed", {
-        requestId,
-        path: url.pathname,
-        method: req.method,
+      requestLogger.error("request_failed", {
         status,
         error: message
       });
@@ -267,6 +325,10 @@ export class HttpServer {
         status
       });
     } finally {
+      requestLogger.info("request_complete", {
+        statusCode: res.statusCode,
+        durationMs: Date.now() - startedAt
+      });
       this.metrics.increment(`http.${req.method?.toLowerCase() ?? "unknown"}.${url.pathname}`);
       this.metrics.observe("http.request.duration_ms", Date.now() - startedAt);
     }

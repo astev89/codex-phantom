@@ -1,9 +1,11 @@
 import { loadConfig } from "./config.ts";
 import { SessionStore } from "./chat/session-store.ts";
+import { ChannelRegistry } from "./channels/registry.ts";
 import { MemoryStore } from "./memory/store.ts";
 import { OpenAiEmbeddingService } from "./memory/embedding.ts";
 import { ToolRegistry } from "./tools/registry.ts";
 import { DynamicToolRegistry } from "./tools/dynamic-registry.ts";
+import { ToolGovernanceService } from "./tools/governance.ts";
 import { CodexAdapter } from "./agent/codex-adapter.ts";
 import { AgentRuntime } from "./agent/runtime.ts";
 import { RunGraphStore } from "./orchestration/run-graph-store.ts";
@@ -20,10 +22,12 @@ const logger = new Logger(config.logLevel);
 const metrics = new MetricsStore();
 const database = new AppDatabase(config.datastorePath);
 const sessions = new SessionStore(database);
+const channels = new ChannelRegistry(database, config);
 const embeddings = new OpenAiEmbeddingService(config);
 const memory = new MemoryStore(database, config, embeddings);
 const tools = new ToolRegistry();
 const dynamicTools = new DynamicToolRegistry(database, tools);
+const governance = new ToolGovernanceService(database);
 const runs = new RunGraphStore(database);
 
 tools.register({
@@ -53,7 +57,21 @@ const runtime = new AgentRuntime(config, adapter, sessions, memory, tools);
 const orchestration = new OrchestrationService(runtime, tools, runs);
 const scheduler = new SchedulerService(database, orchestration);
 const mcp = new McpServer(config.mcpBearerToken, tools);
-const server = new HttpServer(config, orchestration, scheduler, sessions, runs, mcp, database, logger, metrics, memory, dynamicTools);
+const server = new HttpServer(
+  config,
+  orchestration,
+  scheduler,
+  sessions,
+  runs,
+  mcp,
+  database,
+  logger,
+  metrics,
+  memory,
+  dynamicTools,
+  channels,
+  governance
+);
 
 await memory.backfillEmbeddings();
 await memory.initializeVectorStore();

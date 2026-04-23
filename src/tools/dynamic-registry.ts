@@ -11,12 +11,20 @@ type DynamicToolRow = {
   response_template: string;
   created_at: string;
   updated_at: string;
+  approval_state: "pending" | "approved" | "rejected";
+  approved_by: string | null;
+  approved_at: string | null;
+  governance_notes: string | null;
 };
 
 export type DynamicToolRecord = ToolCapabilityDescriptor & {
   responseTemplate: string;
   createdAt: string;
   updatedAt: string;
+  approvalState: "pending" | "approved" | "rejected";
+  approvedBy?: string;
+  approvedAt?: string;
+  governanceNotes?: string;
 };
 
 export type RegisterDynamicToolInput = {
@@ -42,6 +50,7 @@ export class DynamicToolRegistry {
       .all<DynamicToolRow>(
         `
           SELECT id, description, scopes_json, input_schema_json, response_template, created_at, updated_at
+                 , approval_state, approved_by, approved_at, governance_notes
           FROM dynamic_tools
           ORDER BY updated_at DESC, id ASC
         `
@@ -55,13 +64,18 @@ export class DynamicToolRegistry {
     this.database.run(
       `
         INSERT INTO dynamic_tools (
-          id, description, scopes_json, input_schema_json, response_template, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+          id, description, scopes_json, input_schema_json, response_template, created_at, updated_at,
+          approval_state, approved_by, approved_at, governance_notes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           description = excluded.description,
           scopes_json = excluded.scopes_json,
           input_schema_json = excluded.input_schema_json,
           response_template = excluded.response_template,
+          approval_state = 'pending',
+          approved_by = NULL,
+          approved_at = NULL,
+          governance_notes = NULL,
           updated_at = excluded.updated_at
       `,
       record.id,
@@ -70,11 +84,16 @@ export class DynamicToolRegistry {
       record.inputSchema ? encodeJson(record.inputSchema) : null,
       record.responseTemplate,
       now,
-      now
+      now,
+      "pending",
+      null,
+      null,
+      null
     );
     const stored = this.database.get<DynamicToolRow>(
       `
-        SELECT id, description, scopes_json, input_schema_json, response_template, created_at, updated_at
+        SELECT id, description, scopes_json, input_schema_json, response_template, created_at, updated_at,
+               approval_state, approved_by, approved_at, governance_notes
         FROM dynamic_tools
         WHERE id = ?
       `,
@@ -84,7 +103,23 @@ export class DynamicToolRegistry {
       throw new Error(`Failed to persist dynamic tool ${record.id}`);
     }
 
-    this.registerWithToolRegistry(stored);
+    this.database.run(
+      `
+        INSERT INTO tool_governance_audit (tool_id, action, actor, notes, created_at)
+        VALUES (?, ?, ?, ?, ?)
+      `,
+      record.id,
+      "submitted",
+      "operator",
+      "awaiting approval",
+      now
+    );
+
+    if (stored.approval_state === "approved") {
+      this.registerWithToolRegistry(stored);
+    } else {
+      this.tools.unregisterDynamic(stored.id);
+    }
     return toDynamicToolRecord(stored);
   }
 
@@ -100,15 +135,38 @@ export class DynamicToolRegistry {
     return true;
   }
 
+  activateApprovedTool(id: string): DynamicToolRecord {
+    const stored = this.database.get<DynamicToolRow>(
+      `
+        SELECT id, description, scopes_json, input_schema_json, response_template, created_at, updated_at,
+               approval_state, approved_by, approved_at, governance_notes
+        FROM dynamic_tools
+        WHERE id = ?
+      `,
+      id
+    );
+    if (!stored) {
+      throw new Error(`Unknown dynamic tool: ${id}`);
+    }
+    if (stored.approval_state !== "approved") {
+      throw new Error(`Dynamic tool ${id} is not approved`);
+    }
+    this.registerWithToolRegistry(stored);
+    return toDynamicToolRecord(stored);
+  }
+
   private loadPersistedTools(): void {
     for (const row of this.database.all<DynamicToolRow>(
       `
-        SELECT id, description, scopes_json, input_schema_json, response_template, created_at, updated_at
+        SELECT id, description, scopes_json, input_schema_json, response_template, created_at, updated_at,
+               approval_state, approved_by, approved_at, governance_notes
         FROM dynamic_tools
         ORDER BY updated_at DESC, id ASC
       `
     )) {
-      this.registerWithToolRegistry(row);
+      if (row.approval_state === "approved") {
+        this.registerWithToolRegistry(row);
+      }
     }
   }
 
@@ -138,7 +196,11 @@ function toDynamicToolRecord(row: DynamicToolRow): DynamicToolRecord {
     inputSchema: row.input_schema_json ? decodeJson<JsonValue>(row.input_schema_json, {}) : undefined,
     responseTemplate: row.response_template,
     createdAt: row.created_at,
-    updatedAt: row.updated_at
+    updatedAt: row.updated_at,
+    approvalState: row.approval_state,
+    approvedBy: row.approved_by ?? undefined,
+    approvedAt: row.approved_at ?? undefined,
+    governanceNotes: row.governance_notes ?? undefined
   };
 }
 

@@ -1,51 +1,53 @@
+import pino, { type DestinationStream, type Logger as PinoLogger } from "pino";
+
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
-const LOG_ORDER: Record<LogLevel, number> = {
-  debug: 10,
-  info: 20,
-  warn: 30,
-  error: 40
+type LoggerOptions = {
+  destination?: DestinationStream;
+  bindings?: Record<string, unknown>;
 };
 
 export class Logger {
-  private readonly level: LogLevel;
+  private logger: PinoLogger;
 
-  constructor(level: LogLevel) {
-    this.level = level;
+  constructor(level: LogLevel, options: LoggerOptions = {}) {
+    this.logger = pino(
+      {
+        level,
+        base: options.bindings ?? undefined,
+        timestamp: pino.stdTimeFunctions.isoTime
+      },
+      options.destination
+    );
+  }
+
+  private static fromPino(logger: PinoLogger): Logger {
+    const instance = Object.create(Logger.prototype) as Logger;
+    instance.logger = logger;
+    return instance;
+  }
+
+  child(bindings: Record<string, unknown>): Logger {
+    return Logger.fromPino(this.logger.child(bindings));
   }
 
   debug(message: string, fields?: Record<string, unknown>): void {
-    this.log("debug", message, fields);
+    this.logger.debug(fields ?? {}, message);
   }
 
   info(message: string, fields?: Record<string, unknown>): void {
-    this.log("info", message, fields);
+    this.logger.info(fields ?? {}, message);
   }
 
   warn(message: string, fields?: Record<string, unknown>): void {
-    this.log("warn", message, fields);
+    this.logger.warn(fields ?? {}, message);
   }
 
   error(message: string, fields?: Record<string, unknown>): void {
-    this.log("error", message, fields);
+    this.logger.error(fields ?? {}, message);
   }
+}
 
-  private log(level: LogLevel, message: string, fields?: Record<string, unknown>): void {
-    if (LOG_ORDER[level] < LOG_ORDER[this.level]) {
-      return;
-    }
-
-    const payload = {
-      timestamp: new Date().toISOString(),
-      level,
-      message,
-      ...(fields ?? {})
-    };
-    const text = JSON.stringify(payload);
-    if (level === "error" || level === "warn") {
-      console.error(text);
-      return;
-    }
-    console.log(text);
-  }
+export function createLogger(level: LogLevel, options: LoggerOptions = {}): Logger {
+  return new Logger(level, options);
 }

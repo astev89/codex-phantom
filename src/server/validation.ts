@@ -46,6 +46,17 @@ export type DynamicToolInput = {
   responseTemplate: string;
 };
 
+export type ChannelUpdateInput = {
+  id: string;
+  enabled: boolean;
+};
+
+export type ToolApprovalInput = {
+  toolId: string;
+  approvedBy: string;
+  notes?: string;
+};
+
 export function parseJsonBody(text: string): unknown {
   if (!text) {
     throw new HttpError(400, "Request body is required");
@@ -112,6 +123,23 @@ export function validateDynamicToolBody(input: unknown): DynamicToolInput {
     scopes: optionalStringArray(value.scopes, "scopes"),
     inputSchema: value.inputSchema === undefined ? undefined : toJsonValue(value.inputSchema, "inputSchema"),
     responseTemplate: nonEmptyString(value.responseTemplate, "responseTemplate")
+  };
+}
+
+export function validateChannelUpdateBody(input: unknown): ChannelUpdateInput {
+  const value = asRecord(input);
+  return {
+    id: nonEmptyString(value.id, "id"),
+    enabled: requireBoolean(value.enabled, "enabled")
+  };
+}
+
+export function validateToolApprovalBody(input: unknown): ToolApprovalInput {
+  const value = asRecord(input);
+  return {
+    toolId: nonEmptyString(value.toolId, "toolId"),
+    approvedBy: nonEmptyString(value.approvedBy, "approvedBy"),
+    notes: optionalString(value.notes)
   };
 }
 
@@ -202,6 +230,13 @@ function optionalIsoDate(value: unknown, field: string): string | undefined {
     throw new HttpError(400, `${field} must be an ISO timestamp`);
   }
   return new Date(value).toISOString();
+}
+
+function requireBoolean(value: unknown, field: string): boolean {
+  if (typeof value !== "boolean") {
+    throw new HttpError(400, `${field} must be a boolean`);
+  }
+  return value;
 }
 
 function toJsonValue(value: unknown, field: string): JsonValue {

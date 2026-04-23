@@ -1,5 +1,5 @@
-.gitnexus
 node_modules
-data
-.env
 .npm-cache
+data
+.git
+.gitnexus

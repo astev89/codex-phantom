@@ -5,11 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AppConfig } from "../src/config.ts";
 import { AgentRuntime } from "../src/agent/runtime.ts";
+import { ChannelRegistry } from "../src/channels/registry.ts";
 import type { AgentAdapter, AgentRunEvent, AgentRunRequest, AgentRunResult } from "../src/agent/types.ts";
 import { SessionStore } from "../src/chat/session-store.ts";
 import { MemoryStore } from "../src/memory/store.ts";
 import { ToolRegistry } from "../src/tools/registry.ts";
 import { DynamicToolRegistry } from "../src/tools/dynamic-registry.ts";
+import { ToolGovernanceService } from "../src/tools/governance.ts";
 import { RunGraphStore } from "../src/orchestration/run-graph-store.ts";
 import { OrchestrationService } from "../src/orchestration/service.ts";
 import { SchedulerService } from "../src/scheduler/service.ts";
@@ -67,6 +69,7 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
   const config: AppConfig = makeConfig(dataDir, { port: 0 });
   const database = new AppDatabase(join(dataDir, "server.sqlite"));
   const sessions = new SessionStore(database);
+  const channels = new ChannelRegistry(database, config);
   const memory = new MemoryStore(
     database,
     config,
@@ -90,6 +93,7 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
   await scheduler.start();
   const mcp = new McpServer(config.mcpBearerToken, tools);
   const dynamicTools = new DynamicToolRegistry(database, tools);
+  const governance = new ToolGovernanceService(database);
   const server = new HttpServer(
     config,
     orchestration,
@@ -101,7 +105,9 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
     new Logger("error"),
     new MetricsStore(),
     memory,
-    dynamicTools
+    dynamicTools,
+    channels,
+    governance
   );
   const instance = await server.listen();
   const address = instance.address();
@@ -116,6 +122,7 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
       ok: boolean;
       readiness: { scheduler: boolean; semanticRetrieval: boolean };
       memory: { pendingBackfillCount: number; vectorBackend: string; qdrantConfigured: boolean };
+      logging: { provider: string };
     };
     assert.equal(healthJson.ok, true);
     assert.equal(healthJson.readiness.scheduler, true);
@@ -123,6 +130,7 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
     assert.equal(healthJson.memory.pendingBackfillCount, 0);
     assert.equal(healthJson.memory.vectorBackend, "sqlite_fallback");
     assert.equal(healthJson.memory.qdrantConfigured, false);
+    assert.equal(healthJson.logging.provider, "pino");
 
     const streamResponse = await fetch(`http://127.0.0.1:${port}/chat/message`, {
       method: "POST",
@@ -194,12 +202,14 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
         responseTemplate: "Brief for {{topic}}"
       })
     });
-    const dynamicToolJson = await dynamicToolResponse.json() as { tool: { id: string } };
+    const dynamicToolJson = await dynamicToolResponse.json() as { tool: { id: string; approvalState: string } };
     assert.equal(dynamicToolJson.tool.id, "project.brief");
+    assert.equal(dynamicToolJson.tool.approvalState, "pending");
 
     const dynamicToolsResponse = await fetch(`http://127.0.0.1:${port}/tools/dynamic`);
-    const dynamicToolsJson = await dynamicToolsResponse.json() as { tools: Array<{ id: string }> };
+    const dynamicToolsJson = await dynamicToolsResponse.json() as { tools: Array<{ id: string; approvalState: string }> };
     assert.ok(dynamicToolsJson.tools.some((tool) => tool.id === "project.brief"));
+    assert.ok(dynamicToolsJson.tools.some((tool) => tool.id === "project.brief" && tool.approvalState === "pending"));
 
     const dynamicMcpListResponse = await fetch(`http://127.0.0.1:${port}/mcp`, {
       method: "POST",
@@ -210,7 +220,31 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
       body: JSON.stringify({ method: "tools/list" })
     });
     const dynamicMcpListJson = await dynamicMcpListResponse.json() as { tools: Array<{ id: string }> };
-    assert.ok(dynamicMcpListJson.tools.some((tool) => tool.id === "project.brief"));
+    assert.equal(dynamicMcpListJson.tools.some((tool) => tool.id === "project.brief"), false);
+
+    const approvalResponse = await fetch(`http://127.0.0.1:${port}/admin/tools/approve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        toolId: "project.brief",
+        approvedBy: "operator",
+        notes: "read-only summary tool"
+      })
+    });
+    const approvalJson = await approvalResponse.json() as { tool: { id: string; approvalState: string } };
+    assert.equal(approvalJson.tool.id, "project.brief");
+    assert.equal(approvalJson.tool.approvalState, "approved");
+
+    const approvedMcpListResponse = await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.mcpBearerToken}`
+      },
+      body: JSON.stringify({ method: "tools/list" })
+    });
+    const approvedMcpListJson = await approvedMcpListResponse.json() as { tools: Array<{ id: string }> };
+    assert.ok(approvedMcpListJson.tools.some((tool) => tool.id === "project.brief"));
 
     const dynamicCallResponse = await fetch(`http://127.0.0.1:${port}/mcp`, {
       method: "POST",
@@ -232,6 +266,40 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
     const memoryResponse = await fetch(`http://127.0.0.1:${port}/memory`);
     const memoryJson = await memoryResponse.json() as { entries: Array<{ id: string; category: string }> };
     assert.ok(memoryJson.entries.length > 0);
+
+    const channelsResponse = await fetch(`http://127.0.0.1:${port}/admin/channels`);
+    const channelsJson = await channelsResponse.json() as {
+      channels: Array<{ id: string; enabled: boolean }>;
+    };
+    assert.ok(channelsJson.channels.some((channel) => channel.id === "web"));
+    assert.ok(channelsJson.channels.some((channel) => channel.id === "slack"));
+
+    const channelUpdateResponse = await fetch(`http://127.0.0.1:${port}/admin/channels`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: "slack",
+        enabled: true
+      })
+    });
+    const channelUpdateJson = await channelUpdateResponse.json() as {
+      channel: { id: string; enabled: boolean };
+    };
+    assert.equal(channelUpdateJson.channel.id, "slack");
+    assert.equal(channelUpdateJson.channel.enabled, true);
+
+    const adminSummaryResponse = await fetch(`http://127.0.0.1:${port}/admin/summary`);
+    const adminSummaryJson = await adminSummaryResponse.json() as {
+      logging: { provider: string };
+      deployment: { qdrantEnabled: boolean };
+      governance: { pendingDynamicTools: number; approvedDynamicTools: number };
+      channels: Array<{ id: string; enabled: boolean }>;
+    };
+    assert.equal(adminSummaryJson.logging.provider, "pino");
+    assert.equal(adminSummaryJson.deployment.qdrantEnabled, false);
+    assert.equal(adminSummaryJson.governance.pendingDynamicTools, 0);
+    assert.equal(adminSummaryJson.governance.approvedDynamicTools, 1);
+    assert.ok(adminSummaryJson.channels.some((channel) => channel.id === "slack" && channel.enabled === true));
   } finally {
     await scheduler.stop();
     await server.close();

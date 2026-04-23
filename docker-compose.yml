@@ -1,0 +1,24 @@
+services:
+  codex-phantom:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3210:3210"
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      qdrant:
+        condition: service_started
+
+  qdrant:
+    image: qdrant/qdrant:v1.13.2
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant-data:/qdrant/storage
+
+volumes:
+  qdrant-data:
