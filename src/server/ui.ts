@@ -90,6 +90,10 @@ export function renderOperatorConsole(agentName: string): string {
           <pre id="adminSummary">Loading...</pre>
         </section>
         <section class="panel">
+          <h2>Diagnostics</h2>
+          <pre id="diagnostics">Loading...</pre>
+        </section>
+        <section class="panel">
           <h2>Metrics</h2>
           <pre id="metrics">Loading...</pre>
         </section>
@@ -176,6 +180,7 @@ export function renderOperatorConsole(agentName: string): string {
         await Promise.all([
           loadJson('/health', 'health'),
           loadJson('/admin/summary', 'adminSummary'),
+          loadJson('/admin/diagnostics', 'diagnostics'),
           loadJson('/metrics', 'metrics'),
           loadJson('/sessions', 'sessions'),
           loadJson('/runs', 'runs'),

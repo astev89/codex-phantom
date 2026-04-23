@@ -17,6 +17,7 @@ import { OrchestrationService } from "../src/orchestration/service.ts";
 import { SchedulerService } from "../src/scheduler/service.ts";
 import { McpServer } from "../src/mcp/server.ts";
 import { HttpServer } from "../src/server/http-server.ts";
+import { buildJsonExport, buildNdjsonExport } from "../src/server/export.ts";
 import { AppDatabase } from "../src/platform/database.ts";
 import { Logger } from "../src/platform/logger.ts";
 import { MetricsStore } from "../src/platform/metrics.ts";
@@ -76,6 +77,65 @@ class FakeSlackTransport implements SlackTransport {
     };
   }
 }
+
+test("buildJsonExport wraps records in an operator-friendly envelope", () => {
+  const payload = buildJsonExport({
+    scope: "requests",
+    exportedAt: "2026-04-23T12:00:00.000Z",
+    meta: { requestedBy: "operator-console" },
+    items: [
+      {
+        requestId: "req_123",
+        path: "/health",
+        statusCode: 200
+      }
+    ]
+  });
+
+  assert.deepEqual(payload, {
+    scope: "requests",
+    format: "json",
+    exportedAt: "2026-04-23T12:00:00.000Z",
+    count: 1,
+    meta: { requestedBy: "operator-console" },
+    items: [
+      {
+        requestId: "req_123",
+        path: "/health",
+        statusCode: 200
+      }
+    ]
+  });
+});
+
+test("buildNdjsonExport emits one serialized record per line", () => {
+  const payload = buildNdjsonExport({
+    scope: "channels",
+    exportedAt: "2026-04-23T12:00:00.000Z",
+    items: [
+      {
+        channelId: "slack",
+        status: "delivered"
+      },
+      {
+        channelId: "webhook",
+        status: "failed"
+      }
+    ]
+  });
+
+  assert.equal(payload.scope, "channels");
+  assert.equal(payload.format, "ndjson");
+  assert.equal(payload.exportedAt, "2026-04-23T12:00:00.000Z");
+  assert.equal(payload.count, 2);
+  assert.equal(
+    payload.body,
+    [
+      "{\"channelId\":\"slack\",\"status\":\"delivered\"}",
+      "{\"channelId\":\"webhook\",\"status\":\"failed\"}"
+    ].join("\n")
+  );
+});
 
 test("chat streaming, health, scheduler, and mcp routes work", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "codex-phantom-server-"));
@@ -414,6 +474,35 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
     assert.equal(settingsUpdateJson.settings.dashboardRefreshSeconds, 9);
     assert.equal(settingsUpdateJson.settings.chatDefaultConversationId, "ops-room");
     assert.equal(settingsUpdateJson.settings.memoryTimelineLimit, 25);
+
+    const requestExportResponse = await fetch(`http://127.0.0.1:${port}/admin/export?scope=requests&format=json`);
+    const requestExportJson = await requestExportResponse.json() as {
+      scope: string;
+      format: string;
+      items: Array<{ requestId: string; path: string; statusCode: number }>;
+    };
+    assert.equal(requestExportJson.scope, "requests");
+    assert.equal(requestExportJson.format, "json");
+    assert.ok(requestExportJson.items.some((item) => item.path === "/health"));
+
+    const channelExportResponse = await fetch(`http://127.0.0.1:${port}/admin/export?scope=channels&format=ndjson`);
+    const channelExportText = await channelExportResponse.text();
+    assert.match(channelExportText, /"channelId":"slack"/);
+    assert.match(channelExportText, /"status":"delivered"/);
+
+    const diagnosticsResponse = await fetch(`http://127.0.0.1:${port}/admin/diagnostics`);
+    const diagnosticsJson = await diagnosticsResponse.json() as {
+      diagnostics: {
+        appEnv: string;
+        modelAdapter: string;
+        missingRecommendedEnv: string[];
+        channelReadiness: Array<{ id: string; enabled: boolean; secretPresent: boolean }>;
+      };
+    };
+    assert.equal(diagnosticsJson.diagnostics.appEnv, "test");
+    assert.equal(diagnosticsJson.diagnostics.modelAdapter, "fallback");
+    assert.ok(diagnosticsJson.diagnostics.missingRecommendedEnv.includes("OPENAI_API_KEY"));
+    assert.ok(diagnosticsJson.diagnostics.channelReadiness.some((channel) => channel.id === "slack" && channel.enabled === true && channel.secretPresent === true));
   } finally {
     await scheduler.stop();
     await server.close();

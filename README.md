@@ -26,6 +26,8 @@ The service starts on `http://localhost:3210` by default.
   Runtime readiness plus memory, channel, governance, and logging summaries.
 - `GET /admin/summary`
   Deployment-oriented overview for logging, database path, Qdrant config, channels, and tool governance.
+- `GET /admin/diagnostics`
+  Startup diagnostics and missing-env guidance for the currently configured feature set.
 - `GET /admin/timeline`
   Return recent sessions, runs, jobs, memory entries, and governance audit activity in one operator-friendly payload.
 - `GET /admin/channels`
@@ -59,6 +61,7 @@ The service starts on `http://localhost:3210` by default.
 The root console at `/` now exposes panels for:
 
 - health and admin summary
+- startup diagnostics and missing-env guidance
 - sessions, runs, jobs, and memory
 - dynamic tool registration
 - tool approval

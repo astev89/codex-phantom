@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { randomUUID } from "node:crypto";
 import type { AppConfig } from "../config.ts";
 import { modelAdapterMode } from "../config.ts";
+import type { JsonValue } from "../shared/types.ts";
 import { validateWebhookSecret } from "../channels/webhook.ts";
 import { ChannelRegistry } from "../channels/registry.ts";
 import { ChannelDeliveryStore } from "../channels/delivery-log.ts";
@@ -21,6 +22,9 @@ import { DynamicToolRegistry } from "../tools/dynamic-registry.ts";
 import { ToolGovernanceService } from "../tools/governance.ts";
 import { renderOperatorConsole } from "./ui.ts";
 import { OperatorSettingsStore } from "./settings.ts";
+import { RequestAuditStore } from "./request-audit.ts";
+import { buildStartupDiagnostics } from "./diagnostics.ts";
+import { buildOperatorExport } from "./export.ts";
 import {
   validateChannelUpdateBody,
   validateDynamicToolBody,
@@ -53,6 +57,7 @@ export class HttpServer {
   private readonly governance: ToolGovernanceService;
   private readonly slack: SlackChannel;
   private readonly settings: OperatorSettingsStore;
+  private readonly requestAudits: RequestAuditStore;
 
   constructor(
     config: AppConfig,
@@ -86,6 +91,7 @@ export class HttpServer {
     this.governance = governance;
     this.slack = new SlackChannel(config, channels, this.channelDeliveries, slackTransport);
     this.settings = new OperatorSettingsStore(database);
+    this.requestAudits = new RequestAuditStore(database);
     this.server = createServer((req, res) => {
       void this.handle(req, res);
     });
@@ -154,6 +160,7 @@ export class HttpServer {
       }
 
       if (req.method === "GET" && url.pathname === "/admin/summary") {
+        const channels = this.channels.list();
         this.json(res, 200, {
           logging: { provider: "pino", level: this.config.logLevel },
           deployment: {
@@ -165,8 +172,35 @@ export class HttpServer {
           channelDeliveries: this.channelDeliveries.summary(),
           governance: this.governance.summary(),
           settings: this.settings.get(),
-          channels: this.channels.list()
+          requestAudits: { recent: this.requestAudits.list(10).length },
+          channels,
+          diagnostics: buildStartupDiagnostics(this.config, this.memory.getStatus(), channels)
         });
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/admin/diagnostics") {
+        const channels = this.channels.list();
+        this.json(res, 200, {
+          diagnostics: buildStartupDiagnostics(this.config, this.memory.getStatus(), channels)
+        });
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/admin/export") {
+        const scope = url.searchParams.get("scope") ?? "timeline";
+        const format = url.searchParams.get("format") === "ndjson" ? "ndjson" : "json";
+        const payload = this.buildExportPayload(scope);
+        const exportPayload = buildOperatorExport(format, {
+          scope,
+          items: payload.items
+        });
+        if (exportPayload.format === "ndjson") {
+          res.writeHead(200, { "Content-Type": "application/x-ndjson" });
+          res.end(exportPayload.body);
+          return;
+        }
+        this.json(res, 200, exportPayload);
         return;
       }
 
@@ -434,8 +468,37 @@ export class HttpServer {
         statusCode: res.statusCode,
         durationMs: Date.now() - startedAt
       });
+      this.requestAudits.record({
+        requestId,
+        method: req.method ?? "UNKNOWN",
+        path: url.pathname,
+        statusCode: res.statusCode,
+        durationMs: Date.now() - startedAt
+      });
       this.metrics.increment(`http.${req.method?.toLowerCase() ?? "unknown"}.${url.pathname}`);
       this.metrics.observe("http.request.duration_ms", Date.now() - startedAt);
+    }
+  }
+
+  private buildExportPayload(scope: string): { items: Array<Record<string, JsonValue>> } {
+    switch (scope) {
+      case "requests":
+        return { items: this.requestAudits.list(250) };
+      case "channels":
+        return { items: this.channelDeliveries.list(undefined, 250) };
+      case "governance":
+        return { items: this.governance.listAudit(250) };
+      case "runs":
+        return { items: this.database.all("SELECT * FROM run_events ORDER BY created_at DESC LIMIT 250") };
+      case "timeline":
+      default:
+        return {
+          items: [
+            ...this.requestAudits.list(50),
+            ...this.channelDeliveries.list(undefined, 50),
+            ...this.governance.listAudit(50)
+          ]
+        };
     }
   }
 
