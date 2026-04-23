@@ -4,6 +4,9 @@ import type { AppConfig } from "../config.ts";
 import { modelAdapterMode } from "../config.ts";
 import { validateWebhookSecret } from "../channels/webhook.ts";
 import { ChannelRegistry } from "../channels/registry.ts";
+import { ChannelDeliveryStore } from "../channels/delivery-log.ts";
+import type { SlackTransport } from "../channels/slack.ts";
+import { SlackChannel } from "../channels/slack.ts";
 import { OrchestrationService } from "../orchestration/service.ts";
 import { SchedulerService } from "../scheduler/service.ts";
 import { SessionStore } from "../chat/session-store.ts";
@@ -22,6 +25,7 @@ import {
   validateDynamicToolBody,
   HttpError,
   parseJsonBody,
+  validateSlackMessageBody,
   validateChatBody,
   validateMcpBody,
   validateScheduleBody,
@@ -43,7 +47,9 @@ export class HttpServer {
   private readonly memory: MemoryStore;
   private readonly dynamicTools: DynamicToolRegistry;
   private readonly channels: ChannelRegistry;
+  private readonly channelDeliveries: ChannelDeliveryStore;
   private readonly governance: ToolGovernanceService;
+  private readonly slack: SlackChannel;
 
   constructor(
     config: AppConfig,
@@ -58,7 +64,8 @@ export class HttpServer {
     memory: MemoryStore,
     dynamicTools: DynamicToolRegistry,
     channels: ChannelRegistry,
-    governance: ToolGovernanceService
+    governance: ToolGovernanceService,
+    slackTransport?: SlackTransport
   ) {
     this.config = config;
     this.orchestration = orchestration;
@@ -72,7 +79,9 @@ export class HttpServer {
     this.memory = memory;
     this.dynamicTools = dynamicTools;
     this.channels = channels;
+    this.channelDeliveries = new ChannelDeliveryStore(database);
     this.governance = governance;
+    this.slack = new SlackChannel(config, channels, this.channelDeliveries, slackTransport);
     this.server = createServer((req, res) => {
       void this.handle(req, res);
     });
@@ -127,6 +136,7 @@ export class HttpServer {
           },
           memory: this.memory.getStatus(),
           channels: this.channels.summary(),
+          channelDeliveries: this.channelDeliveries.summary(),
           governance: this.governance.summary(),
           metrics: this.metrics.snapshot()
         });
@@ -147,6 +157,7 @@ export class HttpServer {
             qdrantUrl: this.config.qdrantUrl ?? null,
             databasePath: this.config.datastorePath
           },
+          channelDeliveries: this.channelDeliveries.summary(),
           governance: this.governance.summary(),
           channels: this.channels.list()
         });
@@ -162,6 +173,12 @@ export class HttpServer {
         const body = validateChannelUpdateBody(parseJsonBody(await readTextBody(req)));
         const channel = this.channels.upsert(body);
         this.json(res, 200, { requestId, channel });
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/admin/channels/deliveries") {
+        const channelId = url.searchParams.get("channelId") ?? undefined;
+        this.json(res, 200, { deliveries: this.channelDeliveries.list(channelId) });
         return;
       }
 
@@ -239,6 +256,13 @@ export class HttpServer {
           }
         );
         this.json(res, 200, { requestId, sessionId: result.sessionId, runId: result.runId, outputText: result.outputText, events });
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/channels/slack/message") {
+        const body = validateSlackMessageBody(parseJsonBody(await readTextBody(req)));
+        const result = await this.slack.sendMessage(body);
+        this.json(res, 200, { requestId, ...result });
         return;
       }
 

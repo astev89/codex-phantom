@@ -21,6 +21,7 @@ import { AppDatabase } from "../src/platform/database.ts";
 import { Logger } from "../src/platform/logger.ts";
 import { MetricsStore } from "../src/platform/metrics.ts";
 import { makeConfig, makeDisabledEmbeddings, makeFakeVectorStore } from "./helpers.ts";
+import type { SlackTransport } from "../src/channels/slack.ts";
 
 class FakeAdapter implements AgentAdapter {
   readonly name = "fake-codex";
@@ -64,9 +65,21 @@ class FakeAdapter implements AgentAdapter {
   }
 }
 
+class FakeSlackTransport implements SlackTransport {
+  readonly sent: Array<{ channel: string; text: string }> = [];
+
+  async sendMessage(input: { token: string; channel: string; text: string }): Promise<{ ok: boolean; ts?: string; error?: string }> {
+    this.sent.push({ channel: input.channel, text: input.text });
+    return {
+      ok: true,
+      ts: "1713900000.000100"
+    };
+  }
+}
+
 test("chat streaming, health, scheduler, and mcp routes work", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "codex-phantom-server-"));
-  const config: AppConfig = makeConfig(dataDir, { port: 0 });
+  const config: AppConfig = makeConfig(dataDir, { port: 0, slackBotToken: "xoxb-test-token" });
   const database = new AppDatabase(join(dataDir, "server.sqlite"));
   const sessions = new SessionStore(database);
   const channels = new ChannelRegistry(database, config);
@@ -94,6 +107,7 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
   const mcp = new McpServer(config.mcpBearerToken, tools);
   const dynamicTools = new DynamicToolRegistry(database, tools);
   const governance = new ToolGovernanceService(database);
+  const slackTransport = new FakeSlackTransport();
   const server = new HttpServer(
     config,
     orchestration,
@@ -107,7 +121,8 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
     memory,
     dynamicTools,
     channels,
-    governance
+    governance,
+    slackTransport
   );
   const instance = await server.listen();
   const address = instance.address();
@@ -269,10 +284,11 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
 
     const channelsResponse = await fetch(`http://127.0.0.1:${port}/admin/channels`);
     const channelsJson = await channelsResponse.json() as {
-      channels: Array<{ id: string; enabled: boolean }>;
+      channels: Array<{ id: string; enabled: boolean; secretPresent: boolean }>;
     };
     assert.ok(channelsJson.channels.some((channel) => channel.id === "web"));
     assert.ok(channelsJson.channels.some((channel) => channel.id === "slack"));
+    assert.ok(channelsJson.channels.some((channel) => channel.id === "slack" && channel.secretPresent === true));
 
     const channelUpdateResponse = await fetch(`http://127.0.0.1:${port}/admin/channels`, {
       method: "POST",
@@ -288,17 +304,47 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
     assert.equal(channelUpdateJson.channel.id, "slack");
     assert.equal(channelUpdateJson.channel.enabled, true);
 
+    const slackMessageResponse = await fetch(`http://127.0.0.1:${port}/channels/slack/message`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        channel: "C123456",
+        text: "hello from codex-phantom"
+      })
+    });
+    const slackMessageJson = await slackMessageResponse.json() as {
+      delivery: { channelId: string; status: string; destination: string };
+      result: { ts: string };
+    };
+    assert.equal(slackMessageJson.delivery.channelId, "slack");
+    assert.equal(slackMessageJson.delivery.status, "delivered");
+    assert.equal(slackMessageJson.delivery.destination, "C123456");
+    assert.equal(slackMessageJson.result.ts, "1713900000.000100");
+    assert.deepEqual(slackTransport.sent, [{ channel: "C123456", text: "hello from codex-phantom" }]);
+
+    const deliveriesResponse = await fetch(`http://127.0.0.1:${port}/admin/channels/deliveries?channelId=slack`);
+    const deliveriesJson = await deliveriesResponse.json() as {
+      deliveries: Array<{ channelId: string; status: string; destination: string }>;
+    };
+    assert.ok(deliveriesJson.deliveries.some((delivery) =>
+      delivery.channelId === "slack" &&
+      delivery.status === "delivered" &&
+      delivery.destination === "C123456"
+    ));
+
     const adminSummaryResponse = await fetch(`http://127.0.0.1:${port}/admin/summary`);
     const adminSummaryJson = await adminSummaryResponse.json() as {
       logging: { provider: string };
       deployment: { qdrantEnabled: boolean };
       governance: { pendingDynamicTools: number; approvedDynamicTools: number };
+      channelDeliveries: { delivered: number };
       channels: Array<{ id: string; enabled: boolean }>;
     };
     assert.equal(adminSummaryJson.logging.provider, "pino");
     assert.equal(adminSummaryJson.deployment.qdrantEnabled, false);
     assert.equal(adminSummaryJson.governance.pendingDynamicTools, 0);
     assert.equal(adminSummaryJson.governance.approvedDynamicTools, 1);
+    assert.equal(adminSummaryJson.channelDeliveries.delivered, 1);
     assert.ok(adminSummaryJson.channels.some((channel) => channel.id === "slack" && channel.enabled === true));
   } finally {
     await scheduler.stop();

@@ -153,6 +153,17 @@ export class AppDatabase {
         created_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS channel_delivery_logs (
+        id TEXT PRIMARY KEY,
+        channel_id TEXT NOT NULL,
+        destination TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        status TEXT NOT NULL,
+        response_json TEXT,
+        error_message TEXT,
+        delivered_at TEXT NOT NULL
+      );
+
       CREATE INDEX IF NOT EXISTS idx_runs_parent_run_id ON runs(parent_run_id);
       CREATE INDEX IF NOT EXISTS idx_run_events_run_id ON run_events(run_id, sequence);
       CREATE INDEX IF NOT EXISTS idx_jobs_status_scheduled_at ON jobs(status, scheduled_at);
@@ -160,6 +171,7 @@ export class AppDatabase {
       CREATE INDEX IF NOT EXISTS idx_dynamic_tools_updated_at ON dynamic_tools(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_channels_updated_at ON channels(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_tool_governance_audit_tool_id ON tool_governance_audit(tool_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_channel_delivery_logs_channel_id ON channel_delivery_logs(channel_id, delivered_at DESC);
     `);
 
     ensureColumn(this.db, "memory_entries", "embedding_json", "TEXT");

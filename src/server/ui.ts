@@ -140,6 +140,17 @@ export function renderOperatorConsole(agentName: string): string {
           <button id="saveChannel">Save channel</button>
           <pre id="channels">Loading...</pre>
         </section>
+        <section class="panel wide">
+          <h2>Slack Delivery</h2>
+          <input id="slackChannel" placeholder="Slack channel id" />
+          <textarea id="slackText" rows="3" placeholder="Message text"></textarea>
+          <button id="sendSlack">Send Slack message</button>
+          <pre id="slackResult">No Slack messages sent yet.</pre>
+        </section>
+        <section class="panel wide">
+          <h2>Channel Deliveries</h2>
+          <pre id="deliveries">Loading...</pre>
+        </section>
       </div>
     </div>
     <script>
@@ -160,7 +171,8 @@ export function renderOperatorConsole(agentName: string): string {
           loadJson('/memory', 'memory'),
           loadJson('/tools/dynamic', 'tools'),
           loadJson('/admin/tools/governance', 'governance'),
-          loadJson('/admin/channels', 'channels')
+          loadJson('/admin/channels', 'channels'),
+          loadJson('/admin/channels/deliveries', 'deliveries')
         ]);
       }
 
@@ -224,6 +236,20 @@ export function renderOperatorConsole(agentName: string): string {
         });
         const data = await response.json();
         document.getElementById('channels').textContent = JSON.stringify(data, null, 2);
+        await refresh();
+      });
+
+      document.getElementById('sendSlack').addEventListener('click', async () => {
+        const response = await fetch('/channels/slack/message', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            channel: document.getElementById('slackChannel').value,
+            text: document.getElementById('slackText').value
+          })
+        });
+        const data = await response.json();
+        document.getElementById('slackResult').textContent = JSON.stringify(data, null, 2);
         await refresh();
       });
 

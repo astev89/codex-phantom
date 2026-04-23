@@ -30,6 +30,8 @@ The service starts on `http://localhost:3210` by default.
   List registered channels such as `web`, `webhook`, `scheduler`, and planned `slack`.
 - `POST /admin/channels`
   Enable or disable a registered channel.
+- `GET /admin/channels/deliveries`
+  Inspect recent outbound channel delivery attempts and their final status.
 - `GET /admin/tools/governance`
   Inspect dynamic tool approval state.
 - `POST /admin/tools/approve`
@@ -40,6 +42,8 @@ The service starts on `http://localhost:3210` by default.
   Submit a new read-only dynamic tool. New tools start in `pending` state until approved.
 - `GET /memory`
   Inspect recently persisted memory rows for operator debugging.
+- `POST /channels/slack/message`
+  Send an outbound Slack message through the configured bot token when the `slack` channel is enabled.
 
 The root console at `/` now exposes panels for:
 
@@ -48,6 +52,7 @@ The root console at `/` now exposes panels for:
 - dynamic tool registration
 - tool approval
 - channel enablement
+- Slack test-send and delivery log inspection
 
 ## Logging
 
@@ -69,6 +74,13 @@ Built-in channels are tracked in SQLite:
 - `slack` as the first planned external channel
 
 Dynamic tools are no longer activated immediately on creation. They are persisted first, surfaced as `pending`, and must be approved through `/admin/tools/approve` before they appear in MCP tool listings or runtime execution.
+
+Slack is now the first real external channel path. The current implementation focuses on outbound delivery:
+
+- the `slack` channel must be enabled through `/admin/channels`
+- `SLACK_BOT_TOKEN` must be configured
+- each delivery attempt is recorded in `channel_delivery_logs`
+- operators can inspect delivery history through `/admin/channels/deliveries`
 
 ## Deployment
 

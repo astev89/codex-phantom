@@ -97,7 +97,21 @@ export class ChannelRegistry {
           ORDER BY id ASC
         `
       )
-      .map((row) => toChannelRecord(row));
+      .map((row) => this.toChannelRecord(row));
+  }
+
+  get(id: string): ChannelRecord | null {
+    const row = this.database.get<ChannelRow>(
+      `
+        SELECT
+          id, kind, display_name, description, enabled, secret_env_var, webhook_path,
+          config_json, created_at, updated_at
+        FROM channels
+        WHERE id = ?
+      `,
+      id
+    );
+    return row ? this.toChannelRecord(row) : null;
   }
 
   upsert(input: { id: string; enabled: boolean }): ChannelRecord {
@@ -129,7 +143,7 @@ export class ChannelRegistry {
     if (!updated) {
       throw new Error(`Failed to update channel: ${input.id}`);
     }
-    return toChannelRecord(updated);
+    return this.toChannelRecord(updated);
   }
 
   summary(): { configured: number; enabled: number; channels: ChannelRecord[] } {
@@ -166,20 +180,35 @@ export class ChannelRegistry {
       }
     });
   }
-}
 
-function toChannelRecord(row: ChannelRow): ChannelRecord {
-  return {
-    id: row.id,
-    kind: row.kind,
-    displayName: row.display_name,
-    description: row.description,
-    enabled: row.enabled === 1,
-    secretEnvVar: row.secret_env_var ?? undefined,
-    secretPresent: row.secret_env_var ? Boolean(process.env[row.secret_env_var]) : true,
-    webhookPath: row.webhook_path ?? undefined,
-    config: decodeJson<Record<string, unknown>>(row.config_json, {}),
-    createdAt: row.created_at,
-    updatedAt: row.updated_at
-  };
+  private toChannelRecord(row: ChannelRow): ChannelRecord {
+    return {
+      id: row.id,
+      kind: row.kind,
+      displayName: row.display_name,
+      description: row.description,
+      enabled: row.enabled === 1,
+      secretEnvVar: row.secret_env_var ?? undefined,
+      secretPresent: row.secret_env_var ? this.resolveSecretPresence(row.secret_env_var) : true,
+      webhookPath: row.webhook_path ?? undefined,
+      config: decodeJson<Record<string, unknown>>(row.config_json, {}),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    };
+  }
+
+  private resolveSecretPresence(secretEnvVar: string): boolean {
+    switch (secretEnvVar) {
+      case "SLACK_BOT_TOKEN":
+        return Boolean(this.config.slackBotToken);
+      case "SLACK_APP_TOKEN":
+        return Boolean(this.config.slackAppToken);
+      case "SLACK_SIGNING_SECRET":
+        return Boolean(this.config.slackSigningSecret);
+      case "EXTERNAL_CHANNEL_SECRET":
+        return Boolean(this.config.externalChannelSecret);
+      default:
+        return Boolean(process.env[secretEnvVar]);
+    }
+  }
 }

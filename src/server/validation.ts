@@ -57,6 +57,11 @@ export type ToolApprovalInput = {
   notes?: string;
 };
 
+export type SlackMessageInput = {
+  channel: string;
+  text: string;
+};
+
 export function parseJsonBody(text: string): unknown {
   if (!text) {
     throw new HttpError(400, "Request body is required");
@@ -140,6 +145,14 @@ export function validateToolApprovalBody(input: unknown): ToolApprovalInput {
     toolId: nonEmptyString(value.toolId, "toolId"),
     approvedBy: nonEmptyString(value.approvedBy, "approvedBy"),
     notes: optionalString(value.notes)
+  };
+}
+
+export function validateSlackMessageBody(input: unknown): SlackMessageInput {
+  const value = asRecord(input);
+  return {
+    channel: nonEmptyString(value.channel, "channel"),
+    text: nonEmptyString(value.text, "text")
   };
 }
 
