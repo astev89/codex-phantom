@@ -493,6 +493,9 @@ export class HttpServer {
         status,
         error: message
       });
+      if (status === 401) {
+        res.setHeader("WWW-Authenticate", "Basic realm=\"codex-phantom operator\"");
+      }
       this.json(res, status, {
         error: message,
         requestId,

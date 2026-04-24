@@ -145,18 +145,24 @@ function validateConfig(config: AppConfig): void {
   if (config.qdrantEnabled && (!config.qdrantUrl || config.qdrantUrl.trim() === "")) {
     throw new Error("QDRANT_URL is required when QDRANT_ENABLED=true");
   }
+  validateSecret("OPERATOR_BEARER_TOKEN", config.operatorBearerToken, false);
+  validateSecret("MCP_BEARER_TOKEN", config.mcpBearerToken, false);
+  validateSecret("EXTERNAL_CHANNEL_SECRET", config.externalChannelSecret, false);
   if (config.rejectDefaultSecrets) {
-    if (config.operatorBearerToken === DEFAULT_OPERATOR_BEARER_TOKEN) {
-      throw new Error("OPERATOR_BEARER_TOKEN must be set to a non-default secret");
-    }
-    if (config.mcpBearerToken === DEFAULT_MCP_BEARER_TOKEN) {
-      throw new Error("MCP_BEARER_TOKEN must be set to a non-default secret");
-    }
-    if (config.externalChannelSecret === DEFAULT_EXTERNAL_CHANNEL_SECRET) {
-      throw new Error("EXTERNAL_CHANNEL_SECRET must be set to a non-default secret");
-    }
+    validateSecret("OPERATOR_BEARER_TOKEN", config.operatorBearerToken, true, DEFAULT_OPERATOR_BEARER_TOKEN);
+    validateSecret("MCP_BEARER_TOKEN", config.mcpBearerToken, true, DEFAULT_MCP_BEARER_TOKEN);
+    validateSecret("EXTERNAL_CHANNEL_SECRET", config.externalChannelSecret, true, DEFAULT_EXTERNAL_CHANNEL_SECRET);
   }
   if (config.appEnv === "production" && !config.openAiApiKey) {
     throw new Error("OPENAI_API_KEY is required in production");
+  }
+}
+
+function validateSecret(field: string, value: string, rejectPlaceholder: boolean, defaultValue?: string): void {
+  if (!value.trim()) {
+    throw new Error(`${field} must not be empty`);
+  }
+  if (rejectPlaceholder && (value === defaultValue || value === "replace-me")) {
+    throw new Error(`${field} must be set to a non-default secret`);
   }
 }

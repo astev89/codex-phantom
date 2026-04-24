@@ -192,14 +192,25 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
   const port = address.port;
 
   try {
+    const protectedGetPaths = [
+      "/",
+      "/admin/summary",
+      "/admin/export?scope=requests",
+      "/tools/dynamic",
+      "/sessions",
+      "/runs",
+      "/memory",
+      "/scheduler/jobs"
+    ];
+    for (const path of protectedGetPaths) {
+      const response = await fetch(`http://127.0.0.1:${port}${path}`);
+      assert.equal(response.status, 401, `${path} should require operator auth`);
+      assert.equal(response.headers.get("www-authenticate"), "Basic realm=\"codex-phantom operator\"");
+    }
     const unauthenticatedAdminResponse = await fetch(`http://127.0.0.1:${port}/admin/summary`);
-    assert.equal(unauthenticatedAdminResponse.status, 401);
     const unauthenticatedAdminJson = await unauthenticatedAdminResponse.json() as { error: string; status: number };
     assert.equal(unauthenticatedAdminJson.error, "Unauthorized");
     assert.equal(unauthenticatedAdminJson.status, 401);
-
-    const unauthenticatedDynamicToolsResponse = await fetch(`http://127.0.0.1:${port}/tools/dynamic`);
-    assert.equal(unauthenticatedDynamicToolsResponse.status, 401);
 
     const unauthenticatedChatResponse = await fetch(`http://127.0.0.1:${port}/chat/message`, {
       method: "POST",
@@ -210,6 +221,17 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
       })
     });
     assert.equal(unauthenticatedChatResponse.status, 401);
+
+    const unauthenticatedScheduleResponse = await fetch(`http://127.0.0.1:${port}/scheduler/jobs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "blocked-job",
+        message: "blocked",
+        delayMs: 10
+      })
+    });
+    assert.equal(unauthenticatedScheduleResponse.status, 401);
 
     const consoleResponse = await fetch(`http://127.0.0.1:${port}/`, {
       headers: {

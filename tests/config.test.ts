@@ -17,3 +17,26 @@ test("production config rejects default secrets", () => {
     process.env = original;
   }
 });
+
+test("production config rejects blank and placeholder secrets", () => {
+  const original = { ...process.env };
+  process.env.APP_ENV = "production";
+  process.env.OPENAI_API_KEY = "openai-secret";
+  process.env.OPERATOR_BEARER_TOKEN = "replace-me";
+  process.env.MCP_BEARER_TOKEN = "mcp-secret";
+  process.env.EXTERNAL_CHANNEL_SECRET = "webhook-secret";
+
+  try {
+    assert.throws(() => loadConfig(), /OPERATOR_BEARER_TOKEN/);
+
+    process.env.OPERATOR_BEARER_TOKEN = "operator-secret";
+    process.env.MCP_BEARER_TOKEN = " ";
+    assert.throws(() => loadConfig(), /MCP_BEARER_TOKEN/);
+
+    process.env.MCP_BEARER_TOKEN = "mcp-secret";
+    process.env.EXTERNAL_CHANNEL_SECRET = "replace-me";
+    assert.throws(() => loadConfig(), /EXTERNAL_CHANNEL_SECRET/);
+  } finally {
+    process.env = original;
+  }
+});
