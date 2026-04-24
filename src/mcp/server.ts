@@ -1,4 +1,6 @@
+import { createHash, timingSafeEqual } from "node:crypto";
 import type { JsonValue, PermissionPolicy } from "../shared/types.ts";
+import type { MetricsStore } from "../platform/metrics.ts";
 import { ToolRegistry } from "../tools/registry.ts";
 
 type McpRequestBody = {
@@ -11,25 +13,32 @@ type McpRequestBody = {
 };
 
 export class McpServer {
-  private readonly token: string;
+  private readonly tokenHash: Buffer;
   private readonly tools: ToolRegistry;
+  private readonly metrics?: MetricsStore;
 
-  constructor(token: string, tools: ToolRegistry) {
-    this.token = token;
+  constructor(token: string, tools: ToolRegistry, metrics?: MetricsStore) {
+    this.tokenHash = hashToken(token);
     this.tools = tools;
+    this.metrics = metrics;
   }
 
   async handle(request: Request): Promise<Response> {
     const auth = request.headers.get("authorization");
-    if (auth !== `Bearer ${this.token}`) {
+    if (!auth?.startsWith("Bearer ") || !this.matchesToken(auth.slice("Bearer ".length))) {
+      this.metrics?.increment("mcp.auth.failure");
       return Response.json({ error: "Unauthorized" }, { status: 401 });
     }
+    this.metrics?.increment("mcp.auth.success");
 
     const body = (await request.json()) as McpRequestBody;
     if (body.method === "tools/list") {
+      this.metrics?.increment("mcp.method.tools_list");
       return Response.json({ tools: this.tools.list() });
     }
     if (body.method === "tools/call" && body.params?.name) {
+      this.metrics?.increment("mcp.method.tools_call");
+      this.metrics?.increment(`mcp.tool_call.${body.params.name}`);
       try {
         const output = await this.tools.call(body.params.name, body.params.input ?? null, body.params.policy);
         return Response.json({ output });
@@ -40,6 +49,16 @@ export class McpServer {
         );
       }
     }
+    this.metrics?.increment("mcp.method.unsupported");
     return Response.json({ error: "Unsupported MCP method" }, { status: 400 });
   }
+
+  private matchesToken(candidate: string): boolean {
+    const candidateHash = hashToken(candidate);
+    return candidateHash.length === this.tokenHash.length && timingSafeEqual(candidateHash, this.tokenHash);
+  }
+}
+
+function hashToken(token: string): Buffer {
+  return createHash("sha256").update(token).digest();
 }

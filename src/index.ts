@@ -56,7 +56,7 @@ const adapter = new CodexAdapter(config);
 const runtime = new AgentRuntime(config, adapter, sessions, memory, tools);
 const orchestration = new OrchestrationService(runtime, tools, runs);
 const scheduler = new SchedulerService(database, orchestration);
-const mcp = new McpServer(config.mcpBearerToken, tools);
+const mcp = new McpServer(config.mcpBearerToken, tools, metrics);
 const server = new HttpServer(
   config,
   orchestration,

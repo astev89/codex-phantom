@@ -164,7 +164,8 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
   const orchestration = new OrchestrationService(runtime, tools, runs);
   const scheduler = new SchedulerService(database, orchestration);
   await scheduler.start();
-  const mcp = new McpServer(config.mcpBearerToken, tools);
+    const metrics = new MetricsStore();
+    const mcp = new McpServer(config.mcpBearerToken, tools, metrics);
   const dynamicTools = new DynamicToolRegistry(database, tools);
   const governance = new ToolGovernanceService(database);
   const slackTransport = new FakeSlackTransport();
@@ -177,7 +178,7 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
     mcp,
     database,
     new Logger("error"),
-    new MetricsStore(),
+    metrics,
     memory,
     dynamicTools,
     channels,
@@ -348,6 +349,16 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
     });
     const mcpJson = await mcpResponse.json() as { tools: Array<{ id: string }> };
     assert.ok(mcpJson.tools.some((tool) => tool.id === "echo.summary"));
+
+    const unauthorizedMcpResponse = await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer wrong-token"
+      },
+      body: JSON.stringify({ method: "tools/list" })
+    });
+    assert.equal(unauthorizedMcpResponse.status, 401);
 
     const dynamicToolResponse = await fetch(`http://127.0.0.1:${port}/tools/dynamic`, {
       method: "POST",
@@ -623,6 +634,14 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
     assert.equal(diagnosticsJson.diagnostics.modelAdapter, "fallback");
     assert.ok(diagnosticsJson.diagnostics.missingRecommendedEnv.includes("OPENAI_API_KEY"));
     assert.ok(diagnosticsJson.diagnostics.channelReadiness.some((channel) => channel.id === "slack" && channel.enabled === true && channel.secretPresent === true));
+
+    const metricsResponse = await fetch(`http://127.0.0.1:${port}/metrics?format=prometheus`, {
+      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
+    });
+    assert.equal(metricsResponse.headers.get("content-type"), "text/plain; version=0.0.4");
+    const metricsText = await metricsResponse.text();
+    assert.match(metricsText, /codex_phantom_mcp_auth_failure 1/);
+    assert.match(metricsText, /codex_phantom_http_request_duration_ms_count/);
   } finally {
     await scheduler.stop();
     await server.close();

@@ -33,4 +33,22 @@ export class MetricsStore {
       )
     };
   }
+
+  toPrometheus(): string {
+    const lines: string[] = [];
+    for (const [name, value] of this.counters.entries()) {
+      lines.push(`${prometheusName(name)} ${value}`);
+    }
+    for (const [name, value] of this.timings.entries()) {
+      const baseName = prometheusName(name);
+      lines.push(`${baseName}_count ${value.count}`);
+      lines.push(`${baseName}_sum ${value.totalMs}`);
+      lines.push(`${baseName}_avg ${value.count === 0 ? 0 : value.totalMs / value.count}`);
+    }
+    return `${lines.join("\n")}\n`;
+  }
+}
+
+function prometheusName(name: string): string {
+  return `codex_phantom_${name.replace(/[^a-zA-Z0-9_]/g, "_")}`;
 }

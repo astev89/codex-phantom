@@ -167,10 +167,13 @@ docker compose up -d
 - scheduler boot on startup plus graceful shutdown
 - OpenAI/Fallback adapter support with real tool execution loops
 - health and metrics endpoints
+- Prometheus-format metrics at `/metrics?format=prometheus`
 - operator console at `/`
 - channel registry and tool governance APIs
 - `pino` structured logging
 - Dockerfile and Compose scaffolding for local self-hosting
+
+See `docs/phantom-parity.md` for the current match/defer list against the reference Phantom production surface.
 
 ## Verification
 

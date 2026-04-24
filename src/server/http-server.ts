@@ -169,6 +169,11 @@ export class HttpServer {
 
       if (req.method === "GET" && url.pathname === "/metrics") {
         this.requireOperatorAuth(req);
+        if (url.searchParams.get("format") === "prometheus") {
+          res.writeHead(200, { "Content-Type": "text/plain; version=0.0.4" });
+          res.end(this.metrics.toPrometheus());
+          return;
+        }
         this.json(res, 200, this.metrics.snapshot());
         return;
       }
