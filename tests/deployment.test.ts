@@ -18,6 +18,7 @@ test("docker compose defines restart and persistence settings for local producti
   assert.match(compose, /restart: unless-stopped/);
   assert.match(compose, /required: false/);
   assert.match(compose, /OPERATOR_BEARER_TOKEN: \$\{OPERATOR_BEARER_TOKEN:\?Set OPERATOR_BEARER_TOKEN\}/);
+  assert.match(compose, /OPENAI_API_KEY: \$\{OPENAI_API_KEY:\?Set OPENAI_API_KEY\}/);
   assert.match(compose, /QDRANT_ENABLED: "true"/);
   assert.match(compose, /QDRANT_URL: http:\/\/qdrant:6333/);
   assert.match(compose, /codex-phantom-data:\/app\/data/);
