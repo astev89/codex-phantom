@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import type { AppConfig } from "../config.ts";
 import { modelAdapterMode } from "../config.ts";
 import type { JsonValue } from "../shared/types.ts";
@@ -58,6 +58,9 @@ export class HttpServer {
   private readonly slack: SlackChannel;
   private readonly settings: OperatorSettingsStore;
   private readonly requestAudits: RequestAuditStore;
+  private readonly operatorTokenHash: Buffer;
+  private readonly mcpTokenHash: Buffer;
+  private readonly mcpRateLimiter = new SimpleRateLimiter(12, 60_000);
 
   constructor(
     config: AppConfig,
@@ -92,6 +95,8 @@ export class HttpServer {
     this.slack = new SlackChannel(config, channels, this.channelDeliveries, slackTransport);
     this.settings = new OperatorSettingsStore(database);
     this.requestAudits = new RequestAuditStore(database);
+    this.operatorTokenHash = hashToken(config.operatorBearerToken);
+    this.mcpTokenHash = hashToken(config.mcpBearerToken);
     this.server = createServer((req, res) => {
       void this.handle(req, res);
     });
@@ -438,6 +443,15 @@ export class HttpServer {
       }
 
       if (req.method === "POST" && url.pathname === "/mcp") {
+        const rateLimitKey = req.socket.remoteAddress ?? "unknown";
+        const mcpAuthorization = req.headers.authorization;
+        const hasMcpAuth = mcpAuthorization?.startsWith("Bearer ") === true &&
+          this.matchesMcpToken(mcpAuthorization.slice("Bearer ".length));
+        if (!hasMcpAuth && !this.mcpRateLimiter.allow(rateLimitKey)) {
+          this.metrics.increment("mcp.rate_limited");
+          this.json(res, 429, { error: "Too many MCP requests", requestId, status: 429 });
+          return;
+        }
         const bodyText = await readTextBody(req);
         validateMcpBody(parseJsonBody(bodyText));
         const response = await this.mcp.handle(toRequest(req, bodyText));
@@ -562,17 +576,28 @@ export class HttpServer {
 
   private hasOperatorAuth(req: IncomingMessage): boolean {
     const authorization = req.headers.authorization;
-    if (authorization === `Bearer ${this.config.operatorBearerToken}`) {
+    if (authorization?.startsWith("Bearer ") && this.matchesOperatorToken(authorization.slice("Bearer ".length))) {
       return true;
     }
     if (authorization?.startsWith("Basic ")) {
       const credentials = Buffer.from(authorization.slice("Basic ".length), "base64").toString("utf8");
       const [, password] = credentials.split(":", 2);
-      if (password === this.config.operatorBearerToken) {
+      if (this.matchesOperatorToken(password ?? "")) {
         return true;
       }
     }
-    return req.headers["x-operator-token"] === this.config.operatorBearerToken;
+    const operatorHeader = req.headers["x-operator-token"];
+    return typeof operatorHeader === "string" && this.matchesOperatorToken(operatorHeader);
+  }
+
+  private matchesOperatorToken(candidate: string): boolean {
+    const candidateHash = hashToken(candidate);
+    return candidateHash.length === this.operatorTokenHash.length && timingSafeEqual(candidateHash, this.operatorTokenHash);
+  }
+
+  private matchesMcpToken(candidate: string): boolean {
+    const candidateHash = hashToken(candidate);
+    return candidateHash.length === this.mcpTokenHash.length && timingSafeEqual(candidateHash, this.mcpTokenHash);
   }
 }
 
@@ -580,6 +605,34 @@ class OperatorAuthError extends HttpError {
   constructor() {
     super(401, "Unauthorized");
   }
+}
+
+class SimpleRateLimiter {
+  private readonly hits = new Map<string, number[]>();
+  private readonly limit: number;
+  private readonly windowMs: number;
+
+  constructor(limit: number, windowMs: number) {
+    this.limit = limit;
+    this.windowMs = windowMs;
+  }
+
+  allow(key: string): boolean {
+    const now = Date.now();
+    const windowStart = now - this.windowMs;
+    const recentHits = (this.hits.get(key) ?? []).filter((hit) => hit > windowStart);
+    if (recentHits.length >= this.limit) {
+      this.hits.set(key, recentHits);
+      return false;
+    }
+    recentHits.push(now);
+    this.hits.set(key, recentHits);
+    return true;
+  }
+}
+
+function hashToken(token: string): Buffer {
+  return createHash("sha256").update(token).digest();
 }
 
 async function readTextBody(req: IncomingMessage): Promise<string> {

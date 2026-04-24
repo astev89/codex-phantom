@@ -13,8 +13,20 @@ test("McpServer authenticates without retaining the raw bearer token and records
     kind: "in_process",
     handler: async (input) => ({ input })
   });
+  tools.register({
+    id: "write.note",
+    description: "write note",
+    scopes: ["write"],
+    kind: "in_process",
+    handler: async (input) => ({ saved: input })
+  });
   const metrics = new MetricsStore();
-  const mcp = new McpServer("mcp-secret", tools, metrics);
+  const mcp = new McpServer("mcp-secret", tools, metrics, {
+    mode: "read_only",
+    fileGlobs: [],
+    allowedToolIds: ["echo"],
+    allowedMcpServers: []
+  });
 
   assert.equal(JSON.stringify(mcp).includes("mcp-secret"), false);
 
@@ -54,12 +66,36 @@ test("McpServer authenticates without retaining the raw bearer token and records
   }));
   assert.equal(call.status, 200);
 
+  const blockedWrite = await mcp.handle(new Request("http://localhost/mcp", {
+    method: "POST",
+    headers: {
+      Authorization: "Bearer mcp-secret",
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      method: "tools/call",
+      params: {
+        name: "write.note",
+        input: { secret: true },
+        policy: {
+          mode: "full_access",
+          fileGlobs: ["**/*"],
+          allowedToolIds: ["write.note"],
+          allowedMcpServers: []
+        }
+      }
+    })
+  }));
+  assert.equal(blockedWrite.status, 400);
+
   const snapshot = metrics.snapshot();
   assert.equal(snapshot.counters["mcp.auth.failure"], 1);
-  assert.equal(snapshot.counters["mcp.auth.success"], 2);
+  assert.equal(snapshot.counters["mcp.auth.success"], 3);
   assert.equal(snapshot.counters["mcp.method.tools_list"], 1);
-  assert.equal(snapshot.counters["mcp.method.tools_call"], 1);
+  assert.equal(snapshot.counters["mcp.method.tools_call"], 2);
   assert.equal(snapshot.counters["mcp.tool_call.echo"], 1);
+  assert.equal(snapshot.counters["mcp.tool_call.write.note"], undefined);
+  assert.equal(snapshot.counters["mcp.tool_call.denied"], 1);
 });
 
 test("MetricsStore renders a Prometheus text snapshot", () => {

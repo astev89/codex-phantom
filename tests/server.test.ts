@@ -360,6 +360,26 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
     });
     assert.equal(unauthorizedMcpResponse.status, 401);
 
+    for (let index = 0; index < 11; index += 1) {
+      await fetch(`http://127.0.0.1:${port}/mcp`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer wrong-token"
+        },
+        body: JSON.stringify({ method: "tools/list" })
+      });
+    }
+    const rateLimitedMcpResponse = await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer wrong-token"
+      },
+      body: JSON.stringify({ method: "tools/list" })
+    });
+    assert.equal(rateLimitedMcpResponse.status, 429);
+
     const dynamicToolResponse = await fetch(`http://127.0.0.1:${port}/tools/dynamic`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.operatorBearerToken}` },
@@ -640,7 +660,8 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
     });
     assert.equal(metricsResponse.headers.get("content-type"), "text/plain; version=0.0.4");
     const metricsText = await metricsResponse.text();
-    assert.match(metricsText, /codex_phantom_mcp_auth_failure 1/);
+    assert.match(metricsText, /codex_phantom_mcp_auth_failure 12/);
+    assert.match(metricsText, /codex_phantom_mcp_rate_limited 1/);
     assert.match(metricsText, /codex_phantom_http_request_duration_ms_count/);
   } finally {
     await scheduler.stop();

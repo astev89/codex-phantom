@@ -8,7 +8,7 @@ This snapshot tracks production-readiness parity against the reference Phantom r
 - Operator-authenticated admin/API surfaces with public lean `/health` and authenticated diagnostics.
 - Docker and Compose boot path with non-root container execution, healthcheck, Qdrant, restart policy, and named persistent volumes.
 - Repeatable deployment smoke for health, auth rejection/acceptance, SQLite-backed settings persistence, and restart persistence.
-- MCP bearer authentication without retaining the raw token, plus audit counters for auth and method/tool usage.
+- MCP bearer authentication without retaining the raw token, plus process-local metrics counters for auth and method/tool usage.
 - JSON metrics snapshot and Prometheus text output at `/metrics?format=prometheus`.
 
 ## Deferred or consciously divergent
@@ -17,4 +17,5 @@ This snapshot tracks production-readiness parity against the reference Phantom r
 - Dynamic shell/script MCP tools remain intentionally constrained to template-style dynamic tools.
 - Docker socket mounting is not part of the default deployment path.
 - Metrics are process-local and reset on restart; external scraping is supported, but durable metric storage is deferred.
+- Durable MCP audit logs are deferred; current MCP visibility is metrics-only.
 - Multi-channel inbound chat parity remains partial; Slack is currently outbound-focused.
