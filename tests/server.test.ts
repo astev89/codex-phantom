@@ -195,6 +195,7 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
     const protectedGetPaths = [
       "/",
       "/admin/summary",
+      "/admin/not-real",
       "/admin/export?scope=requests",
       "/tools/dynamic",
       "/sessions",
@@ -240,6 +241,11 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
     });
     assert.equal(consoleResponse.status, 200);
     assert.match(await consoleResponse.text(), /Operator Console/);
+
+    const authenticatedUnknownAdminResponse = await fetch(`http://127.0.0.1:${port}/admin/not-real`, {
+      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
+    });
+    assert.equal(authenticatedUnknownAdminResponse.status, 404);
 
     const healthResponse = await fetch(`http://127.0.0.1:${port}/health`);
     const healthJson = await healthResponse.json() as {

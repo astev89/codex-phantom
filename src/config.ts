@@ -159,10 +159,11 @@ function validateConfig(config: AppConfig): void {
 }
 
 function validateSecret(field: string, value: string, rejectPlaceholder: boolean, defaultValue?: string): void {
-  if (!value.trim()) {
+  const normalized = value.trim();
+  if (!normalized) {
     throw new Error(`${field} must not be empty`);
   }
-  if (rejectPlaceholder && (value === defaultValue || value === "replace-me")) {
+  if (rejectPlaceholder && (normalized === defaultValue || normalized === "replace-me")) {
     throw new Error(`${field} must be set to a non-default secret`);
   }
 }

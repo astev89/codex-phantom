@@ -163,6 +163,10 @@ export class HttpServer {
         return;
       }
 
+      if (url.pathname === "/admin" || url.pathname.startsWith("/admin/")) {
+        this.requireOperatorAuth(req);
+      }
+
       if (req.method === "GET" && url.pathname === "/metrics") {
         this.requireOperatorAuth(req);
         this.json(res, 200, this.metrics.snapshot());
