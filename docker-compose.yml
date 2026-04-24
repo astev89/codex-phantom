@@ -6,9 +6,18 @@ services:
     ports:
       - "3210:3210"
     env_file:
-      - .env
+      - path: .env
+        required: false
+    environment:
+      OPERATOR_BEARER_TOKEN: ${OPERATOR_BEARER_TOKEN:?Set OPERATOR_BEARER_TOKEN}
+      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:?Set MCP_BEARER_TOKEN}
+      EXTERNAL_CHANNEL_SECRET: ${EXTERNAL_CHANNEL_SECRET:?Set EXTERNAL_CHANNEL_SECRET}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      QDRANT_ENABLED: "true"
+      QDRANT_URL: http://qdrant:6333
     volumes:
-      - ./data:/app/data
+      - codex-phantom-data:/app/data
+    restart: unless-stopped
     depends_on:
       qdrant:
         condition: service_started
@@ -19,6 +28,10 @@ services:
       - "6333:6333"
     volumes:
       - qdrant-data:/qdrant/storage
+    restart: unless-stopped
 
 volumes:
+  codex-phantom-data:
+    name: codex-phantom-data
   qdrant-data:
+    name: codex-phantom-qdrant-data

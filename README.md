@@ -122,6 +122,42 @@ The compose stack includes:
 - `codex-phantom`
 - `qdrant`
 
+### Deployment smoke
+
+Use the smoke script after changing deployment settings or before updating a self-hosted instance:
+
+```bash
+set -a
+source .env
+set +a
+scripts/deployment-smoke.sh
+```
+
+The smoke builds and boots the Compose stack, checks public health, verifies `/admin/summary` rejects unauthenticated requests, verifies operator-token access, updates persisted operator settings, restarts `codex-phantom`, and confirms the setting survived restart.
+
+Compose stores app state in the named `codex-phantom-data` volume and Qdrant state in `codex-phantom-qdrant-data`.
+
+### Backup and restore
+
+Back up the SQLite app-state volume before upgrades:
+
+```bash
+mkdir -p backups
+docker run --rm -v codex-phantom-data:/data -v "$PWD/backups:/backup" busybox \
+  tar czf /backup/codex-phantom-data.tgz -C /data .
+```
+
+Restore into an empty app-state volume:
+
+```bash
+docker compose down
+docker volume rm codex-phantom-data
+docker volume create codex-phantom-data
+docker run --rm -v codex-phantom-data:/data -v "$PWD/backups:/backup" busybox \
+  tar xzf /backup/codex-phantom-data.tgz -C /data
+docker compose up -d
+```
+
 ## What is implemented
 
 - SQLite persistence for sessions, runs, run events, memory, and jobs
