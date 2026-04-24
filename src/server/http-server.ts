@@ -497,7 +497,7 @@ export class HttpServer {
         status,
         error: message
       });
-      if (status === 401) {
+      if (error instanceof OperatorAuthError) {
         res.setHeader("WWW-Authenticate", "Basic realm=\"codex-phantom operator\"");
       }
       this.json(res, status, {
@@ -551,7 +551,7 @@ export class HttpServer {
 
   private requireOperatorAuth(req: IncomingMessage): void {
     if (!this.hasOperatorAuth(req)) {
-      throw new HttpError(401, "Unauthorized");
+      throw new OperatorAuthError();
     }
   }
 
@@ -568,6 +568,12 @@ export class HttpServer {
       }
     }
     return req.headers["x-operator-token"] === this.config.operatorBearerToken;
+  }
+}
+
+class OperatorAuthError extends HttpError {
+  constructor() {
+    super(401, "Unauthorized");
   }
 }
 

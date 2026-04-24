@@ -148,7 +148,7 @@ function validateConfig(config: AppConfig): void {
   validateSecret("OPERATOR_BEARER_TOKEN", config.operatorBearerToken, false);
   validateSecret("MCP_BEARER_TOKEN", config.mcpBearerToken, false);
   validateSecret("EXTERNAL_CHANNEL_SECRET", config.externalChannelSecret, false);
-  if (config.rejectDefaultSecrets) {
+  if (config.rejectDefaultSecrets || config.appEnv === "production") {
     validateSecret("OPERATOR_BEARER_TOKEN", config.operatorBearerToken, true, DEFAULT_OPERATOR_BEARER_TOKEN);
     validateSecret("MCP_BEARER_TOKEN", config.mcpBearerToken, true, DEFAULT_MCP_BEARER_TOKEN);
     validateSecret("EXTERNAL_CHANNEL_SECRET", config.externalChannelSecret, true, DEFAULT_EXTERNAL_CHANNEL_SECRET);

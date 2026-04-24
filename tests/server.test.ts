@@ -234,6 +234,20 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
     });
     assert.equal(unauthenticatedScheduleResponse.status, 401);
 
+    const badWebhookResponse = await fetch(`http://127.0.0.1:${port}/channels/webhook`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-channel-secret": "wrong-secret"
+      },
+      body: JSON.stringify({
+        conversationId: "bad-hook",
+        message: "blocked"
+      })
+    });
+    assert.equal(badWebhookResponse.status, 401);
+    assert.equal(badWebhookResponse.headers.get("www-authenticate"), null);
+
     const consoleResponse = await fetch(`http://127.0.0.1:${port}/`, {
       headers: {
         Authorization: `Basic ${Buffer.from(`operator:${config.operatorBearerToken}`).toString("base64")}`

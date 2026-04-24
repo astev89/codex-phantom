@@ -44,6 +44,11 @@ test("production config rejects blank and placeholder secrets", () => {
     process.env.OPERATOR_BEARER_TOKEN = "operator-secret";
     process.env.EXTERNAL_CHANNEL_SECRET = " replace-me ";
     assert.throws(() => loadConfig(), /EXTERNAL_CHANNEL_SECRET/);
+
+    process.env.REJECT_DEFAULT_SECRETS = "false";
+    process.env.OPERATOR_BEARER_TOKEN = "dev-operator-token";
+    process.env.EXTERNAL_CHANNEL_SECRET = "webhook-secret";
+    assert.throws(() => loadConfig(), /OPERATOR_BEARER_TOKEN/);
   } finally {
     process.env = original;
   }
