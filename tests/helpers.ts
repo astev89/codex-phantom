@@ -14,6 +14,7 @@ export function makeConfig(
     datastorePath: `${dataDir}/test.sqlite`,
     model: "gpt-5",
     agentName: "Test Codex Phantom",
+    operatorBearerToken: "operator-secret",
     mcpBearerToken: "mcp-secret",
     externalChannelSecret: "webhook-secret",
     openAiApiKey: undefined,

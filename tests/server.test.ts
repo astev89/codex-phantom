@@ -192,24 +192,68 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
   const port = address.port;
 
   try {
+    const unauthenticatedAdminResponse = await fetch(`http://127.0.0.1:${port}/admin/summary`);
+    assert.equal(unauthenticatedAdminResponse.status, 401);
+    const unauthenticatedAdminJson = await unauthenticatedAdminResponse.json() as { error: string; status: number };
+    assert.equal(unauthenticatedAdminJson.error, "Unauthorized");
+    assert.equal(unauthenticatedAdminJson.status, 401);
+
+    const unauthenticatedDynamicToolsResponse = await fetch(`http://127.0.0.1:${port}/tools/dynamic`);
+    assert.equal(unauthenticatedDynamicToolsResponse.status, 401);
+
+    const unauthenticatedChatResponse = await fetch(`http://127.0.0.1:${port}/chat/message`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        conversationId: "web-unauth",
+        message: "blocked"
+      })
+    });
+    assert.equal(unauthenticatedChatResponse.status, 401);
+
+    const consoleResponse = await fetch(`http://127.0.0.1:${port}/`, {
+      headers: {
+        Authorization: `Basic ${Buffer.from(`operator:${config.operatorBearerToken}`).toString("base64")}`
+      }
+    });
+    assert.equal(consoleResponse.status, 200);
+    assert.match(await consoleResponse.text(), /Operator Console/);
+
     const healthResponse = await fetch(`http://127.0.0.1:${port}/health`);
     const healthJson = await healthResponse.json() as {
+      ok: boolean;
+      readiness: { scheduler: boolean; semanticRetrieval: boolean };
+      memory?: { pendingBackfillCount: number; vectorBackend: string; qdrantConfigured: boolean };
+      logging?: { provider: string };
+    };
+    assert.equal(healthResponse.status, 200);
+    assert.equal(healthJson.ok, true);
+    assert.equal(healthJson.readiness.scheduler, true);
+    assert.equal(healthJson.readiness.semanticRetrieval, false);
+    assert.equal(healthJson.memory, undefined);
+    assert.equal(healthJson.logging, undefined);
+
+    const detailedHealthResponse = await fetch(`http://127.0.0.1:${port}/health`, {
+      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
+    });
+    const detailedHealthJson = await detailedHealthResponse.json() as {
       ok: boolean;
       readiness: { scheduler: boolean; semanticRetrieval: boolean };
       memory: { pendingBackfillCount: number; vectorBackend: string; qdrantConfigured: boolean };
       logging: { provider: string };
     };
-    assert.equal(healthJson.ok, true);
-    assert.equal(healthJson.readiness.scheduler, true);
-    assert.equal(healthJson.readiness.semanticRetrieval, false);
-    assert.equal(healthJson.memory.pendingBackfillCount, 0);
-    assert.equal(healthJson.memory.vectorBackend, "sqlite_fallback");
-    assert.equal(healthJson.memory.qdrantConfigured, false);
-    assert.equal(healthJson.logging.provider, "pino");
+    assert.equal(detailedHealthResponse.status, 200);
+    assert.equal(detailedHealthJson.ok, true);
+    assert.equal(detailedHealthJson.readiness.scheduler, true);
+    assert.equal(detailedHealthJson.readiness.semanticRetrieval, false);
+    assert.equal(detailedHealthJson.memory.pendingBackfillCount, 0);
+    assert.equal(detailedHealthJson.memory.vectorBackend, "sqlite_fallback");
+    assert.equal(detailedHealthJson.memory.qdrantConfigured, false);
+    assert.equal(detailedHealthJson.logging.provider, "pino");
 
     const streamResponse = await fetch(`http://127.0.0.1:${port}/chat/message`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.operatorBearerToken}` },
       body: JSON.stringify({
         conversationId: "web-1",
         message: "hello from web"
@@ -237,7 +281,7 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
 
     await fetch(`http://127.0.0.1:${port}/scheduler/jobs`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.operatorBearerToken}` },
       body: JSON.stringify({
         name: "quick-job",
         message: "scheduled task",
@@ -246,7 +290,9 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 50));
 
-    const jobsResponse = await fetch(`http://127.0.0.1:${port}/scheduler/jobs`);
+    const jobsResponse = await fetch(`http://127.0.0.1:${port}/scheduler/jobs`, {
+      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
+    });
     const jobsJson = await jobsResponse.json() as { jobs: Array<{ status: string }> };
     assert.ok(jobsJson.jobs.some((job) => job.status === "completed"));
 
@@ -263,7 +309,7 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
 
     const dynamicToolResponse = await fetch(`http://127.0.0.1:${port}/tools/dynamic`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.operatorBearerToken}` },
       body: JSON.stringify({
         id: "project.brief",
         description: "Return a short project brief",
@@ -281,7 +327,9 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
     assert.equal(dynamicToolJson.tool.id, "project.brief");
     assert.equal(dynamicToolJson.tool.approvalState, "pending");
 
-    const dynamicToolsResponse = await fetch(`http://127.0.0.1:${port}/tools/dynamic`);
+    const dynamicToolsResponse = await fetch(`http://127.0.0.1:${port}/tools/dynamic`, {
+      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
+    });
     const dynamicToolsJson = await dynamicToolsResponse.json() as { tools: Array<{ id: string; approvalState: string }> };
     assert.ok(dynamicToolsJson.tools.some((tool) => tool.id === "project.brief"));
     assert.ok(dynamicToolsJson.tools.some((tool) => tool.id === "project.brief" && tool.approvalState === "pending"));
@@ -299,7 +347,7 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
 
     const approvalResponse = await fetch(`http://127.0.0.1:${port}/admin/tools/approve`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.operatorBearerToken}` },
       body: JSON.stringify({
         toolId: "project.brief",
         approvedBy: "operator",
@@ -338,11 +386,15 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
     const dynamicCallJson = await dynamicCallResponse.json() as { output: { content: string } };
     assert.equal(dynamicCallJson.output.content, "Brief for deployment");
 
-    const memoryResponse = await fetch(`http://127.0.0.1:${port}/memory`);
+    const memoryResponse = await fetch(`http://127.0.0.1:${port}/memory`, {
+      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
+    });
     const memoryJson = await memoryResponse.json() as { entries: Array<{ id: string; category: string }> };
     assert.ok(memoryJson.entries.length > 0);
 
-    const channelsResponse = await fetch(`http://127.0.0.1:${port}/admin/channels`);
+    const channelsResponse = await fetch(`http://127.0.0.1:${port}/admin/channels`, {
+      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
+    });
     const channelsJson = await channelsResponse.json() as {
       channels: Array<{ id: string; enabled: boolean; secretPresent: boolean }>;
     };
@@ -352,7 +404,7 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
 
     const channelUpdateResponse = await fetch(`http://127.0.0.1:${port}/admin/channels`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.operatorBearerToken}` },
       body: JSON.stringify({
         id: "slack",
         enabled: true
@@ -366,7 +418,7 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
 
     const slackMessageResponse = await fetch(`http://127.0.0.1:${port}/channels/slack/message`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.operatorBearerToken}` },
       body: JSON.stringify({
         channel: "C123456",
         text: "hello from codex-phantom"
@@ -382,7 +434,9 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
     assert.equal(slackMessageJson.result.ts, "1713900000.000100");
     assert.deepEqual(slackTransport.sent, [{ channel: "C123456", text: "hello from codex-phantom" }]);
 
-    const deliveriesResponse = await fetch(`http://127.0.0.1:${port}/admin/channels/deliveries?channelId=slack`);
+    const deliveriesResponse = await fetch(`http://127.0.0.1:${port}/admin/channels/deliveries?channelId=slack`, {
+      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
+    });
     const deliveriesJson = await deliveriesResponse.json() as {
       deliveries: Array<{ channelId: string; status: string; destination: string }>;
     };
@@ -392,7 +446,9 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
       delivery.destination === "C123456"
     ));
 
-    const adminSummaryResponse = await fetch(`http://127.0.0.1:${port}/admin/summary`);
+    const adminSummaryResponse = await fetch(`http://127.0.0.1:${port}/admin/summary`, {
+      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
+    });
     const adminSummaryJson = await adminSummaryResponse.json() as {
       logging: { provider: string };
       deployment: { qdrantEnabled: boolean };
@@ -409,7 +465,9 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
     assert.equal(adminSummaryJson.settings.dashboardRefreshSeconds, 5);
     assert.ok(adminSummaryJson.channels.some((channel) => channel.id === "slack" && channel.enabled === true));
 
-    const timelineResponse = await fetch(`http://127.0.0.1:${port}/admin/timeline`);
+    const timelineResponse = await fetch(`http://127.0.0.1:${port}/admin/timeline`, {
+      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
+    });
     const timelineJson = await timelineResponse.json() as {
       sessions: Array<{ sessionId: string }>;
       runs: Array<{ runId: string; eventCount: number }>;
@@ -423,7 +481,9 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
     assert.ok(timelineJson.memory.length > 0);
     assert.ok(timelineJson.governanceAudit.some((entry) => entry.toolId === "project.brief" && entry.action === "approved"));
 
-    const sessionDetailResponse = await fetch(`http://127.0.0.1:${port}/admin/sessions/${encodeURIComponent(webhookJson.sessionId)}`);
+    const sessionDetailResponse = await fetch(`http://127.0.0.1:${port}/admin/sessions/${encodeURIComponent(webhookJson.sessionId)}`, {
+      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
+    });
     const sessionDetailJson = await sessionDetailResponse.json() as { session: { sessionId: string; runIds: string[] } };
     assert.equal(sessionDetailJson.session.sessionId, webhookJson.sessionId);
     assert.ok(sessionDetailJson.session.runIds.length > 0);
@@ -431,7 +491,9 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
     const runWithEvents = timelineJson.runs.find((run) => run.eventCount > 0) ?? timelineJson.runs[0];
     const firstRunId = runWithEvents?.runId;
     assert.ok(firstRunId);
-    const runDetailResponse = await fetch(`http://127.0.0.1:${port}/admin/runs/${encodeURIComponent(firstRunId)}`);
+    const runDetailResponse = await fetch(`http://127.0.0.1:${port}/admin/runs/${encodeURIComponent(firstRunId)}`, {
+      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
+    });
     const runDetailJson = await runDetailResponse.json() as {
       run: { runId: string };
       events: Array<{ type: string }>;
@@ -442,17 +504,23 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
 
     const firstJobId = timelineJson.jobs[0]?.id;
     assert.ok(firstJobId);
-    const jobDetailResponse = await fetch(`http://127.0.0.1:${port}/admin/jobs/${encodeURIComponent(firstJobId)}`);
+    const jobDetailResponse = await fetch(`http://127.0.0.1:${port}/admin/jobs/${encodeURIComponent(firstJobId)}`, {
+      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
+    });
     const jobDetailJson = await jobDetailResponse.json() as { job: { id: string; status: string } };
     assert.equal(jobDetailJson.job.id, firstJobId);
 
     const firstMemoryId = timelineJson.memory[0]?.id;
     assert.ok(firstMemoryId);
-    const memoryDetailResponse = await fetch(`http://127.0.0.1:${port}/admin/memory/${encodeURIComponent(firstMemoryId)}`);
+    const memoryDetailResponse = await fetch(`http://127.0.0.1:${port}/admin/memory/${encodeURIComponent(firstMemoryId)}`, {
+      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
+    });
     const memoryDetailJson = await memoryDetailResponse.json() as { entry: { id: string; category: string } };
     assert.equal(memoryDetailJson.entry.id, firstMemoryId);
 
-    const settingsResponse = await fetch(`http://127.0.0.1:${port}/admin/settings`);
+    const settingsResponse = await fetch(`http://127.0.0.1:${port}/admin/settings`, {
+      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
+    });
     const settingsJson = await settingsResponse.json() as {
       settings: { dashboardRefreshSeconds: number; chatDefaultConversationId: string };
     };
@@ -461,7 +529,7 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
 
     const settingsUpdateResponse = await fetch(`http://127.0.0.1:${port}/admin/settings`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.operatorBearerToken}` },
       body: JSON.stringify({
         dashboardRefreshSeconds: 9,
         chatDefaultConversationId: "ops-room",
@@ -475,7 +543,9 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
     assert.equal(settingsUpdateJson.settings.chatDefaultConversationId, "ops-room");
     assert.equal(settingsUpdateJson.settings.memoryTimelineLimit, 25);
 
-    const requestExportResponse = await fetch(`http://127.0.0.1:${port}/admin/export?scope=requests&format=json`);
+    const requestExportResponse = await fetch(`http://127.0.0.1:${port}/admin/export?scope=requests&format=json`, {
+      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
+    });
     const requestExportJson = await requestExportResponse.json() as {
       scope: string;
       format: string;
@@ -484,13 +554,21 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
     assert.equal(requestExportJson.scope, "requests");
     assert.equal(requestExportJson.format, "json");
     assert.ok(requestExportJson.items.some((item) => item.path === "/health"));
+    assert.ok(requestExportJson.items.some((item) =>
+      item.path === "/admin/summary" &&
+      item.statusCode === 401
+    ));
 
-    const channelExportResponse = await fetch(`http://127.0.0.1:${port}/admin/export?scope=channels&format=ndjson`);
+    const channelExportResponse = await fetch(`http://127.0.0.1:${port}/admin/export?scope=channels&format=ndjson`, {
+      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
+    });
     const channelExportText = await channelExportResponse.text();
     assert.match(channelExportText, /"channelId":"slack"/);
     assert.match(channelExportText, /"status":"delivered"/);
 
-    const diagnosticsResponse = await fetch(`http://127.0.0.1:${port}/admin/diagnostics`);
+    const diagnosticsResponse = await fetch(`http://127.0.0.1:${port}/admin/diagnostics`, {
+      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
+    });
     const diagnosticsJson = await diagnosticsResponse.json() as {
       diagnostics: {
         appEnv: string;

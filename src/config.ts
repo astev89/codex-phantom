@@ -11,6 +11,7 @@ export type AppConfig = {
   datastorePath: string;
   model: string;
   agentName: string;
+  operatorBearerToken: string;
   mcpBearerToken: string;
   externalChannelSecret: string;
   openAiApiKey?: string;
@@ -39,6 +40,7 @@ export type AppConfig = {
 
 const DEFAULT_MCP_BEARER_TOKEN = "dev-mcp-token";
 const DEFAULT_EXTERNAL_CHANNEL_SECRET = "dev-external-secret";
+const DEFAULT_OPERATOR_BEARER_TOKEN = "dev-operator-token";
 
 export function loadConfig(): AppConfig {
   const cwd = process.cwd();
@@ -54,6 +56,7 @@ export function loadConfig(): AppConfig {
     datastorePath,
     model: process.env.OPENAI_MODEL ?? "gpt-5",
     agentName: process.env.AGENT_NAME ?? "Codex Phantom",
+    operatorBearerToken: process.env.OPERATOR_BEARER_TOKEN ?? DEFAULT_OPERATOR_BEARER_TOKEN,
     mcpBearerToken: process.env.MCP_BEARER_TOKEN ?? DEFAULT_MCP_BEARER_TOKEN,
     externalChannelSecret: process.env.EXTERNAL_CHANNEL_SECRET ?? DEFAULT_EXTERNAL_CHANNEL_SECRET,
     openAiApiKey: process.env.OPENAI_API_KEY,
@@ -90,8 +93,9 @@ export function modelAdapterMode(config: AppConfig): "openai" | "fallback" {
   return config.openAiApiKey ? "openai" : "fallback";
 }
 
-export function defaultSecrets(): { mcpBearerToken: string; externalChannelSecret: string } {
+export function defaultSecrets(): { operatorBearerToken: string; mcpBearerToken: string; externalChannelSecret: string } {
   return {
+    operatorBearerToken: DEFAULT_OPERATOR_BEARER_TOKEN,
     mcpBearerToken: DEFAULT_MCP_BEARER_TOKEN,
     externalChannelSecret: DEFAULT_EXTERNAL_CHANNEL_SECRET
   };
@@ -142,6 +146,9 @@ function validateConfig(config: AppConfig): void {
     throw new Error("QDRANT_URL is required when QDRANT_ENABLED=true");
   }
   if (config.rejectDefaultSecrets) {
+    if (config.operatorBearerToken === DEFAULT_OPERATOR_BEARER_TOKEN) {
+      throw new Error("OPERATOR_BEARER_TOKEN must be set to a non-default secret");
+    }
     if (config.mcpBearerToken === DEFAULT_MCP_BEARER_TOKEN) {
       throw new Error("MCP_BEARER_TOKEN must be set to a non-default secret");
     }

@@ -122,13 +122,14 @@ export class HttpServer {
 
     try {
       if (req.method === "GET" && url.pathname === "/") {
+        this.requireOperatorAuth(req);
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         res.end(renderOperatorConsole(this.config.agentName));
         return;
       }
 
       if (req.method === "GET" && url.pathname === "/health") {
-        this.json(res, 200, {
+        const publicHealth = {
           ok: true,
           agent: this.config.agentName,
           environment: this.config.appEnv,
@@ -138,8 +139,16 @@ export class HttpServer {
             modelAdapter: modelAdapterMode(this.config),
             semanticRetrieval: this.memory.getStatus().semanticRetrievalEnabled,
             authConfigured:
+              this.config.operatorBearerToken.length > 0 &&
               this.config.mcpBearerToken.length > 0 && this.config.externalChannelSecret.length > 0
-          },
+          }
+        };
+        if (!this.hasOperatorAuth(req)) {
+          this.json(res, 200, publicHealth);
+          return;
+        }
+        this.json(res, 200, {
+          ...publicHealth,
           logging: {
             provider: "pino",
             level: this.config.logLevel
@@ -155,11 +164,13 @@ export class HttpServer {
       }
 
       if (req.method === "GET" && url.pathname === "/metrics") {
+        this.requireOperatorAuth(req);
         this.json(res, 200, this.metrics.snapshot());
         return;
       }
 
       if (req.method === "GET" && url.pathname === "/admin/summary") {
+        this.requireOperatorAuth(req);
         const channels = this.channels.list();
         this.json(res, 200, {
           logging: { provider: "pino", level: this.config.logLevel },
@@ -180,6 +191,7 @@ export class HttpServer {
       }
 
       if (req.method === "GET" && url.pathname === "/admin/diagnostics") {
+        this.requireOperatorAuth(req);
         const channels = this.channels.list();
         this.json(res, 200, {
           diagnostics: buildStartupDiagnostics(this.config, this.memory.getStatus(), channels)
@@ -188,6 +200,7 @@ export class HttpServer {
       }
 
       if (req.method === "GET" && url.pathname === "/admin/export") {
+        this.requireOperatorAuth(req);
         const scope = url.searchParams.get("scope") ?? "timeline";
         const format = url.searchParams.get("format") === "ndjson" ? "ndjson" : "json";
         const payload = this.buildExportPayload(scope);
@@ -205,6 +218,7 @@ export class HttpServer {
       }
 
       if (req.method === "GET" && url.pathname === "/admin/timeline") {
+        this.requireOperatorAuth(req);
         const settings = this.settings.get();
         const runs = await this.runs.list();
         const runsWithCounts = await Promise.all(
@@ -224,11 +238,13 @@ export class HttpServer {
       }
 
       if (req.method === "GET" && url.pathname === "/admin/channels") {
+        this.requireOperatorAuth(req);
         this.json(res, 200, { channels: this.channels.list() });
         return;
       }
 
       if (req.method === "POST" && url.pathname === "/admin/channels") {
+        this.requireOperatorAuth(req);
         const body = validateChannelUpdateBody(parseJsonBody(await readTextBody(req)));
         const channel = this.channels.upsert(body);
         this.json(res, 200, { requestId, channel });
@@ -236,22 +252,26 @@ export class HttpServer {
       }
 
       if (req.method === "GET" && url.pathname === "/admin/channels/deliveries") {
+        this.requireOperatorAuth(req);
         const channelId = url.searchParams.get("channelId") ?? undefined;
         this.json(res, 200, { deliveries: this.channelDeliveries.list(channelId) });
         return;
       }
 
       if (req.method === "GET" && url.pathname === "/admin/tools/governance") {
+        this.requireOperatorAuth(req);
         this.json(res, 200, { tools: this.governance.list(), summary: this.governance.summary() });
         return;
       }
 
       if (req.method === "GET" && url.pathname === "/admin/settings") {
+        this.requireOperatorAuth(req);
         this.json(res, 200, { settings: this.settings.get() });
         return;
       }
 
       if (req.method === "POST" && url.pathname === "/admin/settings") {
+        this.requireOperatorAuth(req);
         const body = validateOperatorSettingsBody(parseJsonBody(await readTextBody(req)));
         const settings = this.settings.update(body);
         this.json(res, 200, { requestId, settings });
@@ -259,6 +279,7 @@ export class HttpServer {
       }
 
       if (req.method === "POST" && url.pathname === "/admin/tools/approve") {
+        this.requireOperatorAuth(req);
         const body = validateToolApprovalBody(parseJsonBody(await readTextBody(req)));
         const tool = this.governance.approve(body.toolId, body.approvedBy, body.notes);
         this.dynamicTools.activateApprovedTool(body.toolId);
@@ -267,6 +288,7 @@ export class HttpServer {
       }
 
       if (req.method === "GET" && url.pathname.startsWith("/admin/sessions/")) {
+        this.requireOperatorAuth(req);
         const sessionId = decodeURIComponent(url.pathname.replace("/admin/sessions/", ""));
         const session = await this.sessions.get(sessionId);
         if (!session) {
@@ -277,6 +299,7 @@ export class HttpServer {
       }
 
       if (req.method === "GET" && url.pathname.startsWith("/admin/runs/")) {
+        this.requireOperatorAuth(req);
         const runId = decodeURIComponent(url.pathname.replace("/admin/runs/", ""));
         const run = await this.runs.get(runId);
         if (!run) {
@@ -291,6 +314,7 @@ export class HttpServer {
       }
 
       if (req.method === "GET" && url.pathname.startsWith("/admin/jobs/")) {
+        this.requireOperatorAuth(req);
         const jobId = decodeURIComponent(url.pathname.replace("/admin/jobs/", ""));
         const job = (await this.scheduler.list()).find((entry) => entry.id === jobId);
         if (!job) {
@@ -301,6 +325,7 @@ export class HttpServer {
       }
 
       if (req.method === "GET" && url.pathname.startsWith("/admin/memory/")) {
+        this.requireOperatorAuth(req);
         const memoryId = decodeURIComponent(url.pathname.replace("/admin/memory/", ""));
         const entry = await this.memory.getEntry(memoryId);
         if (!entry) {
@@ -311,6 +336,7 @@ export class HttpServer {
       }
 
       if (req.method === "GET" && url.pathname === "/memory") {
+        this.requireOperatorAuth(req);
         const limit = url.searchParams.get("limit");
         const entries = await this.memory.listEntries(limit ? Number(limit) : 50);
         this.json(res, 200, { entries });
@@ -318,6 +344,7 @@ export class HttpServer {
       }
 
       if (req.method === "POST" && url.pathname === "/chat/message") {
+        this.requireOperatorAuth(req);
         const body = validateChatBody(parseJsonBody(await readTextBody(req)));
         res.writeHead(200, {
           "Content-Type": "text/event-stream",
@@ -375,6 +402,7 @@ export class HttpServer {
       }
 
       if (req.method === "POST" && url.pathname === "/channels/slack/message") {
+        this.requireOperatorAuth(req);
         const body = validateSlackMessageBody(parseJsonBody(await readTextBody(req)));
         const result = await this.slack.sendMessage(body);
         this.json(res, 200, { requestId, ...result });
@@ -382,11 +410,13 @@ export class HttpServer {
       }
 
       if (req.method === "GET" && url.pathname === "/scheduler/jobs") {
+        this.requireOperatorAuth(req);
         this.json(res, 200, { jobs: await this.scheduler.list() });
         return;
       }
 
       if (req.method === "POST" && url.pathname === "/scheduler/jobs") {
+        this.requireOperatorAuth(req);
         const body = validateScheduleBody(parseJsonBody(await readTextBody(req)));
         const job = await this.scheduler.schedule(body.name, body.message, {
           delayMs: body.delayMs,
@@ -409,11 +439,13 @@ export class HttpServer {
       }
 
       if (req.method === "GET" && url.pathname === "/tools/dynamic") {
+        this.requireOperatorAuth(req);
         this.json(res, 200, { tools: this.dynamicTools.list() });
         return;
       }
 
       if (req.method === "POST" && url.pathname === "/tools/dynamic") {
+        this.requireOperatorAuth(req);
         const body = validateDynamicToolBody(parseJsonBody(await readTextBody(req)));
         const tool = this.dynamicTools.register(body);
         this.json(res, 200, { requestId, tool });
@@ -421,6 +453,7 @@ export class HttpServer {
       }
 
       if (req.method === "DELETE" && url.pathname.startsWith("/tools/dynamic/")) {
+        this.requireOperatorAuth(req);
         const toolId = decodeURIComponent(url.pathname.replace("/tools/dynamic/", ""));
         if (!toolId) {
           throw new HttpError(400, "tool id is required");
@@ -434,11 +467,13 @@ export class HttpServer {
       }
 
       if (req.method === "GET" && url.pathname === "/sessions") {
+        this.requireOperatorAuth(req);
         this.json(res, 200, { sessions: await this.sessions.list() });
         return;
       }
 
       if (req.method === "GET" && url.pathname === "/runs") {
+        this.requireOperatorAuth(req);
         const runs = await this.runs.list();
         const withEvents = await Promise.all(
           runs.map(async (run) => ({
@@ -505,6 +540,27 @@ export class HttpServer {
   private json(res: ServerResponse, status: number, body: unknown): void {
     res.writeHead(status, { "Content-Type": "application/json" });
     res.end(`${JSON.stringify(body)}\n`);
+  }
+
+  private requireOperatorAuth(req: IncomingMessage): void {
+    if (!this.hasOperatorAuth(req)) {
+      throw new HttpError(401, "Unauthorized");
+    }
+  }
+
+  private hasOperatorAuth(req: IncomingMessage): boolean {
+    const authorization = req.headers.authorization;
+    if (authorization === `Bearer ${this.config.operatorBearerToken}`) {
+      return true;
+    }
+    if (authorization?.startsWith("Basic ")) {
+      const credentials = Buffer.from(authorization.slice("Basic ".length), "base64").toString("utf8");
+      const [, password] = credentials.split(":", 2);
+      if (password === this.config.operatorBearerToken) {
+        return true;
+      }
+    }
+    return req.headers["x-operator-token"] === this.config.operatorBearerToken;
   }
 }
 

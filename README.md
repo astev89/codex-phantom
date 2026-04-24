@@ -23,7 +23,7 @@ The service starts on `http://localhost:3210` by default.
 ## Operator surfaces
 
 - `GET /health`
-  Runtime readiness plus memory, channel, governance, and logging summaries.
+  Public runtime readiness. Send operator auth for memory, channel, governance, metrics, and logging summaries.
 - `GET /admin/summary`
   Deployment-oriented overview for logging, database path, Qdrant config, channels, and tool governance.
 - `GET /admin/diagnostics`
@@ -57,6 +57,10 @@ The service starts on `http://localhost:3210` by default.
   Drill-down endpoints for the timeline surfaces.
 - `POST /channels/slack/message`
   Send an outbound Slack message through the configured bot token when the `slack` channel is enabled.
+
+All operator surfaces except the public `/health` readiness envelope require operator authentication. API clients can send `Authorization: Bearer $OPERATOR_BEARER_TOKEN` or `X-Operator-Token: $OPERATOR_BEARER_TOKEN`. Browser access to `/` can use HTTP Basic auth with any username and the operator token as the password.
+
+Production startup rejects the development default `OPERATOR_BEARER_TOKEN`, `MCP_BEARER_TOKEN`, and `EXTERNAL_CHANNEL_SECRET` values.
 
 The root console at `/` now exposes panels for:
 
