@@ -1,6 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { McpServer } from "../src/mcp/server.ts";
+import { McpAuditStore } from "../src/mcp/audit.ts";
+import { AppDatabase } from "../src/platform/database.ts";
 import { MetricsStore } from "../src/platform/metrics.ts";
 import { ToolRegistry } from "../src/tools/registry.ts";
 
@@ -96,6 +101,125 @@ test("McpServer authenticates without retaining the raw bearer token and records
   assert.equal(snapshot.counters["mcp.tool_call.echo"], 1);
   assert.equal(snapshot.counters["mcp.tool_call.write.note"], undefined);
   assert.equal(snapshot.counters["mcp.tool_call.denied"], 1);
+});
+
+test("McpServer records durable audit rows for auth failures and tool outcomes", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "codex-phantom-mcp-audit-"));
+  const database = new AppDatabase(join(dataDir, "mcp-audit.sqlite"));
+  const audit = new McpAuditStore(database);
+  const tools = new ToolRegistry();
+  tools.register({
+    id: "echo",
+    description: "echo input",
+    scopes: ["read"],
+    kind: "in_process",
+    handler: async (input) => ({ input })
+  });
+  tools.register({
+    id: "explode",
+    description: "throw an error",
+    scopes: ["read"],
+    kind: "in_process",
+    handler: async () => {
+      throw new Error("boom");
+    }
+  });
+  const mcp = new McpServer("secret", tools, new MetricsStore(), {
+    mode: "read_only",
+    fileGlobs: [],
+    allowedToolIds: ["echo", "explode"],
+    allowedMcpServers: []
+  }, audit);
+
+  try {
+    await mcp.handle(new Request("http://localhost/mcp", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer wrong",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ method: "tools/list" })
+    }));
+
+    await mcp.handle(new Request("http://localhost/mcp", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer secret",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ method: "tools/list" })
+    }));
+
+    await mcp.handle(new Request("http://localhost/mcp", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer secret",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        method: "tools/call",
+        params: {
+          name: "echo",
+          input: { hello: "world" }
+        }
+      })
+    }));
+
+    await mcp.handle(new Request("http://localhost/mcp", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer secret",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        method: "tools/call",
+        params: {
+          name: "missing.tool"
+        }
+      })
+    }));
+
+    await mcp.handle(new Request("http://localhost/mcp", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer secret",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        method: "tools/call",
+        params: {
+          name: "explode"
+        }
+      })
+    }));
+
+    await mcp.handle(new Request("http://localhost/mcp", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer secret",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ method: "tools/nope" })
+    }));
+
+    const rows = audit.list(10);
+    assert.equal(rows.length, 6);
+    assert.equal(rows[0]?.outcome, "unsupported");
+    assert.equal(rows[1]?.outcome, "failed");
+    assert.equal(rows[1]?.toolName, "explode");
+    assert.equal(rows[2]?.outcome, "denied");
+    assert.equal(rows[2]?.toolName, "missing.tool");
+    assert.equal(rows[3]?.outcome, "success");
+    assert.equal(rows[3]?.toolName, "echo");
+    assert.equal(rows[4]?.outcome, "success");
+    assert.equal(rows[4]?.method, "tools/list");
+    assert.equal(rows[5]?.outcome, "auth_failed");
+    assert.equal(rows.every((row) => row.errorMessage !== "secret"), true);
+    assert.equal(JSON.stringify(rows).includes("Bearer secret"), false);
+    assert.equal(JSON.stringify(rows).includes("hello"), false);
+  } finally {
+    database.close();
+  }
 });
 
 test("MetricsStore renders a Prometheus text snapshot", () => {

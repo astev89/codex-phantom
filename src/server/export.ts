@@ -1,7 +1,7 @@
 import type { JsonValue } from "../shared/types.ts";
 
 export type OperatorExportFormat = "json" | "ndjson";
-export type OperatorExportScope = "requests" | "runs" | "channels" | "governance" | (string & {});
+export type OperatorExportScope = "requests" | "runs" | "channels" | "governance" | "mcp" | (string & {});
 export type OperatorExportRecord = { [key: string]: JsonValue };
 export type OperatorExportMetadata = Record<string, JsonValue>;
 

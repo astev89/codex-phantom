@@ -15,6 +15,7 @@ import { ToolGovernanceService } from "../src/tools/governance.ts";
 import { RunGraphStore } from "../src/orchestration/run-graph-store.ts";
 import { OrchestrationService } from "../src/orchestration/service.ts";
 import { SchedulerService } from "../src/scheduler/service.ts";
+import { McpAuditStore } from "../src/mcp/audit.ts";
 import { McpServer } from "../src/mcp/server.ts";
 import { HttpServer } from "../src/server/http-server.ts";
 import { buildJsonExport, buildNdjsonExport } from "../src/server/export.ts";
@@ -165,7 +166,8 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
   const scheduler = new SchedulerService(database, orchestration);
   await scheduler.start();
     const metrics = new MetricsStore();
-    const mcp = new McpServer(config.mcpBearerToken, tools, metrics);
+    const mcpAudit = new McpAuditStore(database);
+    const mcp = new McpServer(config.mcpBearerToken, tools, metrics, undefined, mcpAudit);
   const dynamicTools = new DynamicToolRegistry(database, tools);
   const governance = new ToolGovernanceService(database);
   const slackTransport = new FakeSlackTransport();
@@ -381,6 +383,16 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
     });
     const mcpJson = await mcpResponse.json() as { tools: Array<{ id: string }> };
     assert.ok(mcpJson.tools.some((tool) => tool.id === "echo.summary"));
+
+    const adminMcpAuditResponse = await fetch(`http://127.0.0.1:${port}/admin/mcp/audit`, {
+      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
+    });
+    assert.equal(adminMcpAuditResponse.status, 200);
+    const adminMcpAuditJson = await adminMcpAuditResponse.json() as {
+      audit: Array<{ method: string; outcome: string; toolName?: string }>;
+    };
+    assert.ok(Array.isArray(adminMcpAuditJson.audit));
+    assert.ok(adminMcpAuditJson.audit.some((entry) => entry.method === "tools/list" && entry.outcome === "success"));
 
     const unauthorizedMcpResponse = await fetch(`http://127.0.0.1:${port}/mcp`, {
       method: "POST",
@@ -670,6 +682,18 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
     const channelExportText = await channelExportResponse.text();
     assert.match(channelExportText, /"channelId":"slack"/);
     assert.match(channelExportText, /"status":"delivered"/);
+
+    const mcpExportResponse = await fetch(`http://127.0.0.1:${port}/admin/export?scope=mcp&format=json`, {
+      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
+    });
+    const mcpExportJson = await mcpExportResponse.json() as {
+      scope: string;
+      format: string;
+      items: Array<{ method: string; outcome: string; toolName?: string }>;
+    };
+    assert.equal(mcpExportJson.scope, "mcp");
+    assert.equal(mcpExportJson.format, "json");
+    assert.ok(mcpExportJson.items.some((item) => item.method === "tools/list" && item.outcome === "success"));
 
     const diagnosticsResponse = await fetch(`http://127.0.0.1:${port}/admin/diagnostics`, {
       headers: { Authorization: `Bearer ${config.operatorBearerToken}` }

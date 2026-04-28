@@ -11,6 +11,7 @@ import { AgentRuntime } from "./agent/runtime.ts";
 import { RunGraphStore } from "./orchestration/run-graph-store.ts";
 import { OrchestrationService } from "./orchestration/service.ts";
 import { SchedulerService } from "./scheduler/service.ts";
+import { McpAuditStore } from "./mcp/audit.ts";
 import { McpServer } from "./mcp/server.ts";
 import { HttpServer } from "./server/http-server.ts";
 import { AppDatabase } from "./platform/database.ts";
@@ -29,6 +30,7 @@ const tools = new ToolRegistry();
 const dynamicTools = new DynamicToolRegistry(database, tools);
 const governance = new ToolGovernanceService(database);
 const runs = new RunGraphStore(database);
+const mcpAudit = new McpAuditStore(database);
 
 tools.register({
   id: "memory.query",
@@ -56,7 +58,7 @@ const adapter = new CodexAdapter(config);
 const runtime = new AgentRuntime(config, adapter, sessions, memory, tools);
 const orchestration = new OrchestrationService(runtime, tools, runs);
 const scheduler = new SchedulerService(database, orchestration);
-const mcp = new McpServer(config.mcpBearerToken, tools, metrics);
+const mcp = new McpServer(config.mcpBearerToken, tools, metrics, undefined, mcpAudit);
 const server = new HttpServer(
   config,
   orchestration,

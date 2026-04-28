@@ -12,6 +12,7 @@ import { OrchestrationService } from "../orchestration/service.ts";
 import { SchedulerService } from "../scheduler/service.ts";
 import { SessionStore } from "../chat/session-store.ts";
 import { McpServer } from "../mcp/server.ts";
+import { McpAuditStore } from "../mcp/audit.ts";
 import type { AgentRunEvent } from "../agent/types.ts";
 import { RunGraphStore } from "../orchestration/run-graph-store.ts";
 import { AppDatabase } from "../platform/database.ts";
@@ -60,6 +61,7 @@ export class HttpServer {
   private readonly slack: SlackChannel;
   private readonly settings: OperatorSettingsStore;
   private readonly requestAudits: RequestAuditStore;
+  private readonly mcpAudit: McpAuditStore;
   private readonly operatorTokenHash: Buffer;
   private readonly mcpTokenHash: Buffer;
   private readonly mcpRateLimiter = new SimpleRateLimiter(12, 60_000);
@@ -97,6 +99,7 @@ export class HttpServer {
     this.slack = new SlackChannel(config, channels, this.channelDeliveries, slackTransport);
     this.settings = new OperatorSettingsStore(database);
     this.requestAudits = new RequestAuditStore(database);
+    this.mcpAudit = new McpAuditStore(database);
     this.operatorTokenHash = hashToken(config.operatorBearerToken);
     this.mcpTokenHash = hashToken(config.mcpBearerToken);
     this.server = createServer((req, res) => {
@@ -211,6 +214,15 @@ export class HttpServer {
         const channels = this.channels.list();
         this.json(res, 200, {
           diagnostics: buildStartupDiagnostics(this.config, this.memory.getStatus(), channels)
+        });
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/admin/mcp/audit") {
+        this.requireOperatorAuth(req);
+        const limit = url.searchParams.get("limit");
+        this.json(res, 200, {
+          audit: this.mcpAudit.list(limit ? Number(limit) : 50)
         });
         return;
       }
@@ -456,7 +468,7 @@ export class HttpServer {
         }
         const bodyText = await readTextBody(req);
         validateMcpBody(parseJsonBody(bodyText));
-        const response = await this.mcp.handle(toRequest(req, bodyText));
+        const response = await this.mcp.handle(toRequest(req, bodyText, { "x-request-id": requestId }));
         const text = await response.text();
         res.writeHead(response.status, { "Content-Type": "application/json", "X-Request-Id": requestId });
         res.end(text);
@@ -557,6 +569,8 @@ export class HttpServer {
         return { items: this.channelDeliveries.list(undefined, 250) };
       case "governance":
         return { items: this.governance.listAudit(250) };
+      case "mcp":
+        return { items: this.mcpAudit.list(250) };
       case "runs":
         return { items: this.database.all("SELECT * FROM run_events ORDER BY created_at DESC LIMIT 250") };
       case "timeline":
@@ -657,11 +671,15 @@ async function readTextBody(req: IncomingMessage, maxBytes = DEFAULT_MAX_BODY_BY
   return Buffer.concat(chunks).toString("utf8");
 }
 
-function toRequest(req: IncomingMessage, body?: string): Request {
+function toRequest(req: IncomingMessage, body?: string, extraHeaders?: Record<string, string>): Request {
   const url = `http://${req.headers.host ?? "localhost"}${req.url ?? "/"}`;
+  const headers = new Headers(req.headers as HeadersInit);
+  for (const [key, value] of Object.entries(extraHeaders ?? {})) {
+    headers.set(key, value);
+  }
   return new Request(url, {
     method: req.method,
-    headers: req.headers as HeadersInit,
+    headers,
     body: req.method === "GET" || req.method === "HEAD" ? undefined : body
   });
 }
