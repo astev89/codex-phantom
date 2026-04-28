@@ -1,4 +1,5 @@
 import type { AppConfig } from "../config.ts";
+import { fetchWithTimeout } from "../platform/outbound.ts";
 import type { ChatMessage } from "../shared/types.ts";
 import type { AgentAdapter, AgentAdapterMode, AgentRunEvent, AgentRunRequest, AgentRunResult, AgentToolCall } from "./types.ts";
 
@@ -350,8 +351,9 @@ function resolveMode(mode: AgentAdapterMode, config: AppConfig): Exclude<AgentAd
 
 function defaultOpenAiTransport(config: AppConfig): OpenAiTransport {
   return async (request, body) => {
-    const response = await fetch(`${config.openAiBaseUrl ?? "https://api.openai.com/v1"}/responses`, {
+    const response = await fetchWithTimeout(`${config.openAiBaseUrl ?? "https://api.openai.com/v1"}/responses`, {
       method: "POST",
+      timeoutMs: config.openAiRequestTimeoutMs ?? 60_000,
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${config.openAiApiKey}`

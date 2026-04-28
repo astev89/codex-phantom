@@ -178,3 +178,70 @@ test("openai mode can return tool requests without network access", async () => 
     argumentsText: "{\"message\":\"hi\"}"
   });
 });
+
+test("openai mode aborts outbound responses requests after the configured timeout", async () => {
+  const originalFetch = globalThis.fetch;
+  const adapter = new CodexAdapter(
+    {
+      ...baseConfig,
+      openAiApiKey: "test-key",
+      openAiRequestTimeoutMs: 20
+    },
+    { mode: "openai" }
+  );
+
+  globalThis.fetch = (async (_input, init) => {
+    const signal = init?.signal;
+    assert.ok(signal);
+
+    await new Promise<void>((resolve, reject) => {
+      if (signal.aborted) {
+        resolve();
+        return;
+      }
+      signal.addEventListener("abort", () => resolve(), { once: true });
+      setTimeout(() => reject(new Error("request did not abort")), 100);
+    });
+
+    throw signal.reason ?? new Error("aborted");
+  }) as typeof fetch;
+
+  try {
+    await assert.rejects(
+      () => adapter.run(makeRequest(), async () => {}),
+      /timed out/i
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("openai mode honors caller abort signals for outbound responses requests", async () => {
+  const originalFetch = globalThis.fetch;
+  const adapter = new CodexAdapter(
+    {
+      ...baseConfig,
+      openAiApiKey: "test-key"
+    },
+    { mode: "openai" }
+  );
+  const controller = new AbortController();
+
+  globalThis.fetch = (async (_input, init) => {
+    const signal = init?.signal;
+    assert.ok(signal);
+    assert.equal(signal.aborted, true);
+    throw signal.reason ?? new Error("caller aborted");
+  }) as typeof fetch;
+
+  controller.abort(new Error("caller aborted"));
+
+  try {
+    await assert.rejects(
+      () => adapter.run({ ...makeRequest(), signal: controller.signal }, async () => {}),
+      /caller aborted/
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

@@ -17,7 +17,9 @@ export type AppConfig = {
   openAiApiKey?: string;
   openAiBaseUrl?: string;
   openAiConversationMode: "previous_response_id" | "manual";
+  openAiRequestTimeoutMs: number;
   openAiEmbeddingModel: string;
+  openAiEmbeddingTimeoutMs: number;
   semanticRetrievalEnabled: boolean;
   qdrantEnabled: boolean;
   qdrantUrl?: string;
@@ -63,7 +65,13 @@ export function loadConfig(): AppConfig {
     openAiBaseUrl: process.env.OPENAI_BASE_URL,
     openAiConversationMode:
       process.env.OPENAI_CONVERSATION_MODE === "manual" ? "manual" : "previous_response_id",
+    openAiRequestTimeoutMs: parsePositiveInteger(process.env.OPENAI_REQUEST_TIMEOUT_MS, 60_000, "OPENAI_REQUEST_TIMEOUT_MS"),
     openAiEmbeddingModel: process.env.OPENAI_EMBEDDING_MODEL ?? "text-embedding-3-small",
+    openAiEmbeddingTimeoutMs: parsePositiveInteger(
+      process.env.OPENAI_EMBEDDING_TIMEOUT_MS,
+      10_000,
+      "OPENAI_EMBEDDING_TIMEOUT_MS"
+    ),
     semanticRetrievalEnabled: process.env.SEMANTIC_RETRIEVAL_ENABLED !== "false",
     qdrantEnabled: process.env.QDRANT_ENABLED === "true",
     qdrantUrl: process.env.QDRANT_URL,

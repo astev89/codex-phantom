@@ -58,7 +58,7 @@ export class MemoryStore {
   }
 
   async query(input: string): Promise<MemoryContextEnvelope> {
-    const queryEmbedding = this.embeddings.enabled ? (await this.embeddings.embed([input]))?.[0] ?? null : null;
+    const queryEmbedding = (await this.embedOrNull([input]))?.[0] ?? null;
     const tokens = tokenize(input);
     const activeVectorStore = queryEmbedding && this.primaryVectorStore.isAvailable()
       ? this.primaryVectorStore
@@ -213,7 +213,7 @@ export class MemoryStore {
 
     for (let index = 0; index < rows.length; index += this.config.memoryEmbeddingBatchSize) {
       const batch = rows.slice(index, index + this.config.memoryEmbeddingBatchSize);
-      const vectors = this.embeddings.enabled ? await this.embeddings.embed(batch.map((row) => row.content)) : null;
+      const vectors = await this.embedOrNull(batch.map((row) => row.content));
       this.database.transaction(() => {
         batch.forEach((row, batchIndex) => {
           const vector = vectors?.[batchIndex] ?? null;
@@ -351,7 +351,7 @@ export class MemoryStore {
         : `Summary: ${cluster.map((row) => row.content).join(" | ")}`
     );
     const summaryId = createId("mem");
-    const vector = this.embeddings.enabled ? (await this.embeddings.embed([summaryContent]))?.[0] ?? null : null;
+    const vector = (await this.embedOrNull([summaryContent]))?.[0] ?? null;
     const now = new Date().toISOString();
 
     this.database.transaction(() => {
@@ -418,7 +418,7 @@ export class MemoryStore {
       return;
     }
 
-    const embeddings = this.embeddings.enabled ? await this.embeddings.embed(entries.map((entry) => entry.content)) : null;
+    const embeddings = await this.embedOrNull(entries.map((entry) => entry.content));
     const now = new Date().toISOString();
     const insertedRows: MemoryRow[] = [];
 
@@ -600,6 +600,18 @@ export class MemoryStore {
         );
       }
     });
+  }
+
+  private async embedOrNull(texts: string[]): Promise<number[][] | null> {
+    if (!this.embeddings.enabled || texts.length === 0) {
+      return null;
+    }
+
+    try {
+      return await this.embeddings.embed(texts);
+    } catch {
+      return null;
+    }
   }
 }
 
