@@ -114,7 +114,7 @@ export function validateScheduleBody(input: unknown): ScheduleJobInput {
     delayMs,
     scheduledAt,
     subagents: validateSubagents(value.subagents),
-    maxAttempts: optionalPositiveInteger(value.maxAttempts, "maxAttempts")
+    maxAttempts: optionalBoundedPositiveInteger(value.maxAttempts, "maxAttempts", 10)
   };
 }
 
@@ -238,6 +238,14 @@ function optionalPositiveInteger(value: unknown, field: string): number | undefi
     throw new HttpError(400, `${field} must be a positive integer`);
   }
   return value;
+}
+
+function optionalBoundedPositiveInteger(value: unknown, field: string, max: number): number | undefined {
+  const parsed = optionalPositiveInteger(value, field);
+  if (parsed !== undefined && parsed > max) {
+    throw new HttpError(400, `${field} must be less than or equal to ${max}`);
+  }
+  return parsed;
 }
 
 function optionalNumber(value: unknown, field: string): number | undefined {

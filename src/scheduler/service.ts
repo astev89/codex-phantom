@@ -52,6 +52,7 @@ export class SchedulerService {
       return;
     }
     this.running = true;
+    await this.recoverStaleRunningJobs();
     const jobs = await this.list();
     for (const job of jobs) {
       if (job.status === "scheduled") {
@@ -132,6 +133,29 @@ export class SchedulerService {
       .map((row) => toJobRecord(row));
   }
 
+  private async recoverStaleRunningJobs(): Promise<void> {
+    const jobs = await this.list();
+    const recoveredAt = new Date().toISOString();
+
+    for (const job of jobs) {
+      if (job.status !== "running") {
+        continue;
+      }
+
+      const exhausted = job.attemptCount >= job.maxAttempts;
+      await this.update({
+        ...job,
+        status: exhausted ? "failed" : "scheduled",
+        scheduledAt: exhausted ? job.scheduledAt : recoveredAt,
+        startedAt: exhausted ? job.startedAt : undefined,
+        finishedAt: exhausted ? recoveredAt : undefined,
+        failureReason: exhausted
+          ? "Job was running during shutdown and attempts are exhausted"
+          : "Recovered after interrupted run"
+      });
+    }
+  }
+
   private arm(job: JobRecord): void {
     if (this.timers.has(job.id)) {
       clearTimeout(this.timers.get(job.id));
@@ -191,9 +215,11 @@ export class SchedulerService {
         ...job,
         status: shouldRetry ? "scheduled" : "failed",
         attemptCount: job.attemptCount + 1,
-        startedAt,
+        startedAt: shouldRetry ? undefined : startedAt,
         finishedAt: shouldRetry ? undefined : new Date().toISOString(),
-        scheduledAt: shouldRetry ? new Date(Date.now() + 1_000).toISOString() : job.scheduledAt,
+        scheduledAt: shouldRetry
+          ? new Date(Date.now() + retryDelayMs(job.attemptCount + 1)).toISOString()
+          : job.scheduledAt,
         failureReason
       });
       if (shouldRetry) {
@@ -234,6 +260,10 @@ export class SchedulerService {
       job.id
     );
   }
+}
+
+function retryDelayMs(attemptCount: number): number {
+  return Math.min(60_000, 1_000 * Math.max(1, 2 ** Math.max(0, attemptCount - 1)));
 }
 
 function toJobRecord(row: JobRow): JobRecord {
