@@ -39,6 +39,8 @@ import {
   validateWebhookBody
 } from "./validation.ts";
 
+const DEFAULT_MAX_BODY_BYTES = 1_048_576;
+
 export class HttpServer {
   private readonly server: Server;
   private readonly config: AppConfig;
@@ -529,13 +531,19 @@ export class HttpServer {
         statusCode: res.statusCode,
         durationMs: Date.now() - startedAt
       });
-      this.requestAudits.record({
-        requestId,
-        method: req.method ?? "UNKNOWN",
-        path: url.pathname,
-        statusCode: res.statusCode,
-        durationMs: Date.now() - startedAt
-      });
+      try {
+        this.requestAudits.record({
+          requestId,
+          method: req.method ?? "UNKNOWN",
+          path: url.pathname,
+          statusCode: res.statusCode,
+          durationMs: Date.now() - startedAt
+        });
+      } catch (error) {
+        requestLogger.error("request_audit_failed", {
+          error: error instanceof Error ? error.message : "Request audit failed"
+        });
+      }
       this.metrics.increment(`http.${req.method?.toLowerCase() ?? "unknown"}.${url.pathname}`);
       this.metrics.observe("http.request.duration_ms", Date.now() - startedAt);
     }
@@ -635,10 +643,16 @@ function hashToken(token: string): Buffer {
   return createHash("sha256").update(token).digest();
 }
 
-async function readTextBody(req: IncomingMessage): Promise<string> {
+async function readTextBody(req: IncomingMessage, maxBytes = DEFAULT_MAX_BODY_BYTES): Promise<string> {
   const chunks: Buffer[] = [];
+  let totalBytes = 0;
   for await (const chunk of req) {
-    chunks.push(Buffer.from(chunk));
+    const buffer = Buffer.from(chunk);
+    totalBytes += buffer.byteLength;
+    if (totalBytes > maxBytes) {
+      throw new HttpError(413, `Request body exceeds ${maxBytes} bytes`);
+    }
+    chunks.push(buffer);
   }
   return Buffer.concat(chunks).toString("utf8");
 }

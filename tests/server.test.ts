@@ -191,8 +191,40 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
     throw new Error("server failed to bind");
   }
   const port = address.port;
+  const baseUrl = `http://127.0.0.1:${port}`;
 
   try {
+    const oversizedMcpBody = JSON.stringify({
+      method: "tools/list",
+      padding: "x".repeat(1_100_000)
+    });
+    const oversizedMcpResponse = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.mcpBearerToken}`
+      },
+      body: oversizedMcpBody
+    });
+    assert.equal(oversizedMcpResponse.status, 413);
+    const oversizedMcpJson = await oversizedMcpResponse.json() as { error?: string; status?: number };
+    assert.equal(oversizedMcpJson.status, 413);
+    assert.match(oversizedMcpJson.error ?? "", /body/i);
+
+    const oversizedChatBody = JSON.stringify({
+      conversationId: "oversized",
+      message: "x".repeat(1_100_000)
+    });
+    const oversizedChatResponse = await fetch(`${baseUrl}/chat/message`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.operatorBearerToken}`
+      },
+      body: oversizedChatBody
+    });
+    assert.equal(oversizedChatResponse.status, 413);
+
     const protectedGetPaths = [
       "/",
       "/admin/summary",
