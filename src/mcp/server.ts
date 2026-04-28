@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { JsonValue, PermissionPolicy } from "../shared/types.ts";
-import type { McpAuditStore } from "./audit.ts";
+import type { McpAuditInput, McpAuditStore } from "./audit.ts";
 import type { MetricsStore } from "../platform/metrics.ts";
 import { ToolRegistry } from "../tools/registry.ts";
 
@@ -39,7 +39,7 @@ export class McpServer {
     const requestId = request.headers.get("x-request-id") ?? undefined;
     if (!auth?.startsWith("Bearer ") || !this.matchesToken(auth.slice("Bearer ".length))) {
       this.metrics?.increment("mcp.auth.failure");
-      this.audit?.record({
+      this.recordAudit({
         requestId,
         method: "unknown",
         outcome: "auth_failed",
@@ -54,7 +54,7 @@ export class McpServer {
     if (body.method === "tools/list") {
       const policy = this.currentPolicy();
       this.metrics?.increment("mcp.method.tools_list");
-      this.audit?.record({
+      this.recordAudit({
         requestId,
         method,
         outcome: "success",
@@ -69,7 +69,7 @@ export class McpServer {
       if (!policy.allowedToolIds.includes(toolName)) {
         this.metrics?.increment("mcp.tool_call.denied");
         const errorMessage = `Tool ${toolName} is not permitted for MCP`;
-        this.audit?.record({
+        this.recordAudit({
           requestId,
           method,
           toolName,
@@ -82,7 +82,7 @@ export class McpServer {
       try {
         this.metrics?.increment(`mcp.tool_call.${toolName}`);
         const output = await this.tools.call(toolName, body.params.input ?? null, policy);
-        this.audit?.record({
+        this.recordAudit({
           requestId,
           method,
           toolName,
@@ -92,7 +92,7 @@ export class McpServer {
         return Response.json({ output });
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : "Tool call failed";
-        this.audit?.record({
+        this.recordAudit({
           requestId,
           method,
           toolName,
@@ -107,7 +107,7 @@ export class McpServer {
       }
     }
     this.metrics?.increment("mcp.method.unsupported");
-    this.audit?.record({
+    this.recordAudit({
       requestId,
       method,
       toolName: body.params?.name,
@@ -121,6 +121,14 @@ export class McpServer {
   private matchesToken(candidate: string): boolean {
     const candidateHash = hashToken(candidate);
     return candidateHash.length === this.tokenHash.length && timingSafeEqual(candidateHash, this.tokenHash);
+  }
+
+  private recordAudit(input: McpAuditInput): void {
+    try {
+      this.audit?.record(input);
+    } catch {
+      this.metrics?.increment("mcp.audit.failure");
+    }
   }
 
   private currentPolicy(): PermissionPolicy {

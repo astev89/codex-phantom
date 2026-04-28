@@ -222,6 +222,39 @@ test("McpServer records durable audit rows for auth failures and tool outcomes",
   }
 });
 
+test("McpServer treats audit write failures as best-effort", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "codex-phantom-mcp-audit-failure-"));
+  const database = new AppDatabase(join(dataDir, "mcp-audit-failure.sqlite"));
+  const audit = new McpAuditStore(database);
+  audit.record = (() => {
+    throw new Error("audit unavailable");
+  }) as McpAuditStore["record"];
+  const tools = new ToolRegistry();
+  const metrics = new MetricsStore();
+  const mcp = new McpServer("secret", tools, metrics, {
+    mode: "read_only",
+    fileGlobs: [],
+    allowedToolIds: [],
+    allowedMcpServers: []
+  }, audit);
+
+  try {
+    const response = await mcp.handle(new Request("http://localhost/mcp", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer secret",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ method: "tools/list" })
+    }));
+
+    assert.equal(response.status, 200);
+    assert.equal(metrics.snapshot().counters["mcp.audit.failure"], 1);
+  } finally {
+    database.close();
+  }
+});
+
 test("MetricsStore renders a Prometheus text snapshot", () => {
   const metrics = new MetricsStore();
   metrics.increment("mcp.auth.success", 2);

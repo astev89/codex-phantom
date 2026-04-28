@@ -60,6 +60,8 @@ export class McpAuditStore {
   }
 
   list(limit = 50): McpAuditRecord[] {
+    const normalizedLimit = Number.isFinite(limit) ? Math.trunc(limit) : 50;
+    const boundedLimit = Math.max(1, Math.min(normalizedLimit, 250));
     return this.database
       .all<McpAuditRow>(
         `
@@ -68,7 +70,7 @@ export class McpAuditStore {
           ORDER BY created_at DESC, id DESC
           LIMIT ?
         `,
-        Math.max(1, Math.min(limit, 250))
+        boundedLimit
       )
       .map((row) => ({
         id: row.id,

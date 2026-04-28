@@ -394,6 +394,13 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
     assert.ok(Array.isArray(adminMcpAuditJson.audit));
     assert.ok(adminMcpAuditJson.audit.some((entry) => entry.method === "tools/list" && entry.outcome === "success"));
 
+    const invalidAuditLimitResponse = await fetch(`http://127.0.0.1:${port}/admin/mcp/audit?limit=foo`, {
+      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
+    });
+    assert.equal(invalidAuditLimitResponse.status, 200);
+    const invalidAuditLimitJson = await invalidAuditLimitResponse.json() as { audit: unknown[] };
+    assert.ok(Array.isArray(invalidAuditLimitJson.audit));
+
     const unauthorizedMcpResponse = await fetch(`http://127.0.0.1:${port}/mcp`, {
       method: "POST",
       headers: {
