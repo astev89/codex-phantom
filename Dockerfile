@@ -1,3 +1,18 @@
+FROM node:24-slim AS build
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci
+
+COPY src ./src
+COPY README.md ./
+COPY .env.example ./
+COPY tsconfig.json ./
+COPY tsconfig.build.json ./
+
+RUN npm run build
+
 FROM node:24-slim
 
 WORKDIR /app
@@ -5,10 +20,9 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
-COPY src ./src
+COPY --from=build /app/dist ./dist
 COPY README.md ./
 COPY .env.example ./
-COPY tsconfig.json ./
 
 RUN mkdir -p /app/data && chown -R node:node /app
 
@@ -21,4 +35,4 @@ USER node
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD node -e "fetch('http://127.0.0.1:$PORT/health').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
 
-CMD ["node", "--experimental-strip-types", "src/index.ts"]
+CMD ["node", "dist/index.js"]

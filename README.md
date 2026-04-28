@@ -15,10 +15,19 @@ This branch also adds the first operator-trust foundation layer:
 ```bash
 npm install
 cp .env.example .env
-node --experimental-strip-types src/index.ts
+npm run dev
 ```
 
 The service starts on `http://localhost:3210` by default.
+
+## Production runtime
+
+Build the compiled runtime and start the emitted entrypoint:
+
+```bash
+npm run build
+node dist/index.js
+```
 
 ## Operator surfaces
 
@@ -110,6 +119,8 @@ Slack is now the first real external channel path. The current implementation fo
 docker build -t codex-phantom .
 docker run --env-file .env -p 3210:3210 codex-phantom
 ```
+
+The production image builds TypeScript in a dedicated stage and runs `node dist/index.js` in the final runtime stage. The runtime image does not rely on `--experimental-strip-types`.
 
 ### Docker Compose
 

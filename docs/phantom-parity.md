@@ -7,6 +7,7 @@ This snapshot tracks production-readiness parity against the reference Phantom r
 - Single-process runtime wiring for config, SQLite state, memory, scheduler, MCP, HTTP, and operator surfaces.
 - Operator-authenticated admin/API surfaces with public lean `/health` and authenticated diagnostics.
 - Docker and Compose boot path with non-root container execution, healthcheck, Qdrant, restart policy, and named persistent volumes.
+- Compiled production runtime path via `npm run build`, emitted `dist/`, and Docker startup from `node dist/index.js`.
 - Repeatable deployment smoke for health, auth rejection/acceptance, SQLite-backed settings persistence, and restart persistence.
 - MCP bearer authentication without retaining the raw token, plus process-local metrics counters for auth and method/tool usage.
 - JSON metrics snapshot and Prometheus text output at `/metrics?format=prometheus`.
