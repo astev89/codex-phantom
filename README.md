@@ -184,7 +184,7 @@ docker compose up -d
 - `pino` structured logging
 - Dockerfile and Compose scaffolding for local self-hosting
 
-See `docs/phantom-parity.md` for the current match/defer list against the reference Phantom production surface.
+See `docs/phantom-parity.md` for the current match/defer list against the reference Phantom production surface. See `docs/project-status.md` for the living project-state ledger, recent development wave summary, and next-task queue.
 
 ## Verification
 
