@@ -103,6 +103,8 @@ Suggested work:
 
 Use `docs/phantom-parity.md` as the source of truth for what remains. The inbound router now exists; the next Slack parity slice should make inbound Slack runs easier to follow while they are executing. Full Phantom browser chat and Telegram support are not current targets.
 
+Implementation plan: `docs/superpowers/plans/2026-05-01-slack-inbound-parity.md`.
+
 Suggested work:
 
 - Add progressive Slack thread updates during coordinator execution.
