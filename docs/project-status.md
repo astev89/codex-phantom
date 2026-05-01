@@ -4,7 +4,7 @@ This is the living status ledger for `codex-phantom`. Update it at the end of ea
 
 Last updated: 2026-05-01
 Branch: `jarvis/web-chat-product-surface`
-Latest verified commit: pending web-chat product surface commit
+Latest verified commit: `6147b89`
 
 ## Current State
 
