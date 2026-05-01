@@ -29,6 +29,7 @@ export type AppConfig = {
   slackBotToken?: string;
   slackAppToken?: string;
   slackSigningSecret?: string;
+  slackBotUserId?: string;
   memoryEmbeddingBatchSize: number;
   memoryTopK: number;
   memoryPerCategoryLimit: number;
@@ -81,6 +82,7 @@ export function loadConfig(): AppConfig {
     slackBotToken: process.env.SLACK_BOT_TOKEN,
     slackAppToken: process.env.SLACK_APP_TOKEN,
     slackSigningSecret: process.env.SLACK_SIGNING_SECRET,
+    slackBotUserId: process.env.SLACK_BOT_USER_ID,
     memoryEmbeddingBatchSize: parsePositiveInteger(process.env.MEMORY_EMBEDDING_BATCH_SIZE, 8, "MEMORY_EMBEDDING_BATCH_SIZE"),
     memoryTopK: parsePositiveInteger(process.env.MEMORY_TOP_K, 12, "MEMORY_TOP_K"),
     memoryPerCategoryLimit: parsePositiveInteger(process.env.MEMORY_PER_CATEGORY_LIMIT, 3, "MEMORY_PER_CATEGORY_LIMIT"),

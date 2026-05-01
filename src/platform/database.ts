@@ -164,6 +164,26 @@ export class AppDatabase {
         delivered_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS inbound_channel_events (
+        id TEXT PRIMARY KEY,
+        channel_id TEXT NOT NULL,
+        provider_event_id TEXT NOT NULL,
+        conversation_id TEXT NOT NULL,
+        sender_id TEXT,
+        message TEXT NOT NULL,
+        thread_id TEXT,
+        response_target_json TEXT,
+        raw_payload_json TEXT NOT NULL,
+        status TEXT NOT NULL,
+        session_id TEXT,
+        run_id TEXT,
+        output_text TEXT,
+        error_message TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(channel_id, provider_event_id)
+      );
+
       CREATE TABLE IF NOT EXISTS operator_settings (
         id TEXT PRIMARY KEY,
         settings_json TEXT NOT NULL,
@@ -199,6 +219,8 @@ export class AppDatabase {
       CREATE INDEX IF NOT EXISTS idx_channels_updated_at ON channels(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_tool_governance_audit_tool_id ON tool_governance_audit(tool_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_channel_delivery_logs_channel_id ON channel_delivery_logs(channel_id, delivered_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_inbound_channel_events_channel_id ON inbound_channel_events(channel_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_inbound_channel_events_status ON inbound_channel_events(status, updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_operator_settings_updated_at ON operator_settings(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_request_audit_logs_created_at ON request_audit_logs(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_mcp_audit_logs_created_at ON mcp_audit_logs(created_at DESC);

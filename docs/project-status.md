@@ -27,6 +27,14 @@ Phantom parity review completed locally on 2026-05-01:
 - Marked Phantom's full browser chat product and Telegram support as accepted divergences for now.
 - Kept the remaining queue focused on Docker proof, normalized inbound routing, Slack inbound events, Codex-useful transcript/artifact continuity, role/config/onboarding, plugin marketplace, and advanced memory behavior.
 
+Inbound channel routing wave completed locally on 2026-05-01:
+
+- Added a normalized inbound message envelope, SQLite inbound event audit store, and inbound router.
+- Routed signed webhook requests through the inbound router while preserving synchronous webhook responses.
+- Added Slack Events API ingestion with Slack signature validation, URL verification, event mapping, duplicate detection, ack-then-run execution, and one final thread reply.
+- Added operator visibility through `/admin/channels/inbound`, `/admin/summary`, timeline, and channel exports.
+- Kept Web Chat and Telegram out of scope; Slack progressive updates, status reactions, and richer feedback remain follow-up work.
+
 Production agenda wave completed locally on 2026-05-01:
 
 - Added expanded deployment smoke coverage for MCP listing, MCP audit, Prometheus metrics, scheduler routes, unauthenticated admin rejection, MCP rate limiting, restart persistence, and required Compose secrets.
@@ -91,15 +99,15 @@ Suggested work:
 - Run the preflight, deployment smoke, and backup/restore smoke from the runbook.
 - If both scripts pass, update this ledger with the evidence listed in the runbook.
 
-### P1: Normalize Inbound Channel Routing
+### P1: Expand Slack Inbound Progress
 
-Use `docs/phantom-parity.md` as the source of truth for what remains. The next parity implementation should add a common inbound message contract and route signed webhook input plus Slack inbound events through it. Full Phantom browser chat and Telegram support are not current targets.
+Use `docs/phantom-parity.md` as the source of truth for what remains. The inbound router now exists; the next Slack parity slice should make inbound Slack runs easier to follow while they are executing. Full Phantom browser chat and Telegram support are not current targets.
 
 Suggested work:
 
-- Define the inbound channel message envelope, persistence expectations, and operator audit fields.
-- Route the existing signed webhook path through that envelope.
-- Add Slack inbound event validation and mapping for app mentions, direct messages, thread replies, reactions, and progress/feedback signals.
+- Add progressive Slack thread updates during coordinator execution.
+- Add status reactions for queued, running, completed, and failed states.
+- Map useful Slack reaction/button feedback into durable inbound event metadata or a follow-up feedback store.
 - Keep UI scope limited to operator visibility unless a Codex-native chat surface becomes a product requirement.
 
 ## Known Constraints
@@ -108,7 +116,7 @@ Suggested work:
 - Dynamic shell/script MCP tools remain constrained to template-style dynamic tools.
 - Docker socket mounting is not part of the default deployment path.
 - Metrics reset on process restart unless scraped externally.
-- Multi-channel inbound chat parity is incomplete.
+- Multi-channel inbound chat parity is intentionally narrowed to webhook and Slack for now.
 - Phantom's full browser chat product is not a parity target right now.
 - Telegram support is not a parity target.
 

@@ -205,6 +205,8 @@ export class ChannelRegistry {
         return Boolean(this.config.slackAppToken);
       case "SLACK_SIGNING_SECRET":
         return Boolean(this.config.slackSigningSecret);
+      case "SLACK_BOT_USER_ID":
+        return Boolean(this.config.slackBotUserId);
       case "EXTERNAL_CHANNEL_SECRET":
         return Boolean(this.config.externalChannelSecret);
       default:

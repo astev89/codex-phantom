@@ -6,6 +6,8 @@ import type { JsonValue } from "../shared/types.ts";
 import { validateWebhookSecret } from "../channels/webhook.ts";
 import { ChannelRegistry } from "../channels/registry.ts";
 import { ChannelDeliveryStore } from "../channels/delivery-log.ts";
+import { InboundChannelEventStore, InboundChannelRouter, type InboundResponseTarget } from "../channels/inbound.ts";
+import { mapSlackEventToInboundMessage, validateSlackRequest, type SlackEventsPayload } from "../channels/slack-events.ts";
 import type { SlackTransport } from "../channels/slack.ts";
 import { SlackChannel } from "../channels/slack.ts";
 import { OrchestrationService } from "../orchestration/service.ts";
@@ -57,6 +59,8 @@ export class HttpServer {
   private readonly dynamicTools: DynamicToolRegistry;
   private readonly channels: ChannelRegistry;
   private readonly channelDeliveries: ChannelDeliveryStore;
+  private readonly channelInbound: InboundChannelEventStore;
+  private readonly inboundRouter: InboundChannelRouter;
   private readonly governance: ToolGovernanceService;
   private readonly slack: SlackChannel;
   private readonly settings: OperatorSettingsStore;
@@ -95,6 +99,8 @@ export class HttpServer {
     this.dynamicTools = dynamicTools;
     this.channels = channels;
     this.channelDeliveries = new ChannelDeliveryStore(database);
+    this.channelInbound = new InboundChannelEventStore(database);
+    this.inboundRouter = new InboundChannelRouter(channels, this.channelInbound, orchestration);
     this.governance = governance;
     this.slack = new SlackChannel(config, channels, this.channelDeliveries, slackTransport);
     this.settings = new OperatorSettingsStore(database);
@@ -166,6 +172,7 @@ export class HttpServer {
           memory: this.memory.getStatus(),
           channels: this.channels.summary(),
           channelDeliveries: this.channelDeliveries.summary(),
+          channelInbound: this.channelInbound.summary(),
           governance: this.governance.summary(),
           settings: this.settings.get(),
           metrics: this.metrics.snapshot()
@@ -200,6 +207,7 @@ export class HttpServer {
             databasePath: this.config.datastorePath
           },
           channelDeliveries: this.channelDeliveries.summary(),
+          channelInbound: this.channelInbound.summary(),
           governance: this.governance.summary(),
           settings: this.settings.get(),
           requestAudits: { recent: this.requestAudits.list(10).length },
@@ -260,6 +268,7 @@ export class HttpServer {
           runs: runsWithCounts,
           jobs: (await this.scheduler.list()).slice(0, settings.memoryTimelineLimit),
           memory: (await this.memory.listEntries(settings.memoryTimelineLimit)),
+          channelInbound: this.channelInbound.list({ limit: settings.memoryTimelineLimit }),
           governanceAudit: this.governance.listAudit(settings.memoryTimelineLimit)
         });
         return;
@@ -283,6 +292,14 @@ export class HttpServer {
         this.requireOperatorAuth(req);
         const channelId = url.searchParams.get("channelId") ?? undefined;
         this.json(res, 200, { deliveries: this.channelDeliveries.list(channelId) });
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/admin/channels/inbound") {
+        this.requireOperatorAuth(req);
+        const channelId = url.searchParams.get("channelId") ?? undefined;
+        const limit = url.searchParams.get("limit");
+        this.json(res, 200, { events: this.channelInbound.list({ channelId, limit: limit ? Number(limit) : undefined }) });
         return;
       }
 
@@ -412,12 +429,15 @@ export class HttpServer {
         }
         const body = validateWebhookBody(parseJsonBody(rawBody));
         const events: AgentRunEvent[] = [];
-        const result = await this.orchestration.runCoordinator(
+        const routed = await this.inboundRouter.routeSync(
           {
             sessionId: body.sessionId,
             channelId: "webhook",
+            providerEventId: `webhook:${requestId}`,
             conversationId: body.conversationId ?? "webhook",
             message: body.message,
+            responseTarget: { type: "webhook" },
+            rawPayload: parseJsonBody(rawBody) as JsonValue,
             subagents: body.subagents,
             timeoutMs: body.timeoutMs
           },
@@ -425,7 +445,54 @@ export class HttpServer {
             events.push(event);
           }
         );
-        this.json(res, 200, { requestId, sessionId: result.sessionId, runId: result.runId, outputText: result.outputText, events });
+        this.json(res, 200, {
+          requestId,
+          sessionId: routed.result.sessionId,
+          runId: routed.result.runId,
+          outputText: routed.result.outputText,
+          events,
+          inboundEvent: routed.record
+        });
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/channels/slack/events") {
+        const rawBody = await readTextBody(req);
+        if (!this.config.slackSigningSecret) {
+          throw new HttpError(412, "SLACK_SIGNING_SECRET is required for Slack inbound events");
+        }
+        const request = toRequest(req, rawBody);
+        if (!validateSlackRequest(request.headers, this.config.slackSigningSecret, rawBody)) {
+          throw new HttpError(401, "Unauthorized");
+        }
+        const payload = parseJsonBody(rawBody) as SlackEventsPayload;
+        if (payload.type === "url_verification" && payload.challenge) {
+          this.json(res, 200, { challenge: payload.challenge });
+          return;
+        }
+        const message = mapSlackEventToInboundMessage(payload, { botUserId: this.config.slackBotUserId });
+        if (!message) {
+          this.json(res, 202, { requestId, status: "ignored" });
+          return;
+        }
+        const routed = this.inboundRouter.routeAsync(message, {
+          onComplete: async (record) => {
+            await this.deliverInboundResponse(record.responseTarget, record.outputText);
+          },
+          onFailure: async (record) => {
+            this.logger.error("inbound_channel_failed", {
+              inboundEventId: record.id,
+              channelId: record.channelId,
+              error: record.errorMessage ?? "Inbound channel run failed"
+            });
+          }
+        });
+        this.json(res, 202, {
+          requestId,
+          inboundEventId: routed.record.id,
+          status: routed.duplicate ? "duplicate" : "accepted",
+          duplicate: routed.duplicate
+        });
         return;
       }
 
@@ -566,7 +633,7 @@ export class HttpServer {
       case "requests":
         return { items: this.requestAudits.list(250) };
       case "channels":
-        return { items: this.channelDeliveries.list(undefined, 250) };
+        return { items: [...this.channelDeliveries.list(undefined, 250), ...this.channelInbound.list({ limit: 250 })] };
       case "governance":
         return { items: this.governance.listAudit(250) };
       case "mcp":
@@ -579,9 +646,23 @@ export class HttpServer {
           items: [
             ...this.requestAudits.list(50),
             ...this.channelDeliveries.list(undefined, 50),
+            ...this.channelInbound.list({ limit: 50 }),
             ...this.governance.listAudit(50)
           ]
         };
+    }
+  }
+
+  private async deliverInboundResponse(target: InboundResponseTarget | undefined, outputText: string | undefined): Promise<void> {
+    if (!target || !outputText) {
+      return;
+    }
+    if (target.type === "slack_thread") {
+      await this.slack.sendMessage({
+        channel: target.channel,
+        text: outputText,
+        threadTs: target.threadTs
+      });
     }
   }
 
