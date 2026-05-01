@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { loadConfig } from "../src/config.ts";
 
 function withEnv(overrides: Record<string, string | undefined>, run: () => void): void {
@@ -88,5 +89,21 @@ test("production config rejects blank and placeholder secrets", () => {
     assert.throws(() => loadConfig(), /OPERATOR_BEARER_TOKEN/);
   } finally {
     process.env = original;
+  }
+});
+
+test("runtime configuration reference documents every env var", async () => {
+  const configSource = await readFile("src/config.ts", "utf8");
+  const docs = await readFile("docs/configuration.md", "utf8");
+  const envExample = await readFile(".env.example", "utf8");
+  const matches = configSource.matchAll(/process\.env\.([A-Z0-9_]+)/g);
+  const envVars = [...new Set([...matches].map((match) => match[1]))].sort();
+
+  assert.ok(envVars.length > 0);
+  for (const envVar of envVars) {
+    assert.match(docs, new RegExp(`\\\`${envVar}\\\``), `${envVar} must be documented`);
+    if (envVar !== "NODE_ENV") {
+      assert.match(envExample, new RegExp(`^${envVar}=`, "m"), `${envVar} must appear in .env.example`);
+    }
   }
 });

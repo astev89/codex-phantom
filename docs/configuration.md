@@ -1,0 +1,44 @@
+# Runtime Configuration
+
+`codex-phantom` reads configuration from process environment at startup. Local development can copy `.env.example` to `.env`; Docker Compose also reads that file when present. Production startup rejects default operator, MCP, and external channel secrets, and requires `OPENAI_API_KEY`.
+
+| Variable | Default | Production | Notes |
+| --- | --- | --- | --- |
+| `APP_ENV` / `NODE_ENV` | `development` | set `APP_ENV=production` | Only `development`, `test`, and `production` are recognized. |
+| `PORT` | `3210` | optional | HTTP server port. Must be a positive integer. |
+| `CODEX_PHANTOM_DATA_DIR` | `./data` | recommended | Parent directory for local app state. |
+| `CODEX_PHANTOM_DATABASE_PATH` | `${CODEX_PHANTOM_DATA_DIR}/codex-phantom.sqlite` | recommended | SQLite database path. Directory is created automatically. |
+| `LOG_LEVEL` | `info` | optional | One of `debug`, `info`, `warn`, or `error`. |
+| `AGENT_NAME` | `Codex Phantom` | optional | Display name used by health and the operator console. |
+| `OPERATOR_BEARER_TOKEN` | `dev-operator-token` | required non-default | Authenticates `/admin`, console, scheduler, memory, channel, metrics, and chat APIs. |
+| `MCP_BEARER_TOKEN` | `dev-mcp-token` | required non-default | Authenticates `/mcp` tool calls. |
+| `EXTERNAL_CHANNEL_SECRET` | `dev-external-secret` | required non-default | HMAC secret for inbound external channel webhooks. |
+| `REJECT_DEFAULT_SECRETS` | `true` in production | keep enabled | Set to `false` only for non-production diagnostics. Production still rejects defaults. |
+| `OPENAI_API_KEY` | unset | required | Enables OpenAI-backed agent and embedding calls. Without it, development uses fallback behavior. |
+| `OPENAI_BASE_URL` | unset | optional | Override for compatible OpenAI API endpoints. |
+| `OPENAI_MODEL` | `gpt-5` | optional | Responses model used by the Codex adapter. |
+| `OPENAI_CONVERSATION_MODE` | `previous_response_id` | optional | Set `manual` to avoid previous-response chaining. |
+| `OPENAI_REQUEST_TIMEOUT_MS` | `60000` | optional | Positive integer timeout for Responses calls. |
+| `OPENAI_EMBEDDING_MODEL` | `text-embedding-3-small` | optional | Embedding model used for memory vectors. |
+| `OPENAI_EMBEDDING_TIMEOUT_MS` | `10000` | optional | Positive integer timeout for embedding calls. |
+| `SEMANTIC_RETRIEVAL_ENABLED` | `true` | optional | Set `false` to disable embedding/vector memory retrieval. |
+| `QDRANT_ENABLED` | `false` | recommended with Compose | Requires `QDRANT_URL` when true. |
+| `QDRANT_URL` | unset | required if enabled | Compose uses `http://qdrant:6333`. |
+| `QDRANT_API_KEY` | unset | optional | Qdrant API key for secured deployments. |
+| `QDRANT_COLLECTION_NAME` | `codex-phantom-memory` | optional | Must not be blank. |
+| `QDRANT_TIMEOUT_MS` | `5000` | optional | Positive integer timeout for vector store calls. |
+| `SLACK_BOT_TOKEN` | unset | optional | Required only for outbound Slack sends. |
+| `SLACK_APP_TOKEN` | unset | optional | Reserved for future Slack app-level flows. |
+| `SLACK_SIGNING_SECRET` | unset | optional | Reserved for future inbound Slack verification. |
+| `MEMORY_EMBEDDING_BATCH_SIZE` | `8` | optional | Positive integer batch size for embedding backfills. |
+| `MEMORY_TOP_K` | `12` | optional | Positive integer semantic retrieval result count. |
+| `MEMORY_PER_CATEGORY_LIMIT` | `3` | optional | Positive integer category cap for memory query responses. |
+| `MEMORY_SUMMARY_LIMIT` | `2` | optional | Positive integer summary count returned with memory. |
+| `MEMORY_SUMMARY_TRIGGER_COUNT` | `6` | optional | Positive integer threshold for summary generation. |
+| `MEMORY_SUMMARY_CLUSTER_SIZE` | `4` | optional | Positive integer grouping size for summary generation. |
+| `DEFAULT_RUN_TIMEOUT_MS` | `30000` | optional | Positive integer fallback run timeout. |
+| `DEFAULT_MAX_TOOL_CALLS` | `6` | optional | Positive integer fallback tool-call cap. |
+
+## Failure Behavior
+
+Startup fails fast when integer fields are non-positive, required secrets are blank, `QDRANT_ENABLED=true` lacks `QDRANT_URL`, production lacks `OPENAI_API_KEY`, or production/default-secret rejection finds `replace-me` or development defaults.
