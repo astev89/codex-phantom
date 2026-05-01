@@ -78,16 +78,16 @@ export function renderOperatorConsole(agentName: string): string {
   </head>
   <body>
     <div class="shell">
-      <h1>${escapeHtml(agentName)} Operator Console</h1>
+      <h1 data-testid="console-title">${escapeHtml(agentName)} Operator Console</h1>
       <p>Live view over health, runs, jobs, and a direct chat test surface.</p>
       <div class="grid">
         <section class="panel">
           <h2>Health</h2>
-          <pre id="health">Loading...</pre>
+          <pre id="health" data-testid="health-panel">Loading...</pre>
         </section>
         <section class="panel">
           <h2>Admin Summary</h2>
-          <pre id="adminSummary">Loading...</pre>
+          <pre id="adminSummary" data-testid="admin-summary-panel">Loading...</pre>
         </section>
         <section class="panel">
           <h2>Diagnostics</h2>
@@ -114,7 +114,11 @@ export function renderOperatorConsole(agentName: string): string {
         </section>
         <section class="panel">
           <h2>Jobs</h2>
-          <pre id="jobs">Loading...</pre>
+          <pre id="jobs" data-testid="jobs-panel">Loading...</pre>
+        </section>
+        <section class="panel">
+          <h2>MCP Audit</h2>
+          <pre id="mcpAudit" data-testid="mcp-audit-panel">Loading...</pre>
         </section>
         <section class="panel wide">
           <h2>Memory</h2>
@@ -126,28 +130,28 @@ export function renderOperatorConsole(agentName: string): string {
         </section>
         <section class="panel wide">
           <h2>Operator Settings</h2>
-          <input id="settingsRefresh" placeholder="dashboard refresh seconds" value="5" />
-          <input id="settingsConversation" placeholder="default conversation id" value="operator-console" />
-          <input id="settingsMemoryLimit" placeholder="memory timeline limit" value="20" />
-          <button id="saveSettings">Save settings</button>
-          <pre id="settings">Loading...</pre>
+          <input id="settingsRefresh" data-testid="settings-refresh-input" placeholder="dashboard refresh seconds" value="5" />
+          <input id="settingsConversation" data-testid="settings-conversation-input" placeholder="default conversation id" value="operator-console" />
+          <input id="settingsMemoryLimit" data-testid="settings-memory-limit-input" placeholder="memory timeline limit" value="20" />
+          <button id="saveSettings" data-testid="settings-save-button">Save settings</button>
+          <pre id="settings" data-testid="settings-panel">Loading...</pre>
         </section>
         <section class="panel wide">
           <h2>Dynamic Tools</h2>
-          <input id="toolId" placeholder="tool id (for example project.brief)" />
-          <input id="toolDescription" placeholder="description" />
-          <textarea id="toolTemplate" rows="3" placeholder="response template, for example Brief for {{topic}}"></textarea>
-          <textarea id="toolSchema" rows="4" placeholder='input schema JSON, for example {"type":"object","properties":{"topic":{"type":"string"}}}'></textarea>
-          <button id="registerTool">Register dynamic tool</button>
-          <pre id="tools">Loading...</pre>
+          <input id="toolId" data-testid="tool-id-input" placeholder="tool id (for example project.brief)" />
+          <input id="toolDescription" data-testid="tool-description-input" placeholder="description" />
+          <textarea id="toolTemplate" data-testid="tool-template-input" rows="3" placeholder="response template, for example Brief for {{topic}}"></textarea>
+          <textarea id="toolSchema" data-testid="tool-schema-input" rows="4" placeholder='input schema JSON, for example {"type":"object","properties":{"topic":{"type":"string"}}}'></textarea>
+          <button id="registerTool" data-testid="tool-register-button">Register dynamic tool</button>
+          <pre id="tools" data-testid="tools-panel">Loading...</pre>
         </section>
         <section class="panel wide">
           <h2>Tool Governance</h2>
-          <input id="approveToolId" placeholder="tool id to approve" />
-          <input id="approveToolActor" placeholder="approved by" value="operator-console" />
-          <input id="approveToolNotes" placeholder="approval notes" />
-          <button id="approveTool">Approve tool</button>
-          <pre id="governance">Loading...</pre>
+          <input id="approveToolId" data-testid="approve-tool-id-input" placeholder="tool id to approve" />
+          <input id="approveToolActor" data-testid="approve-tool-actor-input" placeholder="approved by" value="operator-console" />
+          <input id="approveToolNotes" data-testid="approve-tool-notes-input" placeholder="approval notes" />
+          <button id="approveTool" data-testid="approve-tool-button">Approve tool</button>
+          <pre id="governance" data-testid="governance-panel">Loading...</pre>
         </section>
         <section class="panel wide">
           <h2>Channels</h2>
@@ -185,6 +189,7 @@ export function renderOperatorConsole(agentName: string): string {
           loadJson('/sessions', 'sessions'),
           loadJson('/runs', 'runs'),
           loadJson('/scheduler/jobs', 'jobs'),
+          loadJson('/admin/mcp/audit', 'mcpAudit'),
           loadJson('/memory', 'memory'),
           loadJson('/admin/timeline', 'timeline'),
           loadJson('/admin/settings', 'settings'),
