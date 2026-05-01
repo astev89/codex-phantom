@@ -4,6 +4,8 @@ import { OrchestrationService } from "../orchestration/service.ts";
 import type { AppDatabase } from "../platform/database.ts";
 import { decodeJson, encodeJson } from "../platform/database.ts";
 
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
 export type JobRecord = {
   id: string;
   name: string;
@@ -162,9 +164,15 @@ export class SchedulerService {
     }
 
     const delayMs = Math.max(0, Date.parse(job.scheduledAt) - Date.now());
+    const timerDelayMs = Math.min(delayMs, MAX_TIMER_DELAY_MS);
     const timer = setTimeout(() => {
+      if (delayMs > MAX_TIMER_DELAY_MS) {
+        this.timers.delete(job.id);
+        this.arm(job);
+        return;
+      }
       void this.execute(job.id);
-    }, delayMs);
+    }, timerDelayMs);
     this.timers.set(job.id, timer);
   }
 
