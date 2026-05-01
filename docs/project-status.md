@@ -2,17 +2,45 @@
 
 This is the living status ledger for `codex-phantom`. Update it at the end of each development wave, after tests pass and before handing off or opening a PR.
 
-Last updated: 2026-04-28
+Last updated: 2026-05-01
 Branch: `codex/production-readiness-slices`
-Latest verified commit: `cde1e13 fix(ops): make mcp audit best effort`
+Latest verified commit: pending local verification wave
 
 ## Current State
 
 `codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, and hybrid long-term memory with Qdrant-backed vector recall plus SQLite fallback.
 
-The project is now past its first serious production-hardening pass. It is not yet equivalent to the original Phantom project, but the core runtime is materially safer to run: request sizes are bounded, secrets are rejected in production when defaults are used, outbound model calls have timeouts, scheduler jobs recover deterministically after restarts, MCP events are durably audited, and the Docker image runs compiled JavaScript instead of stripped TypeScript.
+The project is now past its first serious production-hardening pass. It is not yet equivalent to the original Phantom project, but the core runtime is materially safer to run: request sizes are bounded, secrets are rejected in production when defaults are used, outbound model calls have timeouts, scheduler jobs recover deterministically after restarts, MCP events are durably audited, external webhooks are signed, Slack sends retry transient failures, operator-console workflows have browser coverage, and the Docker image runs compiled JavaScript instead of stripped TypeScript.
 
 ## Just Completed
+
+Production agenda wave completed locally on 2026-05-01:
+
+- Added expanded deployment smoke coverage for MCP listing, MCP audit, Prometheus metrics, scheduler routes, unauthenticated admin rejection, MCP rate limiting, restart persistence, and required Compose secrets.
+- Added deterministic backup/restore smoke scripts that seed SQLite operator state, archive the `codex-phantom-data` volume, recreate it, restore the archive, and verify restored state through HTTP APIs.
+- Added `docs/configuration.md` as the runtime environment variable inventory and test coverage that keeps it aligned with `src/config.ts` and `.env.example`.
+- Added GitHub Actions CI for Node 24 install, typecheck, tests, production build, and a dependent Docker image build.
+- Added Playwright operator-console coverage using local Chrome for auth, settings, dynamic tool approval, MCP audit visibility, and scheduler jobs.
+- Added stable console `data-testid` hooks and an MCP audit console panel.
+- Replaced plain webhook secret validation with timestamped HMAC signatures and documented the inbound webhook contract.
+- Added Slack retry handling for transient `429` and `5xx` responses, delivery `attemptCount`, and recent failed deliveries in channel summaries.
+- Fixed far-future scheduler timers so long-delay jobs re-arm instead of overflowing Node's timer limit.
+- Classified Phantom parity deferrals as accepted divergences versus not-yet-implemented work, and documented Prometheus/Grafana as the durable metrics path for this wave.
+
+Verification from this wave:
+
+```bash
+npm run typecheck
+node --experimental-strip-types --test tests/scheduler.test.ts tests/config.test.ts tests/deployment.test.ts tests/server.test.ts
+npm test
+npm run build
+npm run test:e2e
+```
+
+Notes:
+
+- `npm run test:e2e` passed using the local Chrome channel. A bundled Chromium install attempt hung and was stopped.
+- `scripts/deployment-smoke.sh` and `scripts/backup-restore-smoke.sh` were added and covered by static tests, but not executed in this run because they boot Docker Compose and the backup/restore script recreates the `codex-phantom-data` Docker volume.
 
 Production readiness wave completed on 2026-04-28:
 
@@ -41,85 +69,15 @@ npm run build
 
 ## Next Tasks
 
-### P1: Operator Backup And Restore Validation
+### P1: Execute Docker Production Smoke Scripts
 
-The README documents backup and restore, but the current automated smoke path only verifies restart persistence. Add a restore-oriented smoke or test path that proves a saved SQLite volume can be restored and still serve expected operator state.
-
-Suggested work:
-
-- Add a script or documented test mode for backup/restore validation.
-- Verify restored settings, sessions, jobs, memory, and MCP audit rows.
-- Keep the test local and deterministic; avoid depending on external OpenAI or Slack services.
-
-### P1: Runtime Configuration Inventory
-
-The project has grown enough that operators need a single source of truth for required and optional environment variables.
+The deployment and backup/restore smoke scripts now exist, but this local implementation run did not execute them because the restore script recreates the `codex-phantom-data` Docker volume.
 
 Suggested work:
 
-- Add a configuration reference covering secrets, ports, SQLite path, Qdrant, OpenAI, Slack, timeouts, and production mode.
-- Include defaults, production requirements, and failure behavior.
-- Link the reference from the README and deployment docs.
-
-### P1: Deployment Smoke Coverage Expansion
-
-The deployment smoke should cover more than boot and settings persistence now that MCP audit, scheduler recovery, and compiled runtime are part of the production contract.
-
-Suggested work:
-
-- Exercise `/mcp`, `/admin/mcp/audit`, `/metrics?format=prometheus`, and scheduler routes in `scripts/deployment-smoke.sh`.
-- Confirm rate limiting and unauthenticated rejection behavior remains intact.
-- Keep smoke failures explicit and easy to diagnose in CI logs.
-
-### P2: CI Pipeline
-
-Local verification is strong, but there is no visible CI contract in the current repo surface.
-
-Suggested work:
-
-- Add GitHub Actions for install, typecheck, tests, and production build.
-- Consider a separate Docker build job once the basic pipeline is stable.
-- Cache npm dependencies conservatively.
-
-### P2: Admin Console Coverage
-
-The HTTP APIs have good coverage, but the browser operator console still needs interaction-level coverage for the workflows operators will actually use.
-
-Suggested work:
-
-- Add Playwright coverage for the root console.
-- Cover login/auth, health summary, settings update, dynamic tool approval, MCP audit viewing, and scheduler/job panels.
-- Prefer stable data-test attributes over fragile text selectors.
-
-### P2: External Channel Hardening
-
-Slack is outbound-focused and operationally useful, but multi-channel inbound parity remains partial.
-
-Suggested work:
-
-- Define the intended inbound channel contract before expanding implementation.
-- Add webhook signature/replay coverage if not already sufficient.
-- Add delivery retry policy and operator-visible failure summaries for external sends.
-
-### P3: Durable Metrics Strategy
-
-Metrics are intentionally process-local today. That is acceptable for early self-hosting with Prometheus scraping, but not enough for standalone historical diagnostics.
-
-Suggested work:
-
-- Decide whether durable metrics belong in SQLite or should remain external-only.
-- If SQLite-backed, define retention and aggregation to avoid unbounded growth.
-- If external-only, document the Prometheus/Grafana deployment path.
-
-### P3: Phantom Parity Decision Log
-
-Some Phantom behaviors are intentionally deferred or divergent. Those decisions should stay explicit as the project evolves.
-
-Suggested work:
-
-- Expand `docs/phantom-parity.md` with rationale for each deferred item.
-- Add "accepted divergence" versus "not implemented yet" classifications.
-- Revisit after each production wave.
+- Run `scripts/deployment-smoke.sh` with production-like secrets.
+- Run `scripts/backup-restore-smoke.sh` after confirming the local Docker volume can be safely recreated.
+- If both pass, update this ledger with the exact commands and any operator notes.
 
 ## Known Constraints
 

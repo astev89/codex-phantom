@@ -19,6 +19,7 @@ npm run dev
 ```
 
 The service starts on `http://localhost:3210` by default.
+See `docs/configuration.md` for every supported environment variable, default, and production requirement.
 
 ## Production runtime
 
@@ -111,6 +112,8 @@ Slack is now the first real external channel path. The current implementation fo
 - each delivery attempt is recorded in `channel_delivery_logs`
 - operators can inspect delivery history through `/admin/channels/deliveries`
 
+See `docs/channels.md` for the signed inbound webhook contract, Slack outbound scope, retry behavior, and delivery-log semantics.
+
 ## Deployment
 
 ### Docker
@@ -145,6 +148,7 @@ scripts/deployment-smoke.sh
 ```
 
 The smoke builds and boots the Compose stack, checks public health, verifies `/admin/summary` rejects unauthenticated requests, verifies operator-token access, updates persisted operator settings, restarts `codex-phantom`, and confirms the setting survived restart.
+For restore validation, run `scripts/backup-restore-smoke.sh`; it backs up the SQLite volume, recreates it from the archive, and verifies restored operator state through HTTP APIs.
 
 Compose stores app state in the named `codex-phantom-data` volume and Qdrant state in `codex-phantom-qdrant-data`.
 
