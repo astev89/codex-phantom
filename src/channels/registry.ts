@@ -60,10 +60,15 @@ const DEFAULT_CHANNELS = [
     id: "slack",
     kind: "external_chat",
     displayName: "Slack",
-    description: "Planned external channel with operator-controlled enablement and secret checks.",
+    description: "Slack channel with outbound delivery and signed inbound Events API ingestion.",
     enabled: false,
     secretEnvVar: "SLACK_BOT_TOKEN",
-    config: { transport: "slack", status: "planned" }
+    config: {
+      transport: "slack",
+      status: "available",
+      requiredSecretEnvVars: ["SLACK_BOT_TOKEN", "SLACK_SIGNING_SECRET"],
+      optionalSecretEnvVars: ["SLACK_BOT_USER_ID"]
+    }
   }
 ] as Array<{
   id: string;
@@ -164,7 +169,14 @@ export class ChannelRegistry {
             INSERT INTO channels (
               id, kind, display_name, description, enabled, secret_env_var, webhook_path, config_json, created_at, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO NOTHING
+            ON CONFLICT(id) DO UPDATE SET
+              kind = excluded.kind,
+              display_name = excluded.display_name,
+              description = excluded.description,
+              secret_env_var = excluded.secret_env_var,
+              webhook_path = excluded.webhook_path,
+              config_json = excluded.config_json,
+              updated_at = excluded.updated_at
           `,
           channel.id,
           channel.kind,
@@ -182,6 +194,8 @@ export class ChannelRegistry {
   }
 
   private toChannelRecord(row: ChannelRow): ChannelRecord {
+    const config = decodeJson<Record<string, unknown>>(row.config_json, {});
+    const requiredSecrets = stringArrayValue(config.requiredSecretEnvVars);
     return {
       id: row.id,
       kind: row.kind,
@@ -189,9 +203,11 @@ export class ChannelRegistry {
       description: row.description,
       enabled: row.enabled === 1,
       secretEnvVar: row.secret_env_var ?? undefined,
-      secretPresent: row.secret_env_var ? this.resolveSecretPresence(row.secret_env_var) : true,
+      secretPresent: requiredSecrets.length > 0
+        ? requiredSecrets.every((secretEnvVar) => this.resolveSecretPresence(secretEnvVar))
+        : row.secret_env_var ? this.resolveSecretPresence(row.secret_env_var) : true,
       webhookPath: row.webhook_path ?? undefined,
-      config: decodeJson<Record<string, unknown>>(row.config_json, {}),
+      config,
       createdAt: row.created_at,
       updatedAt: row.updated_at
     };
@@ -213,4 +229,8 @@ export class ChannelRegistry {
         return Boolean(process.env[secretEnvVar]);
     }
   }
+}
+
+function stringArrayValue(value: unknown): string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string") ? value : [];
 }

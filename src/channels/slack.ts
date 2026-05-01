@@ -47,6 +47,7 @@ export class SlackChannel {
     const payload: Record<string, JsonValue> = { channel: input.channel, text: input.text };
     if (input.threadTs) {
       payload.threadTs = input.threadTs;
+      payload.thread_ts = input.threadTs;
     }
     let result: Awaited<ReturnType<SlackTransport["sendMessage"]>> = { ok: false, error: "Slack delivery was not attempted" };
     let attemptCount = 0;

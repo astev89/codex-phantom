@@ -7,7 +7,7 @@ import test from "node:test";
 import { AppDatabase } from "../src/platform/database.ts";
 import { makeConfig } from "./helpers.ts";
 import { ChannelRegistry } from "../src/channels/registry.ts";
-import { InboundChannelEventStore } from "../src/channels/inbound.ts";
+import { InboundChannelEventStore, InboundChannelRouter } from "../src/channels/inbound.ts";
 import {
   mapSlackEventToInboundMessage,
   validateSlackRequest,
@@ -138,6 +138,7 @@ test("inbound event store records lifecycle states and dedupes provider events",
 
     assert.equal(first.duplicate, false);
     assert.equal(duplicate.duplicate, true);
+    assert.equal(duplicate.record.id, first.record.id);
 
     store.markRunning(first.record.id);
     store.markCompleted(first.record.id, { sessionId: "session_123", runId: "run_123", outputText: "done" });
@@ -145,7 +146,53 @@ test("inbound event store records lifecycle states and dedupes provider events",
     assert.equal(record?.status, "completed");
     assert.equal(record?.runId, "run_123");
     assert.equal(record?.outputText, "done");
+    assert.doesNotThrow(() => store.list({ channelId: "slack", limit: Number.NaN }));
     assert.equal(store.summary().completed, 1);
+  } finally {
+    database.close();
+  }
+});
+
+test("inbound async completion side effects do not mark successful runs failed", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "codex-phantom-inbound-router-"));
+  const config = makeConfig(dataDir, { slackSigningSecret: "slack-signing-secret" });
+  const database = new AppDatabase(join(dataDir, "router.sqlite"));
+  const channels = new ChannelRegistry(database, config);
+  const store = new InboundChannelEventStore(database);
+  const orchestration = {
+    async runCoordinator() {
+      return {
+        sessionId: "session_123",
+        runId: "run_123",
+        outputText: "done"
+      };
+    }
+  };
+  const router = new InboundChannelRouter(channels, store, orchestration as never);
+
+  try {
+    channels.upsert({ id: "slack", enabled: true });
+    const routed = router.routeAsync(
+      {
+        channelId: "slack",
+        providerEventId: "EvCallbackFailure",
+        conversationId: "slack:C123:1713900000.000000",
+        senderId: "U123",
+        message: "hello",
+        responseTarget: { type: "slack_thread", channel: "C123", threadTs: "1713900000.000000" },
+        rawPayload: { event_id: "EvCallbackFailure" }
+      },
+      {
+        async onComplete() {
+          throw new Error("Slack delivery failed");
+        }
+      }
+    );
+    const completed = await routed.completion;
+
+    assert.equal(completed.status, "completed");
+    assert.equal(completed.runId, "run_123");
+    assert.equal(store.summary().failed, 0);
   } finally {
     database.close();
   }

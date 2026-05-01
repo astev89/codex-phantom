@@ -20,7 +20,7 @@ Inbound channels normalize external events into one message envelope before runn
 }
 ```
 
-The router validates that the channel is enabled, records `received`, `running`, `completed`, `failed`, or `ignored` state in SQLite, and deduplicates by `(channelId, providerEventId)`. Operators can inspect recent inbound events through `GET /admin/channels/inbound`; `/admin/summary` includes inbound counts and recent failures.
+The router validates that the channel is enabled, records accepted events as `received`, `running`, `completed`, or `failed` in SQLite, and deduplicates by `(channelId, providerEventId)`. The `ignored` state is reserved for events that are deliberately persisted as ignored; Slack bot/self/subtype noise is currently dropped before persistence. Operators can inspect recent inbound events through `GET /admin/channels/inbound`; `/admin/summary` includes inbound counts and recent failures.
 
 Web Chat and Telegram are not current parity targets.
 

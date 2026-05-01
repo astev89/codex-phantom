@@ -632,11 +632,15 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
     });
     const channelsJson = await channelsResponse.json() as {
-      channels: Array<{ id: string; enabled: boolean; secretPresent: boolean }>;
+      channels: Array<{ id: string; enabled: boolean; secretPresent: boolean; config: { requiredSecretEnvVars?: string[] } }>;
     };
     assert.ok(channelsJson.channels.some((channel) => channel.id === "web"));
     assert.ok(channelsJson.channels.some((channel) => channel.id === "slack"));
-    assert.ok(channelsJson.channels.some((channel) => channel.id === "slack" && channel.secretPresent === true));
+    assert.ok(channelsJson.channels.some((channel) =>
+      channel.id === "slack" &&
+      channel.secretPresent === true &&
+      channel.config.requiredSecretEnvVars?.includes("SLACK_SIGNING_SECRET")
+    ));
 
     const channelUpdateResponse = await fetch(`http://127.0.0.1:${port}/admin/channels`, {
       method: "POST",
@@ -727,7 +731,7 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
     });
     const deliveriesJson = await deliveriesResponse.json() as {
-      deliveries: Array<{ channelId: string; status: string; destination: string; attemptCount: number }>;
+      deliveries: Array<{ channelId: string; status: string; destination: string; attemptCount: number; payload: { thread_ts?: string } }>;
     };
     assert.ok(deliveriesJson.deliveries.some((delivery) =>
       delivery.channelId === "slack" &&
@@ -735,6 +739,7 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       delivery.destination === "C123456" &&
       delivery.attemptCount === 1
     ));
+    assert.ok(deliveriesJson.deliveries.some((delivery) => delivery.payload.thread_ts === "1713900001.000000"));
 
     const adminSummaryResponse = await fetch(`http://127.0.0.1:${port}/admin/summary`, {
       headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
