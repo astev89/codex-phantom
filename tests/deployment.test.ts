@@ -44,8 +44,10 @@ test("docker compose defines restart and persistence settings for local producti
   assert.match(compose, /qdrant-data:\/qdrant\/storage/);
 });
 
-test("deployment smoke script and docs cover boot, restart persistence, and backup restore", async () => {
+test("deployment smoke scripts and docs cover boot, restart persistence, and backup restore", async () => {
   const script = await readFile("scripts/deployment-smoke.sh", "utf8");
+  const restoreScript = await readFile("scripts/backup-restore-smoke.sh", "utf8");
+  const seedScript = await readFile("scripts/restore-smoke-seed.mjs", "utf8");
   const readme = await readFile("README.md", "utf8");
   const parity = await readFile("docs/phantom-parity.md", "utf8");
 
@@ -53,7 +55,30 @@ test("deployment smoke script and docs cover boot, restart persistence, and back
   assert.match(script, /docker compose up -d --build/);
   assert.match(script, /docker compose restart codex-phantom/);
   assert.match(script, /\/admin\/summary/);
+  assert.match(script, /\/mcp/);
+  assert.match(script, /\/admin\/mcp\/audit/);
+  assert.match(script, /\/metrics\?format=prometheus/);
+  assert.match(script, /\/scheduler\/jobs/);
+  assert.match(script, /429/);
   assert.match(script, /OPERATOR_BEARER_TOKEN/);
+  assert.match(script, /MCP_BEARER_TOKEN/);
+  assert.match(script, /EXTERNAL_CHANNEL_SECRET/);
+  assert.match(script, /OPENAI_API_KEY/);
+  assert.match(restoreScript, /docker volume rm codex-phantom-data/);
+  assert.match(restoreScript, /docker volume create codex-phantom-data/);
+  assert.match(restoreScript, /codex-phantom-data\.tgz/);
+  assert.match(restoreScript, /\/admin\/settings/);
+  assert.match(restoreScript, /\/sessions/);
+  assert.match(restoreScript, /\/runs/);
+  assert.match(restoreScript, /\/scheduler\/jobs/);
+  assert.match(restoreScript, /\/memory/);
+  assert.match(restoreScript, /\/admin\/mcp\/audit/);
+  assert.match(restoreScript, /\/admin\/timeline/);
+  assert.match(seedScript, /session_restore_smoke/);
+  assert.match(seedScript, /run_restore_smoke/);
+  assert.match(seedScript, /job_restore_smoke/);
+  assert.match(seedScript, /mem_restore_smoke/);
+  assert.match(seedScript, /req_restore_smoke/);
   assert.match(readme, /Deployment smoke/);
   assert.match(readme, /npm run build/);
   assert.match(readme, /node dist\/index\.js/);
