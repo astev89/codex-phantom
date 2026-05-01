@@ -14,6 +14,12 @@ The project is now past its first serious production-hardening pass. It is not y
 
 ## Just Completed
 
+Docs runbook wave completed locally on 2026-05-01:
+
+- Added a decision-ready plan for the Docker smoke documentation pass under `docs/superpowers/plans/`.
+- Added `docs/deployment-smoke-runbook.md` with required environment, preflight checks, destructive-volume warnings, script order, expected pass evidence, ledger update notes, and failure handling.
+- Refined the remaining P1 next task so it points operators at the runbook instead of repeating command details in the ledger.
+
 Production agenda wave completed locally on 2026-05-01:
 
 - Added expanded deployment smoke coverage for MCP listing, MCP audit, Prometheus metrics, scheduler routes, unauthenticated admin rejection, MCP rate limiting, restart persistence, and required Compose secrets.
@@ -71,13 +77,12 @@ npm run build
 
 ### P1: Execute Docker Production Smoke Scripts
 
-The deployment and backup/restore smoke scripts now exist, but this local implementation run did not execute them because the restore script recreates the `codex-phantom-data` Docker volume.
+The deployment and backup/restore smoke scripts now exist, but this local implementation run did not execute them because the restore script recreates the `codex-phantom-data` Docker volume. Use `docs/deployment-smoke-runbook.md` to run and record the validation safely.
 
 Suggested work:
 
-- Run `scripts/deployment-smoke.sh` with production-like secrets.
-- Run `scripts/backup-restore-smoke.sh` after confirming the local Docker volume can be safely recreated.
-- If both pass, update this ledger with the exact commands and any operator notes.
+- Run the preflight, deployment smoke, and backup/restore smoke from the runbook.
+- If both scripts pass, update this ledger with the evidence listed in the runbook.
 
 ## Known Constraints
 
