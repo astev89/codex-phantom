@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,7 +24,8 @@ import { AppDatabase } from "../src/platform/database.ts";
 import { Logger } from "../src/platform/logger.ts";
 import { MetricsStore } from "../src/platform/metrics.ts";
 import { makeConfig, makeDisabledEmbeddings, makeFakeVectorStore } from "./helpers.ts";
-import type { SlackTransport } from "../src/channels/slack.ts";
+import { SlackChannel, type SlackTransport } from "../src/channels/slack.ts";
+import { ChannelDeliveryStore } from "../src/channels/delivery-log.ts";
 
 class FakeAdapter implements AgentAdapter {
   readonly name = "fake-codex";
@@ -69,14 +71,33 @@ class FakeAdapter implements AgentAdapter {
 
 class FakeSlackTransport implements SlackTransport {
   readonly sent: Array<{ channel: string; text: string }> = [];
+  private readonly responses: Array<{ ok: boolean; ts?: string; error?: string; statusCode?: number; retryAfterMs?: number }>;
 
-  async sendMessage(input: { token: string; channel: string; text: string }): Promise<{ ok: boolean; ts?: string; error?: string }> {
-    this.sent.push({ channel: input.channel, text: input.text });
-    return {
-      ok: true,
-      ts: "1713900000.000100"
-    };
+  constructor(responses: Array<{ ok: boolean; ts?: string; error?: string; statusCode?: number; retryAfterMs?: number }> = [
+    { ok: true, ts: "1713900000.000100", statusCode: 200 }
+  ]) {
+    this.responses = responses;
   }
+
+  async sendMessage(input: { token: string; channel: string; text: string }): Promise<{
+    ok: boolean;
+    ts?: string;
+    error?: string;
+    statusCode?: number;
+    retryAfterMs?: number;
+  }> {
+    this.sent.push({ channel: input.channel, text: input.text });
+    return this.responses.shift() ?? { ok: true, ts: "1713900000.000100", statusCode: 200 };
+  }
+}
+
+function signedWebhookHeaders(secret: string, body: string, timestamp = Math.floor(Date.now() / 1000).toString()): Record<string, string> {
+  const signature = createHmac("sha256", secret).update(`${timestamp}.${body}`).digest("hex");
+  return {
+    "Content-Type": "application/json",
+    "x-channel-timestamp": timestamp,
+    "x-channel-signature": `sha256=${signature}`
+  };
 }
 
 test("buildJsonExport wraps records in an operator-friendly envelope", () => {
@@ -136,6 +157,49 @@ test("buildNdjsonExport emits one serialized record per line", () => {
       "{\"channelId\":\"webhook\",\"status\":\"failed\"}"
     ].join("\n")
   );
+});
+
+test("slack delivery retries transient failures and records attempt counts", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "codex-phantom-slack-"));
+  const config = makeConfig(dataDir, { slackBotToken: "xoxb-test-token" });
+  const database = new AppDatabase(join(dataDir, "slack.sqlite"));
+  const channels = new ChannelRegistry(database, config);
+  channels.upsert({ id: "slack", enabled: true });
+  const deliveries = new ChannelDeliveryStore(database);
+  const transport = new FakeSlackTransport([
+    { ok: false, error: "server_error", statusCode: 500, retryAfterMs: 1 },
+    { ok: false, error: "rate_limited", statusCode: 429, retryAfterMs: 1 },
+    { ok: true, ts: "1713900000.000200", statusCode: 200 }
+  ]);
+
+  try {
+    const slack = new SlackChannel(config, channels, deliveries, transport);
+    const result = await slack.sendMessage({ channel: "C123456", text: "retry me" });
+
+    assert.equal(result.delivery.status, "delivered");
+    assert.equal(result.delivery.attemptCount, 3);
+    assert.equal(result.result.ts, "1713900000.000200");
+    assert.equal(transport.sent.length, 3);
+
+    const failingTransport = new FakeSlackTransport([
+      { ok: false, error: "server_error", statusCode: 500, retryAfterMs: 1 },
+      { ok: false, error: "server_error", statusCode: 500, retryAfterMs: 1 },
+      { ok: false, error: "server_error", statusCode: 500, retryAfterMs: 1 }
+    ]);
+    const failingSlack = new SlackChannel(config, channels, deliveries, failingTransport);
+    await assert.rejects(() => failingSlack.sendMessage({ channel: "C999999", text: "fail me" }), /server_error/);
+
+    const summary = deliveries.summary();
+    assert.equal(summary.delivered, 1);
+    assert.equal(summary.failed, 1);
+    assert.ok(summary.recentFailed.some((delivery) =>
+      delivery.destination === "C999999" &&
+      delivery.status === "failed" &&
+      delivery.attemptCount === 3
+    ));
+  } finally {
+    database.close();
+  }
 });
 
 test("chat streaming, health, scheduler, and mcp routes work", async () => {
@@ -283,6 +347,28 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
     assert.equal(badWebhookResponse.status, 401);
     assert.equal(badWebhookResponse.headers.get("www-authenticate"), null);
 
+    const staleWebhookBody = JSON.stringify({
+      conversationId: "stale-hook",
+      message: "blocked"
+    });
+    const staleWebhookResponse = await fetch(`http://127.0.0.1:${port}/channels/webhook`, {
+      method: "POST",
+      headers: signedWebhookHeaders(config.externalChannelSecret, staleWebhookBody, "1713900000"),
+      body: staleWebhookBody
+    });
+    assert.equal(staleWebhookResponse.status, 401);
+
+    const wrongSignatureWebhookBody = JSON.stringify({
+      conversationId: "wrong-signature-hook",
+      message: "blocked"
+    });
+    const wrongSignatureWebhookResponse = await fetch(`http://127.0.0.1:${port}/channels/webhook`, {
+      method: "POST",
+      headers: signedWebhookHeaders("wrong-secret", wrongSignatureWebhookBody),
+      body: wrongSignatureWebhookBody
+    });
+    assert.equal(wrongSignatureWebhookResponse.status, 401);
+
     const consoleResponse = await fetch(`http://127.0.0.1:${port}/`, {
       headers: {
         Authorization: `Basic ${Buffer.from(`operator:${config.operatorBearerToken}`).toString("base64")}`
@@ -342,16 +428,14 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
     assert.match(streamText, /"type":"final"/);
     assert.match(streamText, /assistant:hello from web/);
 
+    const webhookBody = JSON.stringify({
+      conversationId: "hook-1",
+      message: "hello from webhook"
+    });
     const webhookResponse = await fetch(`http://127.0.0.1:${port}/channels/webhook`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-channel-secret": config.externalChannelSecret
-      },
-      body: JSON.stringify({
-        conversationId: "hook-1",
-        message: "hello from webhook"
-      })
+      headers: signedWebhookHeaders(config.externalChannelSecret, webhookBody),
+      body: webhookBody
     });
     const webhookJson = await webhookResponse.json() as { sessionId: string; outputText: string };
     assert.equal(webhookJson.outputText, "assistant:hello from webhook");
@@ -549,12 +633,13 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
       })
     });
     const slackMessageJson = await slackMessageResponse.json() as {
-      delivery: { channelId: string; status: string; destination: string };
+      delivery: { channelId: string; status: string; destination: string; attemptCount: number };
       result: { ts: string };
     };
     assert.equal(slackMessageJson.delivery.channelId, "slack");
     assert.equal(slackMessageJson.delivery.status, "delivered");
     assert.equal(slackMessageJson.delivery.destination, "C123456");
+    assert.equal(slackMessageJson.delivery.attemptCount, 1);
     assert.equal(slackMessageJson.result.ts, "1713900000.000100");
     assert.deepEqual(slackTransport.sent, [{ channel: "C123456", text: "hello from codex-phantom" }]);
 
@@ -562,12 +647,13 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
       headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
     });
     const deliveriesJson = await deliveriesResponse.json() as {
-      deliveries: Array<{ channelId: string; status: string; destination: string }>;
+      deliveries: Array<{ channelId: string; status: string; destination: string; attemptCount: number }>;
     };
     assert.ok(deliveriesJson.deliveries.some((delivery) =>
       delivery.channelId === "slack" &&
       delivery.status === "delivered" &&
-      delivery.destination === "C123456"
+      delivery.destination === "C123456" &&
+      delivery.attemptCount === 1
     ));
 
     const adminSummaryResponse = await fetch(`http://127.0.0.1:${port}/admin/summary`, {
@@ -577,7 +663,7 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
       logging: { provider: string };
       deployment: { qdrantEnabled: boolean };
       governance: { pendingDynamicTools: number; approvedDynamicTools: number };
-      channelDeliveries: { delivered: number };
+      channelDeliveries: { delivered: number; recentFailed: unknown[] };
       settings: { dashboardRefreshSeconds: number };
       channels: Array<{ id: string; enabled: boolean }>;
     };
@@ -586,6 +672,7 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
     assert.equal(adminSummaryJson.governance.pendingDynamicTools, 0);
     assert.equal(adminSummaryJson.governance.approvedDynamicTools, 1);
     assert.equal(adminSummaryJson.channelDeliveries.delivered, 1);
+    assert.deepEqual(adminSummaryJson.channelDeliveries.recentFailed, []);
     assert.equal(adminSummaryJson.settings.dashboardRefreshSeconds, 5);
     assert.ok(adminSummaryJson.channels.some((channel) => channel.id === "slack" && channel.enabled === true));
 

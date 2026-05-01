@@ -407,7 +407,7 @@ export class HttpServer {
       if (req.method === "POST" && url.pathname === "/channels/webhook") {
         const rawBody = await readTextBody(req);
         const request = toRequest(req, rawBody);
-        if (!validateWebhookSecret(request, this.config.externalChannelSecret)) {
+        if (!validateWebhookSecret(request, this.config.externalChannelSecret, rawBody)) {
           throw new HttpError(401, "Unauthorized");
         }
         const body = validateWebhookBody(parseJsonBody(rawBody));

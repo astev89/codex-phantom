@@ -11,6 +11,7 @@ type DeliveryLogRow = {
   status: "delivered" | "failed";
   response_json: string | null;
   error_message: string | null;
+  attempt_count: number;
   delivered_at: string;
 };
 
@@ -22,6 +23,7 @@ export type ChannelDeliveryRecord = {
   status: "delivered" | "failed";
   response?: JsonValue;
   errorMessage?: string;
+  attemptCount: number;
   deliveredAt: string;
 };
 
@@ -39,14 +41,15 @@ export class ChannelDeliveryStore {
     status: "delivered" | "failed";
     response?: JsonValue;
     errorMessage?: string;
+    attemptCount?: number;
   }): ChannelDeliveryRecord {
     const id = createId("delivery");
     const deliveredAt = new Date().toISOString();
     this.database.run(
       `
         INSERT INTO channel_delivery_logs (
-          id, channel_id, destination, payload_json, status, response_json, error_message, delivered_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          id, channel_id, destination, payload_json, status, response_json, error_message, attempt_count, delivered_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       id,
       input.channelId,
@@ -55,6 +58,7 @@ export class ChannelDeliveryStore {
       input.status,
       input.response === undefined ? null : encodeJson(toJsonValue(input.response)),
       input.errorMessage ?? null,
+      input.attemptCount ?? 1,
       deliveredAt
     );
     return {
@@ -65,6 +69,7 @@ export class ChannelDeliveryStore {
       status: input.status,
       response: input.response === undefined ? undefined : toJsonValue(input.response),
       errorMessage: input.errorMessage,
+      attemptCount: input.attemptCount ?? 1,
       deliveredAt
     };
   }
@@ -75,7 +80,7 @@ export class ChannelDeliveryStore {
       ? this.database.all<DeliveryLogRow>(
           `
             SELECT
-              id, channel_id, destination, payload_json, status, response_json, error_message, delivered_at
+              id, channel_id, destination, payload_json, status, response_json, error_message, attempt_count, delivered_at
             FROM channel_delivery_logs
             WHERE channel_id = ?
             ORDER BY delivered_at DESC
@@ -87,7 +92,7 @@ export class ChannelDeliveryStore {
       : this.database.all<DeliveryLogRow>(
           `
             SELECT
-              id, channel_id, destination, payload_json, status, response_json, error_message, delivered_at
+              id, channel_id, destination, payload_json, status, response_json, error_message, attempt_count, delivered_at
             FROM channel_delivery_logs
             ORDER BY delivered_at DESC
             LIMIT ?
@@ -103,11 +108,12 @@ export class ChannelDeliveryStore {
       status: row.status,
       response: row.response_json ? decodeJson<JsonValue>(row.response_json, null) : undefined,
       errorMessage: row.error_message ?? undefined,
+      attemptCount: row.attempt_count,
       deliveredAt: row.delivered_at
     }));
   }
 
-  summary(): { delivered: number; failed: number } {
+  summary(): { delivered: number; failed: number; recentFailed: ChannelDeliveryRecord[] } {
     const rows = this.database.all<{ status: "delivered" | "failed"; count: number }>(
       `
         SELECT status, COUNT(*) AS count
@@ -118,7 +124,8 @@ export class ChannelDeliveryStore {
     const counts = new Map(rows.map((row) => [row.status, row.count]));
     return {
       delivered: counts.get("delivered") ?? 0,
-      failed: counts.get("failed") ?? 0
+      failed: counts.get("failed") ?? 0,
+      recentFailed: this.list(undefined, 10).filter((delivery) => delivery.status === "failed")
     };
   }
 }

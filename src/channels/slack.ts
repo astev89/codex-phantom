@@ -4,7 +4,13 @@ import type { ChannelRegistry } from "./registry.ts";
 import type { ChannelDeliveryRecord, ChannelDeliveryStore } from "./delivery-log.ts";
 
 export type SlackTransport = {
-  sendMessage(input: { token: string; channel: string; text: string }): Promise<{ ok: boolean; ts?: string; error?: string }>;
+  sendMessage(input: { token: string; channel: string; text: string }): Promise<{
+    ok: boolean;
+    ts?: string;
+    error?: string;
+    statusCode?: number;
+    retryAfterMs?: number;
+  }>;
 };
 
 export class SlackChannel {
@@ -38,11 +44,23 @@ export class SlackChannel {
     }
 
     const payload = { channel: input.channel, text: input.text };
-    const result = await this.transport.sendMessage({
-      token: this.config.slackBotToken,
-      channel: input.channel,
-      text: input.text
-    });
+    let result: Awaited<ReturnType<SlackTransport["sendMessage"]>> = { ok: false, error: "Slack delivery was not attempted" };
+    let attemptCount = 0;
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      attemptCount = attempt;
+      result = await this.transport.sendMessage({
+        token: this.config.slackBotToken,
+        channel: input.channel,
+        text: input.text
+      });
+      if (result.ok && result.ts) {
+        break;
+      }
+      if (attempt === 3 || !isRetryableSlackResult(result)) {
+        break;
+      }
+      await sleep(Math.min(result.retryAfterMs ?? attempt * 100, 1_000));
+    }
 
     if (!result.ok || !result.ts) {
       const errorMessage = result.error ?? "Slack delivery failed";
@@ -52,7 +70,8 @@ export class SlackChannel {
         payload,
         status: "failed",
         response: result,
-        errorMessage
+        errorMessage,
+        attemptCount
       });
       throw new HttpError(502, errorMessage, { delivery });
     }
@@ -62,7 +81,8 @@ export class SlackChannel {
       destination: input.channel,
       payload,
       status: "delivered",
-      response: result
+      response: result,
+      attemptCount
     });
 
     return {
@@ -72,8 +92,22 @@ export class SlackChannel {
   }
 }
 
+function isRetryableSlackResult(result: { ok: boolean; statusCode?: number }): boolean {
+  return result.statusCode === 429 || (result.statusCode !== undefined && result.statusCode >= 500);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 class SlackApiTransport implements SlackTransport {
-  async sendMessage(input: { token: string; channel: string; text: string }): Promise<{ ok: boolean; ts?: string; error?: string }> {
+  async sendMessage(input: { token: string; channel: string; text: string }): Promise<{
+    ok: boolean;
+    ts?: string;
+    error?: string;
+    statusCode?: number;
+    retryAfterMs?: number;
+  }> {
     const response = await fetch("https://slack.com/api/chat.postMessage", {
       method: "POST",
       headers: {
@@ -87,10 +121,16 @@ class SlackApiTransport implements SlackTransport {
     });
 
     if (!response.ok) {
-      return { ok: false, error: `Slack HTTP ${response.status}` };
+      const retryAfter = response.headers.get("retry-after");
+      return {
+        ok: false,
+        error: `Slack HTTP ${response.status}`,
+        statusCode: response.status,
+        retryAfterMs: retryAfter ? Number(retryAfter) * 1000 : undefined
+      };
     }
 
     const body = await response.json() as { ok: boolean; ts?: string; error?: string };
-    return body;
+    return { ...body, statusCode: 200 };
   }
 }

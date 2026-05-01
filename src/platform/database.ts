@@ -224,6 +224,7 @@ export class AppDatabase {
     ensureColumn(this.db, "dynamic_tools", "approved_by", "TEXT");
     ensureColumn(this.db, "dynamic_tools", "approved_at", "TEXT");
     ensureColumn(this.db, "dynamic_tools", "governance_notes", "TEXT");
+    ensureColumn(this.db, "channel_delivery_logs", "attempt_count", "INTEGER NOT NULL DEFAULT 1");
 
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_memory_entries_summary ON memory_entries(is_summary, category, created_at DESC);
