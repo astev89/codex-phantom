@@ -57,6 +57,8 @@ export class AppDatabase {
         session_id TEXT PRIMARY KEY,
         channel_id TEXT NOT NULL,
         conversation_id TEXT NOT NULL,
+        title TEXT,
+        title_source TEXT,
         provider_session_id TEXT,
         previous_response_id TEXT,
         last_event_cursor TEXT,
@@ -93,6 +95,18 @@ export class AppDatabase {
         created_at TEXT NOT NULL,
         payload_json TEXT NOT NULL,
         UNIQUE(run_id, sequence)
+      );
+
+      CREATE TABLE IF NOT EXISTS chat_attachments (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        run_id TEXT,
+        name TEXT NOT NULL,
+        content_type TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL,
+        description TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (session_id) REFERENCES sessions(session_id)
       );
 
       CREATE TABLE IF NOT EXISTS jobs (
@@ -213,6 +227,7 @@ export class AppDatabase {
 
       CREATE INDEX IF NOT EXISTS idx_runs_parent_run_id ON runs(parent_run_id);
       CREATE INDEX IF NOT EXISTS idx_run_events_run_id ON run_events(run_id, sequence);
+      CREATE INDEX IF NOT EXISTS idx_chat_attachments_session_id ON chat_attachments(session_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_jobs_status_scheduled_at ON jobs(status, scheduled_at);
       CREATE INDEX IF NOT EXISTS idx_memory_entries_category_created_at ON memory_entries(category, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_dynamic_tools_updated_at ON dynamic_tools(updated_at DESC);
@@ -242,6 +257,8 @@ export class AppDatabase {
     ensureColumn(this.db, "memory_entries", "vector_synced_at", "TEXT");
     ensureColumn(this.db, "memory_entries", "vector_sync_error", "TEXT");
     ensureColumn(this.db, "memory_entries", "vector_point_id", "TEXT");
+    ensureColumn(this.db, "sessions", "title", "TEXT");
+    ensureColumn(this.db, "sessions", "title_source", "TEXT");
     ensureColumn(this.db, "dynamic_tools", "approval_state", "TEXT NOT NULL DEFAULT 'pending'");
     ensureColumn(this.db, "dynamic_tools", "approved_by", "TEXT");
     ensureColumn(this.db, "dynamic_tools", "approved_at", "TEXT");

@@ -11,6 +11,8 @@ export type SessionRecord = {
   sessionId: string;
   channelId: string;
   conversationId: string;
+  title?: string;
+  titleSource?: "auto" | "manual";
   providerSessionId?: string;
   previousResponseId?: string;
   lastEventCursor?: string;

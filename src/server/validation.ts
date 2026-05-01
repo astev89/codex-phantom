@@ -20,6 +20,12 @@ export type ChatMessageInput = {
   sessionId?: string;
   conversationId?: string;
   message: string;
+  attachments?: Array<{
+    name: string;
+    contentType: string;
+    sizeBytes: number;
+    description?: string;
+  }>;
   subagents?: SubagentRequest[];
   timeoutMs?: number;
 };
@@ -87,6 +93,7 @@ export function validateChatBody(input: unknown): ChatMessageInput {
     sessionId: optionalString(value.sessionId),
     conversationId: optionalString(value.conversationId),
     message,
+    attachments: validateAttachments(value.attachments),
     subagents: validateSubagents(value.subagents),
     timeoutMs: optionalPositiveInteger(value.timeoutMs, "timeoutMs")
   };
@@ -196,6 +203,27 @@ function validateSubagents(input: unknown): SubagentRequest[] | undefined {
   });
 }
 
+function validateAttachments(input: unknown): ChatMessageInput["attachments"] {
+  if (input === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(input)) {
+    throw new HttpError(400, "attachments must be an array");
+  }
+  if (input.length > 10) {
+    throw new HttpError(400, "attachments must contain 10 or fewer items");
+  }
+  return input.map((item, index) => {
+    const value = asRecord(item);
+    return {
+      name: nonEmptyString(value.name, `attachments[${index}].name`),
+      contentType: nonEmptyString(value.contentType, `attachments[${index}].contentType`),
+      sizeBytes: boundedNonNegativeInteger(value.sizeBytes, `attachments[${index}].sizeBytes`, 25_000_000),
+      description: optionalString(value.description)
+    };
+  });
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new HttpError(400, "Body must be a JSON object");
@@ -246,6 +274,13 @@ function optionalBoundedPositiveInteger(value: unknown, field: string, max: numb
     throw new HttpError(400, `${field} must be less than or equal to ${max}`);
   }
   return parsed;
+}
+
+function boundedNonNegativeInteger(value: unknown, field: string, max: number): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > max) {
+    throw new HttpError(400, `${field} must be an integer between 0 and ${max}`);
+  }
+  return value;
 }
 
 function optionalNumber(value: unknown, field: string): number | undefined {
