@@ -9,7 +9,8 @@
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-strip-types --test tests/*.test.ts",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "gitnexus:refresh": "scripts/gitnexus-refresh-skills.sh"
   },
   "devDependencies": {
     "@playwright/test": "^1.59.1",

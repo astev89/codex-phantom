@@ -196,3 +196,13 @@ See `docs/phantom-parity.md` for the current match/defer list against the refere
 npm run typecheck
 npm test
 ```
+
+## GitNexus skill refresh
+
+Run the full GitNexus refresh and mirror generated Codex skills with one command:
+
+```bash
+npm run gitnexus:refresh
+```
+
+This runs `npx gitnexus analyze --skills --embeddings`, then replaces `.agents/skills/generated` and `.agents/skills/gitnexus` from `.claude/skills`. Pass extra GitNexus flags after `--`, for example `npm run gitnexus:refresh -- --force`.
