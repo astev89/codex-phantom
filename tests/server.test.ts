@@ -18,6 +18,7 @@ import { OrchestrationService } from "../src/orchestration/service.ts";
 import { SchedulerService } from "../src/scheduler/service.ts";
 import { McpAuditStore } from "../src/mcp/audit.ts";
 import { McpServer } from "../src/mcp/server.ts";
+import { renderChatApp } from "../src/server/chat-ui.ts";
 import { HttpServer } from "../src/server/http-server.ts";
 import { buildJsonExport, buildNdjsonExport } from "../src/server/export.ts";
 import { AppDatabase } from "../src/platform/database.ts";
@@ -178,6 +179,17 @@ test("buildNdjsonExport emits one serialized record per line", () => {
       "{\"channelId\":\"webhook\",\"status\":\"failed\"}"
     ].join("\n")
   );
+});
+
+test("renderChatApp preserves fenced code blocks and safely injects title data", () => {
+  const html = renderChatApp("Bad </script><script>alert(1)</script>");
+
+  assert.match(html, /<title>Bad &lt;\/script&gt;&lt;script&gt;alert\(1\)&lt;\/script&gt; Chat<\/title>/);
+  assert.match(html, /document\.getElementById\('title'\)\.textContent = "Bad \\u003c\/script>\\u003cscript>alert\(1\)\\u003c\/script> Chat";/);
+  assert.match(html, /const codeBlocks = \[\];/);
+  assert.match(html, /withoutCodeBlocks/);
+  assert.match(html, /escapeHtml\(code\)/);
+  assert.match(html, /CODE_BLOCK_/);
 });
 
 test("slack delivery retries transient failures and records attempt counts", async () => {
@@ -499,6 +511,7 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     };
     assert.equal(chatSessionJson.session.title, "Hello From Web");
     assert.ok(chatSessionJson.runs.some((run) => run.transcript.some((message) => message.content === "hello from web")));
+    assert.ok(chatSessionJson.runs.every((run) => run.runId.startsWith("coord_") || run.runId.startsWith("sub_")));
     assert.deepEqual(chatSessionJson.attachments.map((attachment) => ({
       name: attachment.name,
       contentType: attachment.contentType,

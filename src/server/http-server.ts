@@ -411,7 +411,8 @@ export class HttpServer {
         if (!session || session.channelId !== "web") {
           throw new HttpError(404, "Chat session not found");
         }
-        const runs = (await Promise.all(session.runIds.map((runId) => this.runs.get(runId)))).filter((run) => run !== null);
+        const persistedRunIds = session.runIds.filter((runId) => runId.startsWith("coord_") || runId.startsWith("sub_"));
+        const runs = (await Promise.all(persistedRunIds.map((runId) => this.runs.get(runId)))).filter((run) => run !== null);
         const attachments = await this.sessions.listAttachments(session.sessionId);
         this.json(res, 200, { session, runs, attachments });
         return;
@@ -844,13 +845,18 @@ function buildAutoTitle(message: string): string {
 async function readTextBody(req: IncomingMessage, maxBytes = DEFAULT_MAX_BODY_BYTES): Promise<string> {
   const chunks: Buffer[] = [];
   let totalBytes = 0;
+  let bodyExceededLimit = false;
   for await (const chunk of req) {
     const buffer = Buffer.from(chunk);
     totalBytes += buffer.byteLength;
-    if (totalBytes > maxBytes) {
-      throw new HttpError(413, `Request body exceeds ${maxBytes} bytes`);
+    if (bodyExceededLimit || totalBytes > maxBytes) {
+      bodyExceededLimit = true;
+      continue;
     }
     chunks.push(buffer);
+  }
+  if (bodyExceededLimit) {
+    throw new HttpError(413, `Request body exceeds ${maxBytes} bytes`);
   }
   return Buffer.concat(chunks).toString("utf8");
 }

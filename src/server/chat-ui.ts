@@ -1,4 +1,5 @@
 export function renderChatApp(agentName: string): string {
+  const defaultTitle = `${agentName} Chat`;
   return `<!doctype html>
 <html lang="en">
   <head>
@@ -257,9 +258,13 @@ export function renderChatApp(agentName: string): string {
       }
 
       function renderMarkdown(text) {
-        const escaped = escapeHtml(text);
-        return escaped
-          .replace(/\`\`\`([\\s\\S]*?)\`\`\`/g, '<pre><code>$1</code></pre>')
+        const codeBlocks = [];
+        const withoutCodeBlocks = String(text).replace(/\`\`\`([\\s\\S]*?)\`\`\`/g, (_match, code) => {
+          const token = '%%CODE_BLOCK_' + codeBlocks.length + '%%';
+          codeBlocks.push('<pre><code>' + escapeHtml(code) + '</code></pre>');
+          return token;
+        });
+        const rendered = escapeHtml(withoutCodeBlocks)
           .replace(/^### (.*)$/gm, '<h3>$1</h3>')
           .replace(/^## (.*)$/gm, '<h2>$1</h2>')
           .replace(/^# (.*)$/gm, '<h1>$1</h1>')
@@ -267,6 +272,7 @@ export function renderChatApp(agentName: string): string {
           .replace(/\\*(.*?)\\*/g, '<em>$1</em>')
           .replace(/\\[([^\\]]+)\\]\\((https?:\\/\\/[^\\s)]+)\\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>')
           .replace(/\\n/g, '<br />');
+        return rendered.replace(/%%CODE_BLOCK_(\\d+)%%/g, (_match, index) => codeBlocks[Number(index)] || '');
       }
 
       function escapeHtml(value) {
@@ -300,7 +306,7 @@ export function renderChatApp(agentName: string): string {
       document.getElementById('newSession').addEventListener('click', () => {
         state.activeSessionId = '';
         localStorage.removeItem('codex-phantom.chat.activeSessionId');
-        document.getElementById('title').textContent = '${escapeJs(agentName)} Chat';
+        document.getElementById('title').textContent = ${toScriptJson(defaultTitle)};
         renderMessages([]);
         renderSessions();
       });
@@ -377,6 +383,6 @@ function escapeHtml(value: string): string {
   }[char] ?? char));
 }
 
-function escapeJs(value: string): string {
-  return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+function toScriptJson(value: string): string {
+  return JSON.stringify(value).replace(/</g, "\\u003c");
 }

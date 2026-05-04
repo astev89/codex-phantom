@@ -141,7 +141,7 @@ export class SessionStore {
   async listAttachments(sessionId: string): Promise<ChatAttachmentRecord[]> {
     return this.database
       .all<ChatAttachmentRow>(
-        "SELECT * FROM chat_attachments WHERE session_id = ? ORDER BY created_at ASC",
+        "SELECT * FROM chat_attachments WHERE session_id = ? ORDER BY created_at ASC, id ASC",
         sessionId
       )
       .map(toAttachmentRecord);
