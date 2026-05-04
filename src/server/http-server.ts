@@ -727,12 +727,35 @@ export class HttpServer {
       return;
     }
     if (target.type === "slack_thread") {
-      await this.slack.sendMessage({
-        channel: target.channel,
-        text: outputText,
-        threadTs: target.threadTs
-      });
+      try {
+        await this.slack.sendMessage({
+          channel: target.channel,
+          text: outputText,
+          threadTs: target.threadTs
+        });
+      } catch (error) {
+        if (this.shouldIgnoreInboundResponseDeliveryError(error)) {
+          this.logger.warn("inbound_response_delivery_skipped", {
+            channelId: "slack",
+            reason: error instanceof Error ? error.message : "Slack delivery unavailable"
+          });
+          return;
+        }
+        throw error;
+      }
     }
+  }
+
+  private shouldIgnoreInboundResponseDeliveryError(error: unknown): boolean {
+    if (error instanceof HttpError && (error.status === 409 || error.status === 412)) {
+      return true;
+    }
+    const message = error instanceof Error ? error.message.toLowerCase() : "";
+    return message.includes("slack_bot_token") ||
+      message.includes("bot token") ||
+      message.includes("slack channel is not enabled") ||
+      message.includes("channel disabled") ||
+      message.includes("disabled channel");
   }
 
   private json(res: ServerResponse, status: number, body: unknown): void {

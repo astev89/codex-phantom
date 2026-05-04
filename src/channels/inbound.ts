@@ -74,15 +74,11 @@ export class InboundChannelEventStore {
   }
 
   recordReceived(input: InboundChannelMessage): { record: InboundChannelEventRecord; duplicate: boolean } {
-    const existing = this.findByProviderEvent(input.channelId, input.providerEventId);
-    if (existing) {
-      return { record: existing, duplicate: true };
-    }
     const now = new Date().toISOString();
     const id = createId("inbound");
     this.database.run(
       `
-        INSERT INTO inbound_channel_events (
+        INSERT OR IGNORE INTO inbound_channel_events (
           id, channel_id, provider_event_id, conversation_id, sender_id, message, thread_id,
           response_target_json, raw_payload_json, status, created_at, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -100,11 +96,11 @@ export class InboundChannelEventStore {
       now,
       now
     );
-    const record = this.get(id);
+    const record = this.findByProviderEvent(input.channelId, input.providerEventId);
     if (!record) {
       throw new Error(`Failed to record inbound channel event: ${id}`);
     }
-    return { record, duplicate: false };
+    return { record, duplicate: record.id !== id };
   }
 
   markIgnored(id: string, errorMessage?: string): InboundChannelEventRecord {
@@ -129,7 +125,10 @@ export class InboundChannelEventStore {
   }
 
   list(options: { channelId?: string; limit?: number } = {}): InboundChannelEventRecord[] {
-    const limit = Math.max(1, Math.min(options.limit ?? 100, 500));
+    const requestedLimit = typeof options.limit === "number" && Number.isFinite(options.limit) && Number.isInteger(options.limit)
+      ? options.limit
+      : 100;
+    const limit = Math.max(1, Math.min(requestedLimit, 500));
     const rows = options.channelId
       ? this.database.all<InboundChannelEventRow>(
         "SELECT * FROM inbound_channel_events WHERE channel_id = ? ORDER BY created_at DESC LIMIT ?",
@@ -307,16 +306,16 @@ export class InboundChannelRouter {
           timeoutMs: message.timeoutMs
         },
         async (event) => {
-          await callbacks.onEvent?.(event);
+          await runSideEffectCallback(() => callbacks.onEvent?.(event));
         }
       );
       const completed = this.store.markCompleted(recordId, result);
-      await callbacks.onComplete?.(completed);
+      await runSideEffectCallback(() => callbacks.onComplete?.(completed));
       return completed;
     } catch (error) {
       const messageText = error instanceof Error ? error.message : "Inbound channel run failed";
       const failed = this.store.markFailed(recordId, messageText);
-      await callbacks.onFailure?.(failed);
+      await runSideEffectCallback(() => callbacks.onFailure?.(failed));
       return failed;
     }
   }
@@ -326,6 +325,14 @@ export class InboundChannelRouter {
     if (!channel || !channel.enabled) {
       throw new HttpError(409, `${channelId} channel is not enabled`);
     }
+  }
+}
+
+async function runSideEffectCallback(callback: () => Promise<void> | void | undefined): Promise<void> {
+  try {
+    await callback();
+  } catch {
+    return;
   }
 }
 
