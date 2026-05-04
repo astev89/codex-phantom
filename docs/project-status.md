@@ -3,12 +3,12 @@
 This is the living status ledger for `codex-phantom`. Update it at the end of each development wave, after tests pass and before handing off or opening a PR.
 
 Last updated: 2026-05-01
-Branch: `docs/docker-smoke-runbook`
-Latest verified commit: pending parity-ledger docs update
+Branch: `jarvis/web-chat-product-surface`
+Latest verified commit: `6147b89`
 
 ## Current State
 
-`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, and hybrid long-term memory with Qdrant-backed vector recall plus SQLite fallback.
+`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, a Codex-native `/chat` product surface, and hybrid long-term memory with Qdrant-backed vector recall plus SQLite fallback.
 
 The project is now past its first serious production-hardening pass. It is not yet equivalent to the original Phantom project, but the core runtime is materially safer to run: request sizes are bounded, secrets are rejected in production when defaults are used, outbound model calls have timeouts, scheduler jobs recover deterministically after restarts, MCP events are durably audited, external webhooks are signed, Slack sends retry transient failures, operator-console workflows have browser coverage, and the Docker image runs compiled JavaScript instead of stripped TypeScript.
 
@@ -34,6 +34,24 @@ Inbound channel routing wave completed locally on 2026-05-01:
 - Added Slack Events API ingestion with Slack signature validation, URL verification, event mapping, duplicate detection, ack-then-run execution, and one final thread reply.
 - Added operator visibility through `/admin/channels/inbound`, `/admin/summary`, timeline, and channel exports.
 - Kept Web Chat and Telegram out of scope; Slack progressive updates, status reactions, and richer feedback remain follow-up work.
+
+Web chat product surface wave completed locally on 2026-05-01:
+
+- Added authenticated `GET /chat` as a Codex-native browser chat surface separate from the operator console.
+- Added versioned named SSE envelopes for `POST /chat/message` while preserving raw agent event compatibility.
+- Added `GET /chat/sessions` and `GET /chat/sessions/:sessionId` for session management, run transcripts, and attachment metadata.
+- Added SQLite-backed chat attachment metadata and additive session title fields.
+- Added browser-local multi-tab refresh, markdown rendering, notification permission affordance, file metadata capture, and automatic first-message session titles.
+- Kept binary upload storage, service-worker push delivery, and Phantom's full 32-event chat protocol as follow-up work.
+
+Verification from this wave:
+
+```bash
+node --experimental-strip-types --test tests/server.test.ts
+npm run typecheck
+npm test
+npm run build
+```
 
 Production agenda wave completed locally on 2026-05-01:
 
@@ -103,12 +121,25 @@ Suggested work:
 
 Use `docs/phantom-parity.md` as the source of truth for what remains. The inbound router now exists; the next Slack parity slice should make inbound Slack runs easier to follow while they are executing. Full Phantom browser chat and Telegram support are not current targets.
 
+Implementation plan: `docs/superpowers/plans/2026-05-01-slack-inbound-parity.md`.
+
 Suggested work:
 
 - Add progressive Slack thread updates during coordinator execution.
 - Add status reactions for queued, running, completed, and failed states.
 - Map useful Slack reaction/button feedback into durable inbound event metadata or a follow-up feedback store.
 - Keep UI scope limited to operator visibility unless a Codex-native chat surface becomes a product requirement.
+
+### P2: Deepen Web Chat Continuity
+
+The first `/chat` product surface now exists. The next web-chat slice should avoid re-cloning Phantom wholesale and instead add continuity where Codex operations need it.
+
+Suggested work:
+
+- Add durable binary attachment storage with size limits and operator export coverage.
+- Add artifact views linked to run outputs and tool results.
+- Decide whether Phantom's full 32-event browser wire protocol is worth matching or whether the current versioned Codex envelope should remain the stable contract.
+- Add service-worker-backed push notifications only after there is a concrete notification source beyond browser permission state.
 
 ## Known Constraints
 
@@ -117,7 +148,7 @@ Suggested work:
 - Docker socket mounting is not part of the default deployment path.
 - Metrics reset on process restart unless scraped externally.
 - Multi-channel inbound chat parity is intentionally narrowed to webhook and Slack for now.
-- Phantom's full browser chat product is not a parity target right now.
+- Phantom's full browser chat internals are not a clone target; `codex-phantom` has a narrower Codex-native `/chat` surface.
 - Telegram support is not a parity target.
 
 ## Update Protocol

@@ -13,6 +13,7 @@ import { SlackChannel } from "../channels/slack.ts";
 import { OrchestrationService } from "../orchestration/service.ts";
 import { SchedulerService } from "../scheduler/service.ts";
 import { SessionStore } from "../chat/session-store.ts";
+import { ChatWireEventBuilder, formatSseEvent } from "../chat/wire-events.ts";
 import { McpServer } from "../mcp/server.ts";
 import { McpAuditStore } from "../mcp/audit.ts";
 import type { AgentRunEvent } from "../agent/types.ts";
@@ -24,6 +25,7 @@ import { MemoryStore } from "../memory/store.ts";
 import { DynamicToolRegistry } from "../tools/dynamic-registry.ts";
 import { ToolGovernanceService } from "../tools/governance.ts";
 import { renderOperatorConsole } from "./ui.ts";
+import { renderChatApp } from "./chat-ui.ts";
 import { OperatorSettingsStore } from "./settings.ts";
 import { RequestAuditStore } from "./request-audit.ts";
 import { buildStartupDiagnostics } from "./diagnostics.ts";
@@ -141,6 +143,13 @@ export class HttpServer {
         this.requireOperatorAuth(req);
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         res.end(renderOperatorConsole(this.config.agentName));
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/chat") {
+        this.requireOperatorAuth(req);
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(renderChatApp(this.config.agentName));
         return;
       }
 
@@ -388,6 +397,27 @@ export class HttpServer {
         return;
       }
 
+      if (req.method === "GET" && url.pathname === "/chat/sessions") {
+        this.requireOperatorAuth(req);
+        const sessions = (await this.sessions.list()).filter((session) => session.channelId === "web");
+        this.json(res, 200, { sessions });
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname.startsWith("/chat/sessions/")) {
+        this.requireOperatorAuth(req);
+        const sessionId = decodeURIComponent(url.pathname.replace("/chat/sessions/", ""));
+        const session = await this.sessions.get(sessionId);
+        if (!session || session.channelId !== "web") {
+          throw new HttpError(404, "Chat session not found");
+        }
+        const persistedRunIds = session.runIds.filter((runId) => runId.startsWith("coord_") || runId.startsWith("sub_"));
+        const runs = (await Promise.all(persistedRunIds.map((runId) => this.runs.get(runId)))).filter((run) => run !== null);
+        const attachments = await this.sessions.listAttachments(session.sessionId);
+        this.json(res, 200, { session, runs, attachments });
+        return;
+      }
+
       if (req.method === "POST" && url.pathname === "/chat/message") {
         this.requireOperatorAuth(req);
         const body = validateChatBody(parseJsonBody(await readTextBody(req)));
@@ -397,8 +427,20 @@ export class HttpServer {
           "Cache-Control": "no-cache",
           "X-Request-Id": requestId
         });
+        const wire = new ChatWireEventBuilder(requestId);
+        const emitWire = (type: Parameters<ChatWireEventBuilder["build"]>[0], payload: JsonValue, options: Parameters<ChatWireEventBuilder["build"]>[2] = {}): void => {
+          res.write(formatSseEvent(wire.build(type, payload, options)));
+        };
+        emitWire("request.started", {
+          conversationId: body.conversationId ?? "web-chat",
+          attachmentCount: body.attachments?.length ?? 0
+        });
         const emit = (event: AgentRunEvent): void => {
-          res.write(`data: ${JSON.stringify(event)}\n\n`);
+          emitWire("agent.event", event as unknown as JsonValue, {
+            sessionId: "sessionId" in event ? event.sessionId : undefined,
+            runId: event.runId,
+            rawEvent: event
+          });
         };
         try {
           const result = await this.orchestration.runCoordinator(
@@ -412,10 +454,38 @@ export class HttpServer {
             },
             emit
           );
+          const session = await this.sessions.get(result.sessionId);
+          if (session) {
+            await this.sessions.upsert({
+              ...session,
+              runIds: session.runIds.includes(result.runId) ? session.runIds : [...session.runIds, result.runId],
+              updatedAt: new Date().toISOString()
+            });
+            if (!session.title) {
+              await this.sessions.rename(result.sessionId, buildAutoTitle(body.message), "auto");
+            }
+          }
+          if (body.attachments && body.attachments.length > 0) {
+            await this.sessions.recordAttachments(result.sessionId, result.runId, body.attachments);
+          }
           emit({ type: "final", runId: result.runId, outputText: result.outputText });
+          emitWire("run.completed", {
+            outputText: result.outputText
+          }, {
+            sessionId: result.sessionId,
+            runId: result.runId
+          });
+          emitWire("request.completed", {
+            status: "completed"
+          }, {
+            sessionId: result.sessionId,
+            runId: result.runId
+          });
         } catch (error) {
           const message = error instanceof Error ? error.message : "Chat run failed";
-          emit({ type: "error", runId: "request_error", message, retryable: false });
+          const rawEvent: AgentRunEvent = { type: "error", runId: "request_error", message, retryable: false };
+          emit(rawEvent);
+          emitWire("request.failed", { message, retryable: false }, { runId: "request_error" });
         }
         res.end();
         return;
@@ -761,16 +831,32 @@ function hashToken(token: string): Buffer {
   return createHash("sha256").update(token).digest();
 }
 
+function buildAutoTitle(message: string): string {
+  const words = message
+    .replace(/[^\w\s-]/g, "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 5);
+  const title = words.map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()).join(" ");
+  return title || "New Chat";
+}
+
 async function readTextBody(req: IncomingMessage, maxBytes = DEFAULT_MAX_BODY_BYTES): Promise<string> {
   const chunks: Buffer[] = [];
   let totalBytes = 0;
+  let bodyExceededLimit = false;
   for await (const chunk of req) {
     const buffer = Buffer.from(chunk);
     totalBytes += buffer.byteLength;
-    if (totalBytes > maxBytes) {
-      throw new HttpError(413, `Request body exceeds ${maxBytes} bytes`);
+    if (bodyExceededLimit || totalBytes > maxBytes) {
+      bodyExceededLimit = true;
+      continue;
     }
     chunks.push(buffer);
+  }
+  if (bodyExceededLimit) {
+    throw new HttpError(413, `Request body exceeds ${maxBytes} bytes`);
   }
   return Buffer.concat(chunks).toString("utf8");
 }

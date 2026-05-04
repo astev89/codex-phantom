@@ -24,6 +24,33 @@ The router validates that the channel is enabled, records accepted events as `re
 
 Web Chat and Telegram are not current parity targets.
 
+## Web Chat Surface
+
+`GET /chat` serves the authenticated Codex-native browser chat surface. It is separate from the operator console at `/` and uses the same operator auth.
+
+The chat app supports:
+
+- streamed coordinator runs through `POST /chat/message`;
+- recent session listing through `GET /chat/sessions`;
+- transcript, run, and attachment metadata detail through `GET /chat/sessions/:sessionId`;
+- browser-local multi-tab refresh using `BroadcastChannel` plus `localStorage`;
+- markdown rendering for common headings, emphasis, links, and code blocks;
+- attachment metadata capture for selected files;
+- browser notification permission prompts;
+- automatic session titles derived from the first user message.
+
+`POST /chat/message` emits named SSE events:
+
+- `request.started`
+- `agent.event`
+- `run.completed`
+- `request.completed`
+- `request.failed`
+
+Each event uses a versioned envelope with `version`, `type`, `requestId`, `sequence`, `createdAt`, optional `sessionId`/`runId`, and `payload`. Agent events also include `rawEvent` for compatibility with existing event consumers.
+
+This first product surface stores attachment metadata only. It does not store binary uploads, register a service worker, or implement Phantom's full 32-event browser wire protocol.
+
 ## Inbound Webhook Channel
 
 `POST /channels/webhook` accepts external chat events and runs them through the coordinator as channel `webhook`.

@@ -18,6 +18,7 @@ import { OrchestrationService } from "../src/orchestration/service.ts";
 import { SchedulerService } from "../src/scheduler/service.ts";
 import { McpAuditStore } from "../src/mcp/audit.ts";
 import { McpServer } from "../src/mcp/server.ts";
+import { renderChatApp } from "../src/server/chat-ui.ts";
 import { HttpServer } from "../src/server/http-server.ts";
 import { buildJsonExport, buildNdjsonExport } from "../src/server/export.ts";
 import { AppDatabase } from "../src/platform/database.ts";
@@ -178,6 +179,17 @@ test("buildNdjsonExport emits one serialized record per line", () => {
       "{\"channelId\":\"webhook\",\"status\":\"failed\"}"
     ].join("\n")
   );
+});
+
+test("renderChatApp preserves fenced code blocks and safely injects title data", () => {
+  const html = renderChatApp("Bad </script><script>alert(1)</script>");
+
+  assert.match(html, /<title>Bad &lt;\/script&gt;&lt;script&gt;alert\(1\)&lt;\/script&gt; Chat<\/title>/);
+  assert.match(html, /document\.getElementById\('title'\)\.textContent = "Bad \\u003c\/script>\\u003cscript>alert\(1\)\\u003c\/script> Chat";/);
+  assert.match(html, /const codeBlocks = \[\];/);
+  assert.match(html, /withoutCodeBlocks/);
+  assert.match(html, /escapeHtml\(code\)/);
+  assert.match(html, /CODE_BLOCK_/);
 });
 
 test("slack delivery retries transient failures and records attempt counts", async () => {
@@ -445,14 +457,74 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.operatorBearerToken}` },
       body: JSON.stringify({
         conversationId: "web-1",
-        message: "hello from web"
+        message: "hello from web",
+        attachments: [
+          {
+            name: "notes.md",
+            contentType: "text/markdown",
+            sizeBytes: 42,
+            description: "Operator notes"
+          }
+        ]
       })
     });
     const streamText = await streamResponse.text();
+    assert.match(streamText, /event: request.started/);
+    assert.match(streamText, /event: agent.event/);
+    assert.match(streamText, /event: run.completed/);
+    assert.match(streamText, /event: request.completed/);
     assert.match(streamText, /"type":"init"/);
     assert.match(streamText, /"type":"text_delta"/);
     assert.match(streamText, /"type":"final"/);
     assert.match(streamText, /assistant:hello from web/);
+
+    const chatPageResponse = await fetch(`http://127.0.0.1:${port}/chat`, {
+      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
+    });
+    assert.equal(chatPageResponse.status, 200);
+    const chatPageHtml = await chatPageResponse.text();
+    assert.match(chatPageHtml, /data-testid="chat-app"/);
+    assert.match(chatPageHtml, /BroadcastChannel/);
+    assert.match(chatPageHtml, /renderMarkdown/);
+    assert.match(chatPageHtml, /Notification\.requestPermission/);
+
+    const chatSessionsResponse = await fetch(`http://127.0.0.1:${port}/chat/sessions`, {
+      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
+    });
+    assert.equal(chatSessionsResponse.status, 200);
+    const chatSessionsJson = await chatSessionsResponse.json() as {
+      sessions: Array<{ sessionId: string; title?: string; titleSource?: string; runIds: string[] }>;
+    };
+    const webSession = chatSessionsJson.sessions.find((session) => session.title === "Hello From Web");
+    assert.ok(webSession);
+    assert.equal(webSession.titleSource, "auto");
+    assert.ok(webSession.runIds.length > 0);
+
+    const chatSessionResponse = await fetch(`http://127.0.0.1:${port}/chat/sessions/${webSession.sessionId}`, {
+      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
+    });
+    assert.equal(chatSessionResponse.status, 200);
+    const chatSessionJson = await chatSessionResponse.json() as {
+      session: { sessionId: string; title?: string };
+      runs: Array<{ runId: string; transcript: Array<{ role: string; content: string }> }>;
+      attachments: Array<{ name: string; contentType: string; sizeBytes: number; description?: string }>;
+    };
+    assert.equal(chatSessionJson.session.title, "Hello From Web");
+    assert.ok(chatSessionJson.runs.some((run) => run.transcript.some((message) => message.content === "hello from web")));
+    assert.ok(chatSessionJson.runs.every((run) => run.runId.startsWith("coord_") || run.runId.startsWith("sub_")));
+    assert.deepEqual(chatSessionJson.attachments.map((attachment) => ({
+      name: attachment.name,
+      contentType: attachment.contentType,
+      sizeBytes: attachment.sizeBytes,
+      description: attachment.description
+    })), [
+      {
+        name: "notes.md",
+        contentType: "text/markdown",
+        sizeBytes: 42,
+        description: "Operator notes"
+      }
+    ]);
 
     const webhookBody = JSON.stringify({
       conversationId: "hook-1",
