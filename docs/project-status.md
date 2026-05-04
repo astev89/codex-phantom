@@ -3,8 +3,8 @@
 This is the living status ledger for `codex-phantom`. Update it at the end of each development wave, after tests pass and before handing off or opening a PR.
 
 Last updated: 2026-05-01
-Branch: `codex/production-readiness-slices`
-Latest verified commit: pending local verification wave
+Branch: `docs/docker-smoke-runbook`
+Latest verified commit: pending parity-ledger docs update
 
 ## Current State
 
@@ -13,6 +13,27 @@ Latest verified commit: pending local verification wave
 The project is now past its first serious production-hardening pass. It is not yet equivalent to the original Phantom project, but the core runtime is materially safer to run: request sizes are bounded, secrets are rejected in production when defaults are used, outbound model calls have timeouts, scheduler jobs recover deterministically after restarts, MCP events are durably audited, external webhooks are signed, Slack sends retry transient failures, operator-console workflows have browser coverage, and the Docker image runs compiled JavaScript instead of stripped TypeScript.
 
 ## Just Completed
+
+Docs runbook wave completed locally on 2026-05-01:
+
+- Added a decision-ready plan for the Docker smoke documentation pass under `docs/superpowers/plans/`.
+- Added `docs/deployment-smoke-runbook.md` with required environment, preflight checks, destructive-volume warnings, script order, expected pass evidence, ledger update notes, and failure handling.
+- Refined the remaining P1 next task so it points operators at the runbook instead of repeating command details in the ledger.
+
+Phantom parity review completed locally on 2026-05-01:
+
+- Compared indexed `phantom` and `codex-phantom` surfaces with GitNexus plus local docs/source review.
+- Updated `docs/phantom-parity.md` with the remaining parity queue.
+- Marked Phantom's full browser chat product and Telegram support as accepted divergences for now.
+- Kept the remaining queue focused on Docker proof, normalized inbound routing, Slack inbound events, Codex-useful transcript/artifact continuity, role/config/onboarding, plugin marketplace, and advanced memory behavior.
+
+Inbound channel routing wave completed locally on 2026-05-01:
+
+- Added a normalized inbound message envelope, SQLite inbound event audit store, and inbound router.
+- Routed signed webhook requests through the inbound router while preserving synchronous webhook responses.
+- Added Slack Events API ingestion with Slack signature validation, URL verification, event mapping, duplicate detection, ack-then-run execution, and one final thread reply.
+- Added operator visibility through `/admin/channels/inbound`, `/admin/summary`, timeline, and channel exports.
+- Kept Web Chat and Telegram out of scope; Slack progressive updates, status reactions, and richer feedback remain follow-up work.
 
 Production agenda wave completed locally on 2026-05-01:
 
@@ -71,13 +92,23 @@ npm run build
 
 ### P1: Execute Docker Production Smoke Scripts
 
-The deployment and backup/restore smoke scripts now exist, but this local implementation run did not execute them because the restore script recreates the `codex-phantom-data` Docker volume.
+The deployment and backup/restore smoke scripts now exist, but this local implementation run did not execute them because the restore script recreates the `codex-phantom-data` Docker volume. Use `docs/deployment-smoke-runbook.md` to run and record the validation safely.
 
 Suggested work:
 
-- Run `scripts/deployment-smoke.sh` with production-like secrets.
-- Run `scripts/backup-restore-smoke.sh` after confirming the local Docker volume can be safely recreated.
-- If both pass, update this ledger with the exact commands and any operator notes.
+- Run the preflight, deployment smoke, and backup/restore smoke from the runbook.
+- If both scripts pass, update this ledger with the evidence listed in the runbook.
+
+### P1: Expand Slack Inbound Progress
+
+Use `docs/phantom-parity.md` as the source of truth for what remains. The inbound router now exists; the next Slack parity slice should make inbound Slack runs easier to follow while they are executing. Full Phantom browser chat and Telegram support are not current targets.
+
+Suggested work:
+
+- Add progressive Slack thread updates during coordinator execution.
+- Add status reactions for queued, running, completed, and failed states.
+- Map useful Slack reaction/button feedback into durable inbound event metadata or a follow-up feedback store.
+- Keep UI scope limited to operator visibility unless a Codex-native chat surface becomes a product requirement.
 
 ## Known Constraints
 
@@ -85,7 +116,9 @@ Suggested work:
 - Dynamic shell/script MCP tools remain constrained to template-style dynamic tools.
 - Docker socket mounting is not part of the default deployment path.
 - Metrics reset on process restart unless scraped externally.
-- Multi-channel inbound chat parity is incomplete.
+- Multi-channel inbound chat parity is intentionally narrowed to webhook and Slack for now.
+- Phantom's full browser chat product is not a parity target right now.
+- Telegram support is not a parity target.
 
 ## Update Protocol
 

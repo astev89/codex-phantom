@@ -70,7 +70,7 @@ class FakeAdapter implements AgentAdapter {
 }
 
 class FakeSlackTransport implements SlackTransport {
-  readonly sent: Array<{ channel: string; text: string }> = [];
+  readonly sent: Array<{ channel: string; text: string; threadTs?: string }> = [];
   private readonly responses: Array<{ ok: boolean; ts?: string; error?: string; statusCode?: number; retryAfterMs?: number }>;
 
   constructor(responses: Array<{ ok: boolean; ts?: string; error?: string; statusCode?: number; retryAfterMs?: number }> = [
@@ -79,14 +79,14 @@ class FakeSlackTransport implements SlackTransport {
     this.responses = responses;
   }
 
-  async sendMessage(input: { token: string; channel: string; text: string }): Promise<{
+  async sendMessage(input: { token: string; channel: string; text: string; threadTs?: string }): Promise<{
     ok: boolean;
     ts?: string;
     error?: string;
     statusCode?: number;
     retryAfterMs?: number;
   }> {
-    this.sent.push({ channel: input.channel, text: input.text });
+    this.sent.push(input.threadTs ? { channel: input.channel, text: input.text, threadTs: input.threadTs } : { channel: input.channel, text: input.text });
     return this.responses.shift() ?? { ok: true, ts: "1713900000.000100", statusCode: 200 };
   }
 }
@@ -98,6 +98,27 @@ function signedWebhookHeaders(secret: string, body: string, timestamp = Math.flo
     "x-channel-timestamp": timestamp,
     "x-channel-signature": `sha256=${signature}`
   };
+}
+
+function signedSlackHeaders(secret: string, body: string, timestamp = Math.floor(Date.now() / 1000).toString()): Record<string, string> {
+  const signature = createHmac("sha256", secret).update(`v0:${timestamp}:${body}`).digest("hex");
+  return {
+    "Content-Type": "application/json",
+    "x-slack-request-timestamp": timestamp,
+    "x-slack-signature": `v0=${signature}`
+  };
+}
+
+async function eventually<T>(read: () => Promise<T>, predicate: (value: T) => boolean): Promise<T> {
+  let latest = await read();
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (predicate(latest)) {
+      return latest;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    latest = await read();
+  }
+  return latest;
 }
 
 test("buildJsonExport wraps records in an operator-friendly envelope", () => {
@@ -202,9 +223,14 @@ test("slack delivery retries transient failures and records attempt counts", asy
   }
 });
 
-test("chat streaming, health, scheduler, and mcp routes work", async () => {
+test("chat streaming, health, scheduler, channels, and mcp routes work", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "codex-phantom-server-"));
-  const config: AppConfig = makeConfig(dataDir, { port: 0, slackBotToken: "xoxb-test-token" });
+  const config: AppConfig = makeConfig(dataDir, {
+    port: 0,
+    slackBotToken: "xoxb-test-token",
+    slackSigningSecret: "slack-signing-secret",
+    slackBotUserId: "B999"
+  });
   const database = new AppDatabase(join(dataDir, "server.sqlite"));
   const sessions = new SessionStore(database);
   const channels = new ChannelRegistry(database, config);
@@ -437,8 +463,10 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
       headers: signedWebhookHeaders(config.externalChannelSecret, webhookBody),
       body: webhookBody
     });
-    const webhookJson = await webhookResponse.json() as { sessionId: string; outputText: string };
+    const webhookJson = await webhookResponse.json() as { sessionId: string; outputText: string; inboundEvent: { channelId: string; status: string } };
     assert.equal(webhookJson.outputText, "assistant:hello from webhook");
+    assert.equal(webhookJson.inboundEvent.channelId, "webhook");
+    assert.equal(webhookJson.inboundEvent.status, "completed");
 
     await fetch(`http://127.0.0.1:${port}/scheduler/jobs`, {
       method: "POST",
@@ -604,11 +632,15 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
       headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
     });
     const channelsJson = await channelsResponse.json() as {
-      channels: Array<{ id: string; enabled: boolean; secretPresent: boolean }>;
+      channels: Array<{ id: string; enabled: boolean; secretPresent: boolean; config: { requiredSecretEnvVars?: string[] } }>;
     };
     assert.ok(channelsJson.channels.some((channel) => channel.id === "web"));
     assert.ok(channelsJson.channels.some((channel) => channel.id === "slack"));
-    assert.ok(channelsJson.channels.some((channel) => channel.id === "slack" && channel.secretPresent === true));
+    assert.ok(channelsJson.channels.some((channel) =>
+      channel.id === "slack" &&
+      channel.secretPresent === true &&
+      channel.config.requiredSecretEnvVars?.includes("SLACK_SIGNING_SECRET")
+    ));
 
     const channelUpdateResponse = await fetch(`http://127.0.0.1:${port}/admin/channels`, {
       method: "POST",
@@ -643,11 +675,63 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
     assert.equal(slackMessageJson.result.ts, "1713900000.000100");
     assert.deepEqual(slackTransport.sent, [{ channel: "C123456", text: "hello from codex-phantom" }]);
 
+    const slackEventBody = JSON.stringify({
+      type: "event_callback",
+      event_id: "EvInbound123",
+      event: {
+        type: "app_mention",
+        user: "U123",
+        channel: "C123456",
+        text: "<@B999> hello from slack",
+        ts: "1713900001.000100",
+        thread_ts: "1713900001.000000"
+      }
+    });
+    const slackEventResponse = await fetch(`http://127.0.0.1:${port}/channels/slack/events`, {
+      method: "POST",
+      headers: signedSlackHeaders(config.slackSigningSecret!, slackEventBody),
+      body: slackEventBody
+    });
+    const slackEventJson = await slackEventResponse.json() as { status: string; inboundEventId: string };
+    assert.equal(slackEventResponse.status, 202);
+    assert.equal(slackEventJson.status, "accepted");
+    assert.ok(slackEventJson.inboundEventId);
+
+    const inboundAfterSlack = await eventually(
+      async () => {
+        const inboundResponse = await fetch(`http://127.0.0.1:${port}/admin/channels/inbound?channelId=slack`, {
+          headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
+        });
+        return await inboundResponse.json() as { events: Array<{ providerEventId: string; status: string; outputText?: string; runId?: string }> };
+      },
+      (body) => body.events.some((event) => event.providerEventId === "EvInbound123" && event.status === "completed")
+    );
+    assert.ok(inboundAfterSlack.events.some((event) =>
+      event.providerEventId === "EvInbound123" &&
+      event.status === "completed" &&
+      event.outputText === "assistant:hello from slack" &&
+      typeof event.runId === "string"
+    ));
+    assert.ok(slackTransport.sent.some((message) =>
+      message.channel === "C123456" &&
+      message.text === "assistant:hello from slack"
+    ));
+
+    const duplicateSlackEventResponse = await fetch(`http://127.0.0.1:${port}/channels/slack/events`, {
+      method: "POST",
+      headers: signedSlackHeaders(config.slackSigningSecret!, slackEventBody),
+      body: slackEventBody
+    });
+    const duplicateSlackEventJson = await duplicateSlackEventResponse.json() as { status: string; duplicate: boolean };
+    assert.equal(duplicateSlackEventResponse.status, 202);
+    assert.equal(duplicateSlackEventJson.status, "duplicate");
+    assert.equal(duplicateSlackEventJson.duplicate, true);
+
     const deliveriesResponse = await fetch(`http://127.0.0.1:${port}/admin/channels/deliveries?channelId=slack`, {
       headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
     });
     const deliveriesJson = await deliveriesResponse.json() as {
-      deliveries: Array<{ channelId: string; status: string; destination: string; attemptCount: number }>;
+      deliveries: Array<{ channelId: string; status: string; destination: string; attemptCount: number; payload: { thread_ts?: string } }>;
     };
     assert.ok(deliveriesJson.deliveries.some((delivery) =>
       delivery.channelId === "slack" &&
@@ -655,6 +739,7 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
       delivery.destination === "C123456" &&
       delivery.attemptCount === 1
     ));
+    assert.ok(deliveriesJson.deliveries.some((delivery) => delivery.payload.thread_ts === "1713900001.000000"));
 
     const adminSummaryResponse = await fetch(`http://127.0.0.1:${port}/admin/summary`, {
       headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
@@ -664,6 +749,7 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
       deployment: { qdrantEnabled: boolean };
       governance: { pendingDynamicTools: number; approvedDynamicTools: number };
       channelDeliveries: { delivered: number; recentFailed: unknown[] };
+      channelInbound: { completed: number; failed: number; recentFailed: unknown[] };
       settings: { dashboardRefreshSeconds: number };
       channels: Array<{ id: string; enabled: boolean }>;
     };
@@ -671,8 +757,10 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
     assert.equal(adminSummaryJson.deployment.qdrantEnabled, false);
     assert.equal(adminSummaryJson.governance.pendingDynamicTools, 0);
     assert.equal(adminSummaryJson.governance.approvedDynamicTools, 1);
-    assert.equal(adminSummaryJson.channelDeliveries.delivered, 1);
+    assert.equal(adminSummaryJson.channelDeliveries.delivered, 2);
     assert.deepEqual(adminSummaryJson.channelDeliveries.recentFailed, []);
+    assert.ok(adminSummaryJson.channelInbound.completed >= 2);
+    assert.deepEqual(adminSummaryJson.channelInbound.recentFailed, []);
     assert.equal(adminSummaryJson.settings.dashboardRefreshSeconds, 5);
     assert.ok(adminSummaryJson.channels.some((channel) => channel.id === "slack" && channel.enabled === true));
 
@@ -813,6 +901,85 @@ test("chat streaming, health, scheduler, and mcp routes work", async () => {
     assert.match(metricsText, /codex_phantom_mcp_auth_failure 12/);
     assert.match(metricsText, /codex_phantom_mcp_rate_limited 1/);
     assert.match(metricsText, /codex_phantom_http_request_duration_ms_count/);
+  } finally {
+    await scheduler.stop();
+    await server.close();
+    database.close();
+  }
+});
+
+test("slack inbound rejects missing signing secret and disabled channel", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "codex-phantom-slack-inbound-"));
+  const config = makeConfig(dataDir, { port: 0, slackBotToken: "xoxb-test-token" });
+  const database = new AppDatabase(join(dataDir, "slack-inbound.sqlite"));
+  const sessions = new SessionStore(database);
+  const channels = new ChannelRegistry(database, config);
+  const memory = new MemoryStore(
+    database,
+    config,
+    makeDisabledEmbeddings(),
+    makeFakeVectorStore({ backend: "qdrant", available: false, configured: false }),
+    makeFakeVectorStore({ backend: "sqlite_fallback", available: true })
+  );
+  const tools = new ToolRegistry();
+  const runtime = new AgentRuntime(config, new FakeAdapter(), sessions, memory, tools);
+  const runs = new RunGraphStore(database);
+  const orchestration = new OrchestrationService(runtime, tools, runs);
+  const scheduler = new SchedulerService(database, orchestration);
+  await scheduler.start();
+  const metrics = new MetricsStore();
+  const mcpAudit = new McpAuditStore(database);
+  const mcp = new McpServer(config.mcpBearerToken, tools, metrics, undefined, mcpAudit);
+  const dynamicTools = new DynamicToolRegistry(database, tools);
+  const governance = new ToolGovernanceService(database);
+  const server = new HttpServer(
+    config,
+    orchestration,
+    scheduler,
+    sessions,
+    runs,
+    mcp,
+    database,
+    new Logger("error"),
+    metrics,
+    memory,
+    dynamicTools,
+    channels,
+    governance,
+    new FakeSlackTransport()
+  );
+
+  try {
+    const instance = await server.listen();
+    const address = instance.address();
+    assert.equal(typeof address, "object");
+    const port = address && typeof address === "object" ? address.port : 0;
+    const body = JSON.stringify({
+      type: "event_callback",
+      event_id: "EvReject",
+      event: {
+        type: "app_mention",
+        user: "U123",
+        channel: "C123456",
+        text: "hello",
+        ts: "1713900001.000100"
+      }
+    });
+
+    const missingSecretResponse = await fetch(`http://127.0.0.1:${port}/channels/slack/events`, {
+      method: "POST",
+      headers: signedSlackHeaders("slack-signing-secret", body),
+      body
+    });
+    assert.equal(missingSecretResponse.status, 412);
+
+    config.slackSigningSecret = "slack-signing-secret";
+    const disabledResponse = await fetch(`http://127.0.0.1:${port}/channels/slack/events`, {
+      method: "POST",
+      headers: signedSlackHeaders(config.slackSigningSecret, body),
+      body
+    });
+    assert.equal(disabledResponse.status, 409);
   } finally {
     await scheduler.stop();
     await server.close();

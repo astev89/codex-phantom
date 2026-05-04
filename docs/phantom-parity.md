@@ -1,6 +1,6 @@
 # Phantom Parity Snapshot
 
-This snapshot tracks production-readiness parity against the reference Phantom repo as of the current hardening branch.
+This snapshot tracks production-readiness parity against the reference Phantom repo as of the latest GitNexus-assisted comparison pass. The goal is useful Codex-oriented parity, not a feature-for-feature clone of every Phantom channel or UI.
 
 ## Matched or intentionally covered
 
@@ -14,6 +14,7 @@ This snapshot tracks production-readiness parity against the reference Phantom r
 - JSON metrics snapshot and Prometheus text output at `/metrics?format=prometheus`.
 - Operator console workflow coverage through Playwright for auth, settings, dynamic tool approval, MCP audit visibility, and scheduler panels.
 - Signed inbound webhook contract using timestamped HMAC verification and bounded replay tolerance.
+- Normalized inbound channel routing for signed webhooks and Slack Events API ingestion, with durable inbound event state, dedupe, operator visibility, and Slack ack-then-run execution.
 - Slack outbound delivery retries for transient `429` and `5xx` responses, with attempt counts and recent failed deliveries visible to operators.
 
 ## Deferred or consciously divergent
@@ -22,4 +23,18 @@ This snapshot tracks production-readiness parity against the reference Phantom r
 - **Accepted divergence:** Dynamic shell/script MCP tools remain intentionally constrained to template-style dynamic tools.
 - **Accepted divergence:** Docker socket mounting is not part of the default deployment path.
 - **Accepted divergence:** Metrics are process-local and reset on restart; external scraping through Prometheus/Grafana is the durable metrics path for this wave.
-- **Not implemented yet:** Multi-channel inbound chat parity remains partial; Slack is currently outbound-focused.
+- **Accepted divergence:** Phantom's full browser chat product is not a parity target right now. `codex-phantom` should keep the operator console and HTTP/admin APIs focused on operations unless a Codex-native chat surface becomes necessary.
+- **Accepted divergence:** Telegram support is not a parity target.
+- **Not implemented yet:** Slack inbound parity is still basic. `codex-phantom` accepts app mentions, direct messages, mention-gated channel messages, and reactions, then posts one final thread reply. Phantom's progressive updates, status reactions, and richer feedback signal loop remain follow-up work.
+- **Not implemented yet:** Durable transcript, attachment, and artifact continuity is thinner than Phantom. `codex-phantom` persists sessions/runs/events and memory, but does not yet have Phantom-style attachment storage, transcript recovery/search, or artifact views.
+- **Not implemented yet:** Role/config/onboarding parity remains partial. `codex-phantom` has roles and prompt assembly, but not Phantom's YAML-first role system, first-run onboarding flow, magic-link auth, or evolved config file layers.
+- **Not implemented yet:** Plugin marketplace and curated overlay parity remains open. Dynamic governed tools cover the safer core, but not Phantom's plugin seed, manifest, marketplace, audit, and curated overlay system.
+- **Not implemented yet:** Advanced memory behavior remains partial. `codex-phantom` has Qdrant/OpenAI-backed retrieval with SQLite fallback, summaries, semantic facts, and procedural notes; Phantom also includes richer hybrid retrieval, contradiction/supersession handling, decay/reinforcement, and scheduled consolidation/promote/prune behavior.
+
+## Current priority order
+
+1. Execute and record Docker deployment plus backup/restore smoke evidence.
+2. Add richer Slack inbound progress behavior: progressive message updates, status reactions, and feedback signal handling.
+3. Add operator-visible inbound progress state beyond final run status.
+4. Add only the transcript/artifact continuity needed for Codex operations; do not backfill the full Phantom web chat product unless the product goal changes.
+5. Revisit role/config/onboarding, plugin marketplace, and advanced memory behavior after inbound channel parity is stable.

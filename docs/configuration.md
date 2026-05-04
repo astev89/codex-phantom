@@ -27,9 +27,10 @@
 | `QDRANT_API_KEY` | unset | optional | Qdrant API key for secured deployments. |
 | `QDRANT_COLLECTION_NAME` | `codex-phantom-memory` | optional | Must not be blank. |
 | `QDRANT_TIMEOUT_MS` | `5000` | optional | Positive integer timeout for vector store calls. |
-| `SLACK_BOT_TOKEN` | unset | optional | Required only for outbound Slack sends. |
+| `SLACK_BOT_TOKEN` | unset | optional | Required for outbound Slack sends and inbound Slack thread replies. |
 | `SLACK_APP_TOKEN` | unset | optional | Reserved for future Slack app-level flows. |
-| `SLACK_SIGNING_SECRET` | unset | optional | Reserved for future inbound Slack verification. |
+| `SLACK_SIGNING_SECRET` | unset | optional | Required for `POST /channels/slack/events`. |
+| `SLACK_BOT_USER_ID` | unset | optional | Bot user id used to strip `<@bot>` mentions and ignore self-authored Slack events. |
 | `MEMORY_EMBEDDING_BATCH_SIZE` | `8` | optional | Positive integer batch size for embedding backfills. |
 | `MEMORY_TOP_K` | `12` | optional | Positive integer semantic retrieval result count. |
 | `MEMORY_PER_CATEGORY_LIMIT` | `3` | optional | Positive integer category cap for memory query responses. |

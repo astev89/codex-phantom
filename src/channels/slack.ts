@@ -1,10 +1,11 @@
 import type { AppConfig } from "../config.ts";
 import { HttpError } from "../server/validation.ts";
+import type { JsonValue } from "../shared/types.ts";
 import type { ChannelRegistry } from "./registry.ts";
 import type { ChannelDeliveryRecord, ChannelDeliveryStore } from "./delivery-log.ts";
 
 export type SlackTransport = {
-  sendMessage(input: { token: string; channel: string; text: string }): Promise<{
+  sendMessage(input: { token: string; channel: string; text: string; threadTs?: string }): Promise<{
     ok: boolean;
     ts?: string;
     error?: string;
@@ -31,7 +32,7 @@ export class SlackChannel {
     this.transport = transport;
   }
 
-  async sendMessage(input: { channel: string; text: string }): Promise<{
+  async sendMessage(input: { channel: string; text: string; threadTs?: string }): Promise<{
     delivery: ChannelDeliveryRecord;
     result: { ts: string };
   }> {
@@ -43,7 +44,11 @@ export class SlackChannel {
       throw new HttpError(412, "SLACK_BOT_TOKEN is required for Slack delivery");
     }
 
-    const payload = { channel: input.channel, text: input.text };
+    const payload: Record<string, JsonValue> = { channel: input.channel, text: input.text };
+    if (input.threadTs) {
+      payload.threadTs = input.threadTs;
+      payload.thread_ts = input.threadTs;
+    }
     let result: Awaited<ReturnType<SlackTransport["sendMessage"]>> = { ok: false, error: "Slack delivery was not attempted" };
     let attemptCount = 0;
     for (let attempt = 1; attempt <= 3; attempt += 1) {
@@ -51,7 +56,8 @@ export class SlackChannel {
       result = await this.transport.sendMessage({
         token: this.config.slackBotToken,
         channel: input.channel,
-        text: input.text
+        text: input.text,
+        threadTs: input.threadTs
       });
       if (result.ok && result.ts) {
         break;
@@ -101,7 +107,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 class SlackApiTransport implements SlackTransport {
-  async sendMessage(input: { token: string; channel: string; text: string }): Promise<{
+  async sendMessage(input: { token: string; channel: string; text: string; threadTs?: string }): Promise<{
     ok: boolean;
     ts?: string;
     error?: string;
@@ -116,7 +122,8 @@ class SlackApiTransport implements SlackTransport {
       },
       body: JSON.stringify({
         channel: input.channel,
-        text: input.text
+        text: input.text,
+        thread_ts: input.threadTs
       })
     });
 
