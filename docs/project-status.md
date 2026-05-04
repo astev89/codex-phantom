@@ -2,17 +2,37 @@
 
 This is the living status ledger for `codex-phantom`. Update it at the end of each development wave, after tests pass and before handing off or opening a PR.
 
-Last updated: 2026-05-01
-Branch: `jarvis/web-chat-product-surface`
-Latest verified commit: `6147b89`
+Last updated: 2026-05-04
+Branch: `jarvis/transcript-artifact-continuity`
+Latest verified commit: `9c133e5`
 
 ## Current State
 
-`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, a Codex-native `/chat` product surface, and hybrid long-term memory with Qdrant-backed vector recall plus SQLite fallback.
+`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, a Codex-native `/chat` product surface with durable attachment/artifact continuity, and hybrid long-term memory with Qdrant-backed vector recall plus SQLite fallback.
 
 The project is now past its first serious production-hardening pass. It is not yet equivalent to the original Phantom project, but the core runtime is materially safer to run: request sizes are bounded, secrets are rejected in production when defaults are used, outbound model calls have timeouts, scheduler jobs recover deterministically after restarts, MCP events are durably audited, external webhooks are signed, Slack sends retry transient failures, operator-console workflows have browser coverage, and the Docker image runs compiled JavaScript instead of stripped TypeScript.
 
 ## Just Completed
+
+Transcript and artifact continuity wave completed locally on 2026-05-04:
+
+- Added file-backed chat blob storage under `CODEX_PHANTOM_DATA_DIR/chat-blobs/`.
+- Extended chat attachments from metadata-only rows to optional durable uploads with SHA-256, download URLs, and run linkage.
+- Added explicit `text`, `json`, and `file` artifact records linked to sessions and optional runs.
+- Added authenticated upload/download APIs for attachments and artifacts.
+- Extended `GET /chat/sessions/:sessionId` and `scope=chat` operator exports with attachment/artifact summaries.
+- Updated `/chat` to upload files for existing sessions and show attachment/artifact continuity links.
+- Kept automatic artifact extraction, searchable attachment content, service-worker push, offline cache, and Phantom's full 32-event protocol deferred.
+
+Verification from this wave:
+
+```bash
+node --experimental-strip-types --test tests/server.test.ts
+npm run typecheck
+npm test
+npm run build
+git diff --check
+```
 
 Docs runbook wave completed locally on 2026-05-01:
 
@@ -130,14 +150,14 @@ Suggested work:
 - Map useful Slack reaction/button feedback into durable inbound event metadata or a follow-up feedback store.
 - Keep UI scope limited to operator visibility unless a Codex-native chat surface becomes a product requirement.
 
-### P2: Deepen Web Chat Continuity
+### P2: Deepen Artifact Intelligence
 
-The first `/chat` product surface now exists. The next web-chat slice should avoid re-cloning Phantom wholesale and instead add continuity where Codex operations need it.
+The `/chat` surface now has durable uploaded attachments and explicit artifacts. The next slice should add intelligence only where Codex operations need it.
 
 Suggested work:
 
-- Add durable binary attachment storage with size limits and operator export coverage.
-- Add artifact views linked to run outputs and tool results.
+- Add automatic artifact extraction from selected tool events or structured run outputs.
+- Add searchable attachment content for safe text-like file types.
 - Decide whether Phantom's full 32-event browser wire protocol is worth matching or whether the current versioned Codex envelope should remain the stable contract.
 - Add service-worker-backed push notifications only after there is a concrete notification source beyond browser permission state.
 
