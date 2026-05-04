@@ -26,6 +26,8 @@ type ChatAttachmentRow = {
   content_type: string;
   size_bytes: number;
   description: string | null;
+  storage_path: string | null;
+  sha256: string | null;
   created_at: string;
 };
 
@@ -40,7 +42,17 @@ export type ChatAttachmentRecord = ChatAttachmentInput & {
   id: string;
   sessionId: string;
   runId?: string;
+  storagePath?: string;
+  sha256?: string;
   createdAt: string;
+};
+
+export type UploadedChatAttachmentInput = ChatAttachmentInput & {
+  id: string;
+  sessionId: string;
+  runId?: string;
+  storagePath: string;
+  sha256: string;
 };
 
 export class SessionStore {
@@ -122,8 +134,8 @@ export class SessionStore {
       this.database.run(
         `
           INSERT INTO chat_attachments (
-            id, session_id, run_id, name, content_type, size_bytes, description, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            id, session_id, run_id, name, content_type, size_bytes, description, storage_path, sha256, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
         record.id,
         record.sessionId,
@@ -132,10 +144,72 @@ export class SessionStore {
         record.contentType,
         record.sizeBytes,
         record.description ?? null,
+        null,
+        null,
         record.createdAt
       );
     }
     return records;
+  }
+
+  async recordUploadedAttachment(input: UploadedChatAttachmentInput): Promise<ChatAttachmentRecord> {
+    const record: ChatAttachmentRecord = {
+      id: input.id,
+      sessionId: input.sessionId,
+      runId: input.runId,
+      name: input.name,
+      contentType: input.contentType,
+      sizeBytes: input.sizeBytes,
+      description: input.description,
+      storagePath: input.storagePath,
+      sha256: input.sha256,
+      createdAt: new Date().toISOString()
+    };
+    this.database.run(
+      `
+        INSERT INTO chat_attachments (
+          id, session_id, run_id, name, content_type, size_bytes, description, storage_path, sha256, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      record.id,
+      record.sessionId,
+      record.runId ?? null,
+      record.name,
+      record.contentType,
+      record.sizeBytes,
+      record.description ?? null,
+      record.storagePath ?? null,
+      record.sha256 ?? null,
+      record.createdAt
+    );
+    return record;
+  }
+
+  async getAttachment(id: string): Promise<ChatAttachmentRecord | undefined> {
+    const row = this.database.get<ChatAttachmentRow>("SELECT * FROM chat_attachments WHERE id = ?", id);
+    return row ? toAttachmentRecord(row) : undefined;
+  }
+
+  async linkAttachmentsToRun(sessionId: string, runId: string, attachmentIds: string[]): Promise<ChatAttachmentRecord[]> {
+    const records = await Promise.all(attachmentIds.map((id) => this.getAttachment(id)));
+    if (records.some((record) => !record || record.sessionId !== sessionId)) {
+      throw new Error("Attachment not found for chat session");
+    }
+    for (const id of attachmentIds) {
+      this.database.run(
+        "UPDATE chat_attachments SET run_id = ? WHERE id = ? AND session_id = ?",
+        runId,
+        id,
+        sessionId
+      );
+    }
+    return Promise.all(attachmentIds.map(async (id) => {
+      const record = await this.getAttachment(id);
+      if (!record) {
+        throw new Error("Attachment not found for chat session");
+      }
+      return record;
+    }));
   }
 
   async listAttachments(sessionId: string): Promise<ChatAttachmentRecord[]> {
@@ -143,6 +217,15 @@ export class SessionStore {
       .all<ChatAttachmentRow>(
         "SELECT * FROM chat_attachments WHERE session_id = ? ORDER BY created_at ASC, id ASC",
         sessionId
+      )
+      .map(toAttachmentRecord);
+  }
+
+  async listStoredAttachments(limit = 250): Promise<ChatAttachmentRecord[]> {
+    return this.database
+      .all<ChatAttachmentRow>(
+        "SELECT * FROM chat_attachments WHERE storage_path IS NOT NULL ORDER BY created_at DESC LIMIT ?",
+        limit
       )
       .map(toAttachmentRecord);
   }
@@ -174,6 +257,8 @@ function toAttachmentRecord(row: ChatAttachmentRow): ChatAttachmentRecord {
     contentType: row.content_type,
     sizeBytes: row.size_bytes,
     description: row.description ?? undefined,
+    storagePath: row.storage_path ?? undefined,
+    sha256: row.sha256 ?? undefined,
     createdAt: row.created_at
   };
 }

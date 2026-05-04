@@ -105,7 +105,25 @@ export class AppDatabase {
         content_type TEXT NOT NULL,
         size_bytes INTEGER NOT NULL,
         description TEXT,
+        storage_path TEXT,
+        sha256 TEXT,
         created_at TEXT NOT NULL,
+        FOREIGN KEY (session_id) REFERENCES sessions(session_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS chat_artifacts (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        run_id TEXT,
+        title TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        content_type TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL,
+        storage_path TEXT NOT NULL,
+        sha256 TEXT NOT NULL,
+        metadata_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
         FOREIGN KEY (session_id) REFERENCES sessions(session_id)
       );
 
@@ -228,6 +246,7 @@ export class AppDatabase {
       CREATE INDEX IF NOT EXISTS idx_runs_parent_run_id ON runs(parent_run_id);
       CREATE INDEX IF NOT EXISTS idx_run_events_run_id ON run_events(run_id, sequence);
       CREATE INDEX IF NOT EXISTS idx_chat_attachments_session_id ON chat_attachments(session_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_chat_artifacts_session_id ON chat_artifacts(session_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_jobs_status_scheduled_at ON jobs(status, scheduled_at);
       CREATE INDEX IF NOT EXISTS idx_memory_entries_category_created_at ON memory_entries(category, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_dynamic_tools_updated_at ON dynamic_tools(updated_at DESC);
@@ -259,6 +278,8 @@ export class AppDatabase {
     ensureColumn(this.db, "memory_entries", "vector_point_id", "TEXT");
     ensureColumn(this.db, "sessions", "title", "TEXT");
     ensureColumn(this.db, "sessions", "title_source", "TEXT");
+    ensureColumn(this.db, "chat_attachments", "storage_path", "TEXT");
+    ensureColumn(this.db, "chat_attachments", "sha256", "TEXT");
     ensureColumn(this.db, "dynamic_tools", "approval_state", "TEXT NOT NULL DEFAULT 'pending'");
     ensureColumn(this.db, "dynamic_tools", "approved_by", "TEXT");
     ensureColumn(this.db, "dynamic_tools", "approved_at", "TEXT");

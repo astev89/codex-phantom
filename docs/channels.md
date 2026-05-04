@@ -32,10 +32,11 @@ The chat app supports:
 
 - streamed coordinator runs through `POST /chat/message`;
 - recent session listing through `GET /chat/sessions`;
-- transcript, run, and attachment metadata detail through `GET /chat/sessions/:sessionId`;
+- transcript, run, attachment, and artifact detail through `GET /chat/sessions/:sessionId`;
 - browser-local multi-tab refresh using `BroadcastChannel` plus `localStorage`;
 - markdown rendering for common headings, emphasis, links, and code blocks;
-- attachment metadata capture for selected files;
+- durable uploaded attachments for existing sessions, with metadata fallback for first-message files;
+- explicit generated artifact records;
 - browser notification permission prompts;
 - automatic session titles derived from the first user message.
 
@@ -49,7 +50,16 @@ The chat app supports:
 
 Each event uses a versioned envelope with `version`, `type`, `requestId`, `sequence`, `createdAt`, optional `sessionId`/`runId`, and `payload`. Agent events also include `rawEvent` for compatibility with existing event consumers.
 
-This first product surface stores attachment metadata only. It does not store binary uploads, register a service worker, or implement Phantom's full 32-event browser wire protocol.
+Continuity APIs:
+
+- `POST /chat/attachments`: multipart upload with `sessionId`, optional `runId`, and one or more `file` parts.
+- `GET /chat/attachments/:id`: authenticated attachment download.
+- `POST /chat/artifacts`: create an explicit artifact with `sessionId`, optional `runId`, `title`, `kind`, `contentType`, `content`, and optional `metadata`.
+- `GET /chat/artifacts/:id`: authenticated artifact download.
+
+Uploaded blobs are stored under `CODEX_PHANTOM_DATA_DIR/chat-blobs/` with generated storage names. SQLite stores user filename, content type, size, SHA-256, session/run linkage, and timestamps. Artifact `kind` is one of `text`, `json`, or `file`.
+
+This surface still does not register a service worker, searchable attachment contents, automatic artifact extraction, or Phantom's full 32-event browser wire protocol.
 
 ## Inbound Webhook Channel
 
