@@ -2,9 +2,9 @@
 
 This is the living status ledger for `codex-phantom`. Update it at the end of each development wave, after tests pass and before handing off or opening a PR.
 
-Last updated: 2026-05-01
-Branch: `jarvis/web-chat-product-surface`
-Latest verified commit: `6147b89`
+Last updated: 2026-05-04
+Branch: `main`
+Latest verified commit: `c091e77` on PR #2, merged to `main` as `c00da6a`
 
 ## Current State
 
@@ -42,6 +42,7 @@ Web chat product surface wave completed locally on 2026-05-01:
 - Added `GET /chat/sessions` and `GET /chat/sessions/:sessionId` for session management, run transcripts, and attachment metadata.
 - Added SQLite-backed chat attachment metadata and additive session title fields.
 - Added browser-local multi-tab refresh, markdown rendering, notification permission affordance, file metadata capture, and automatic first-message session titles.
+- Addressed PR #2 review and CI follow-up by hardening chat HTML/script escaping, preserving fenced code blocks in markdown rendering, stabilizing attachment ordering, filtering session run detail to persisted run graph IDs, and draining oversized request bodies before returning `413`.
 - Kept binary upload storage, service-worker push delivery, and Phantom's full 32-event chat protocol as follow-up work.
 
 Verification from this wave:
@@ -51,6 +52,7 @@ node --experimental-strip-types --test tests/server.test.ts
 npm run typecheck
 npm test
 npm run build
+gh pr checks 2 --watch
 ```
 
 Production agenda wave completed locally on 2026-05-01:
