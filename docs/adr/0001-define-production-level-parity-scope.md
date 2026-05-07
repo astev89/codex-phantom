@@ -1,0 +1,3 @@
+# Define Production-Level Parity Scope
+
+Production-level parity means matching Phantom's feature set, excluding Telegram, while requiring each parity feature to be safe to run in production. Because `codex-phantom` is an internal Codex-oriented project, parity may be delivered through Codex-native equivalents when they preserve the operator-facing capability: Web Chat matches user-visible behavior without cloning Phantom's internal 32-event protocol, tools use internal governed bundles rather than a public marketplace, onboarding does not require magic-link auth, and self-evolution must be governed with policy, audit, approval, and rollback rather than unrestricted self-mutation.
