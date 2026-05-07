@@ -1,5 +1,7 @@
 # Slack Inbound Parity Implementation Plan
 
+> Superseded for future implementation by the production-level parity planning captured in `CONTEXT.md`, `docs/adr/0001-define-production-level-parity-scope.md`, `docs/phantom-parity.md`, and `docs/superpowers/plans/2026-05-06-production-level-parity.md`. Use this file as historical technical context only; write a fresh Slack production parity plan after Wave 1 production proof passes.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Bring Slack inbound behavior closer to Phantom by adding progressive thread updates, status reactions, thread reply context, and feedback handling on top of the existing Slack Events API route.

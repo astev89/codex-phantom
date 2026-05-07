@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -360,6 +360,28 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     });
     assert.equal(unauthenticatedChatResponse.status, 401);
 
+    const unauthenticatedAttachmentForm = new FormData();
+    unauthenticatedAttachmentForm.set("sessionId", "blocked");
+    unauthenticatedAttachmentForm.set("file", new Blob(["blocked"], { type: "text/plain" }), "blocked.txt");
+    const unauthenticatedAttachmentResponse = await fetch(`http://127.0.0.1:${port}/chat/attachments`, {
+      method: "POST",
+      body: unauthenticatedAttachmentForm
+    });
+    assert.equal(unauthenticatedAttachmentResponse.status, 401);
+
+    const unauthenticatedArtifactResponse = await fetch(`http://127.0.0.1:${port}/chat/artifacts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: "blocked",
+        title: "Blocked",
+        kind: "text",
+        contentType: "text/plain",
+        content: "blocked"
+      })
+    });
+    assert.equal(unauthenticatedArtifactResponse.status, 401);
+
     const unauthenticatedScheduleResponse = await fetch(`http://127.0.0.1:${port}/scheduler/jobs`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -507,11 +529,13 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     const chatSessionJson = await chatSessionResponse.json() as {
       session: { sessionId: string; title?: string };
       runs: Array<{ runId: string; transcript: Array<{ role: string; content: string }> }>;
-      attachments: Array<{ name: string; contentType: string; sizeBytes: number; description?: string }>;
+      attachments: Array<{ id: string; runId?: string; name: string; contentType: string; sizeBytes: number; description?: string; sha256?: string; downloadUrl?: string }>;
+      artifacts: Array<{ id: string; runId?: string; title: string; kind: string; contentType: string; sizeBytes: number; sha256: string; downloadUrl: string }>;
     };
     assert.equal(chatSessionJson.session.title, "Hello From Web");
     assert.ok(chatSessionJson.runs.some((run) => run.transcript.some((message) => message.content === "hello from web")));
     assert.ok(chatSessionJson.runs.every((run) => run.runId.startsWith("coord_") || run.runId.startsWith("sub_")));
+    assert.deepEqual(chatSessionJson.artifacts, []);
     assert.deepEqual(chatSessionJson.attachments.map((attachment) => ({
       name: attachment.name,
       contentType: attachment.contentType,
@@ -525,6 +549,120 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
         description: "Operator notes"
       }
     ]);
+
+    const uploadForm = new FormData();
+    uploadForm.set("sessionId", webSession.sessionId);
+    uploadForm.set("file", new Blob(["hello attachment"], { type: "text/plain" }), "hello.txt");
+    const uploadResponse = await fetch(`${baseUrl}/chat/attachments`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      body: uploadForm
+    });
+    assert.equal(uploadResponse.status, 201);
+    const uploadJson = await uploadResponse.json() as {
+      attachments: Array<{ id: string; sessionId: string; name: string; contentType: string; sizeBytes: number; sha256: string; downloadUrl: string }>;
+    };
+    assert.equal(uploadJson.attachments.length, 1);
+    const uploadedAttachment = uploadJson.attachments[0];
+    assert.equal(uploadedAttachment.sessionId, webSession.sessionId);
+    assert.equal(uploadedAttachment.name, "hello.txt");
+    assert.equal(uploadedAttachment.contentType, "text/plain");
+    assert.equal(uploadedAttachment.sizeBytes, 16);
+    assert.equal(uploadedAttachment.sha256, createHash("sha256").update("hello attachment").digest("hex"));
+    assert.equal(uploadedAttachment.downloadUrl, `/chat/attachments/${uploadedAttachment.id}`);
+
+    const attachmentDownloadResponse = await fetch(`${baseUrl}/chat/attachments/${uploadedAttachment.id}`, {
+      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
+    });
+    assert.equal(attachmentDownloadResponse.status, 200);
+    assert.equal(attachmentDownloadResponse.headers.get("content-type"), "text/plain");
+    assert.match(attachmentDownloadResponse.headers.get("content-disposition") ?? "", /filename="hello\.txt"/);
+    assert.equal(await attachmentDownloadResponse.text(), "hello attachment");
+
+    const linkedStreamResponse = await fetch(`http://127.0.0.1:${port}/chat/message`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.operatorBearerToken}` },
+      body: JSON.stringify({
+        sessionId: webSession.sessionId,
+        message: "use uploaded attachment",
+        attachmentIds: [uploadedAttachment.id]
+      })
+    });
+    assert.equal(linkedStreamResponse.status, 200);
+    assert.match(await linkedStreamResponse.text(), /assistant:use uploaded attachment/);
+
+    const linkedSessionResponse = await fetch(`http://127.0.0.1:${port}/chat/sessions/${webSession.sessionId}`, {
+      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
+    });
+    const linkedSessionJson = await linkedSessionResponse.json() as {
+      attachments: Array<{ id: string; runId?: string; name: string; sha256?: string; downloadUrl?: string }>;
+      runs: Array<{ runId: string }>;
+      artifacts: Array<{ id: string }>;
+    };
+    const linkedAttachment = linkedSessionJson.attachments.find((attachment) => attachment.id === uploadedAttachment.id);
+    assert.ok(linkedAttachment);
+    assert.ok(linkedAttachment.runId?.startsWith("coord_"));
+    assert.equal(linkedAttachment.sha256, uploadedAttachment.sha256);
+    assert.equal(linkedAttachment.downloadUrl, `/chat/attachments/${uploadedAttachment.id}`);
+
+    const artifactResponse = await fetch(`${baseUrl}/chat/artifacts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.operatorBearerToken}` },
+      body: JSON.stringify({
+        sessionId: webSession.sessionId,
+        runId: linkedAttachment.runId,
+        title: "Research Summary",
+        kind: "text",
+        contentType: "text/markdown",
+        content: "# Summary\nDone",
+        metadata: { source: "server-test" }
+      })
+    });
+    assert.equal(artifactResponse.status, 201);
+    const artifactJson = await artifactResponse.json() as {
+      artifact: { id: string; sessionId: string; runId?: string; title: string; kind: string; contentType: string; sizeBytes: number; sha256: string; downloadUrl: string };
+    };
+    assert.equal(artifactJson.artifact.sessionId, webSession.sessionId);
+    assert.equal(artifactJson.artifact.runId, linkedAttachment.runId);
+    assert.equal(artifactJson.artifact.title, "Research Summary");
+    assert.equal(artifactJson.artifact.kind, "text");
+    assert.equal(artifactJson.artifact.contentType, "text/markdown");
+    assert.equal(artifactJson.artifact.sizeBytes, Buffer.byteLength("# Summary\nDone"));
+    assert.equal(artifactJson.artifact.sha256, createHash("sha256").update("# Summary\nDone").digest("hex"));
+    assert.equal(artifactJson.artifact.downloadUrl, `/chat/artifacts/${artifactJson.artifact.id}`);
+
+    const artifactDownloadResponse = await fetch(`${baseUrl}/chat/artifacts/${artifactJson.artifact.id}`, {
+      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
+    });
+    assert.equal(artifactDownloadResponse.status, 200);
+    assert.equal(artifactDownloadResponse.headers.get("content-type"), "text/markdown");
+    assert.match(artifactDownloadResponse.headers.get("content-disposition") ?? "", /filename="Research Summary\.md"/);
+    assert.equal(await artifactDownloadResponse.text(), "# Summary\nDone");
+
+    const invalidArtifactResponse = await fetch(`${baseUrl}/chat/artifacts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.operatorBearerToken}` },
+      body: JSON.stringify({
+        sessionId: webSession.sessionId,
+        title: "Bad",
+        kind: "image",
+        contentType: "text/plain",
+        content: "bad"
+      })
+    });
+    assert.equal(invalidArtifactResponse.status, 400);
+
+    const sessionWithArtifactResponse = await fetch(`http://127.0.0.1:${port}/chat/sessions/${webSession.sessionId}`, {
+      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
+    });
+    const sessionWithArtifactJson = await sessionWithArtifactResponse.json() as {
+      artifacts: Array<{ id: string; title: string; downloadUrl: string }>;
+    };
+    assert.ok(sessionWithArtifactJson.artifacts.some((artifact) =>
+      artifact.id === artifactJson.artifact.id &&
+      artifact.title === "Research Summary" &&
+      artifact.downloadUrl === `/chat/artifacts/${artifactJson.artifact.id}`
+    ));
 
     const webhookBody = JSON.stringify({
       conversationId: "hook-1",
@@ -948,6 +1086,25 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assert.equal(mcpExportJson.scope, "mcp");
     assert.equal(mcpExportJson.format, "json");
     assert.ok(mcpExportJson.items.some((item) => item.method === "tools/list" && item.outcome === "success"));
+
+    const chatExportResponse = await fetch(`http://127.0.0.1:${port}/admin/export?scope=chat&format=json`, {
+      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
+    });
+    const chatExportJson = await chatExportResponse.json() as {
+      scope: string;
+      items: Array<{ kind: string; id: string; sessionId: string }>;
+    };
+    assert.equal(chatExportJson.scope, "chat");
+    assert.ok(chatExportJson.items.some((item) =>
+      item.kind === "attachment" &&
+      item.id === uploadedAttachment.id &&
+      item.sessionId === webSession.sessionId
+    ));
+    assert.ok(chatExportJson.items.some((item) =>
+      item.kind === "artifact" &&
+      item.id === artifactJson.artifact.id &&
+      item.sessionId === webSession.sessionId
+    ));
 
     const diagnosticsResponse = await fetch(`http://127.0.0.1:${port}/admin/diagnostics`, {
       headers: { Authorization: `Bearer ${config.operatorBearerToken}` }

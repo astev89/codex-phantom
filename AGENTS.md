@@ -34,15 +34,17 @@ Use `docs/project-status.md` as the living project ledger for production readine
 Before starting a non-trivial development wave:
 
 - Read `docs/project-status.md` to understand the current state, recent completed work, and the prioritized next-task queue.
-- Check `docs/phantom-parity.md` when the work changes parity with the original Phantom project.
+- For production-level parity work, read `CONTEXT.md`, `docs/adr/`, and `docs/phantom-parity.md` before planning or editing.
+- Check `docs/phantom-parity.md` when the work changes parity with the original Phantom project; it owns the parity matrix, exclusions, and priority order.
 - If the task needs a multi-step plan, create or update a dated plan under `docs/superpowers/plans/` and link back to it from the ledger only when useful.
 
 At the end of each development wave, after verification passes:
 
 - Update `docs/project-status.md` with the latest date, branch, and verified commit.
 - Move completed items into `Just Completed` and add the exact verification commands that passed.
-- Refresh `Next Tasks` so the next agent can start from the real remaining risks, not stale review notes.
-- Update `docs/phantom-parity.md` if matched, deferred, or intentionally divergent Phantom behavior changed.
+- Keep `Next Tasks` concise; point to `docs/phantom-parity.md` for roadmap detail instead of duplicating the parity matrix.
+- Update `docs/phantom-parity.md` if parity matrix status, exclusions, or priority changed.
+- Update `CONTEXT.md` when domain terms are resolved; add an ADR under `docs/adr/` when a durable scope decision would be surprising without context.
 - Keep the ledger concise; put implementation detail in plans, commits, tests, or linked docs.
 
 ## Commit & Pull Request Guidelines

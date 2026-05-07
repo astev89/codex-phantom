@@ -3,16 +3,36 @@
 This is the living status ledger for `codex-phantom`. Update it at the end of each development wave, after tests pass and before handing off or opening a PR.
 
 Last updated: 2026-05-04
-Branch: `main`
-Latest verified commit: `c091e77` on PR #2, merged to `main` as `c00da6a`
+Branch: `jarvis/transcript-artifact-continuity`
+Latest verified commit: `9c133e5`
 
 ## Current State
 
-`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, a Codex-native `/chat` product surface, and hybrid long-term memory with Qdrant-backed vector recall plus SQLite fallback.
+`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, a Codex-native `/chat` product surface with durable attachment/artifact continuity, and hybrid long-term memory with Qdrant-backed vector recall plus SQLite fallback.
 
 The project is now past its first serious production-hardening pass. It is not yet equivalent to the original Phantom project, but the core runtime is materially safer to run: request sizes are bounded, secrets are rejected in production when defaults are used, outbound model calls have timeouts, scheduler jobs recover deterministically after restarts, MCP events are durably audited, external webhooks are signed, Slack sends retry transient failures, operator-console workflows have browser coverage, and the Docker image runs compiled JavaScript instead of stripped TypeScript.
 
 ## Just Completed
+
+Transcript and artifact continuity wave completed locally on 2026-05-04:
+
+- Added file-backed chat blob storage under `CODEX_PHANTOM_DATA_DIR/chat-blobs/`.
+- Extended chat attachments from metadata-only rows to optional durable uploads with SHA-256, download URLs, and run linkage.
+- Added explicit `text`, `json`, and `file` artifact records linked to sessions and optional runs.
+- Added authenticated upload/download APIs for attachments and artifacts.
+- Extended `GET /chat/sessions/:sessionId` and `scope=chat` operator exports with attachment/artifact summaries.
+- Updated `/chat` to upload files for existing sessions and show attachment/artifact continuity links.
+- Kept automatic artifact extraction, searchable attachment content, service-worker push, offline cache, and Phantom's full 32-event protocol deferred.
+
+Verification from this wave:
+
+```bash
+node --experimental-strip-types --test tests/server.test.ts
+npm run typecheck
+npm test
+npm run build
+git diff --check
+```
 
 Docs runbook wave completed locally on 2026-05-01:
 
@@ -110,7 +130,9 @@ npm run build
 
 ## Next Tasks
 
-### P1: Execute Docker Production Smoke Scripts
+Use `docs/phantom-parity.md` as the canonical production-level parity roadmap. Keep this section limited to immediate handoff notes and proof gaps.
+
+### P1: Record Production Proof
 
 The deployment and backup/restore smoke scripts now exist, but this local implementation run did not execute them because the restore script recreates the `codex-phantom-data` Docker volume. Use `docs/deployment-smoke-runbook.md` to run and record the validation safely.
 
@@ -119,39 +141,13 @@ Suggested work:
 - Run the preflight, deployment smoke, and backup/restore smoke from the runbook.
 - If both scripts pass, update this ledger with the evidence listed in the runbook.
 
-### P1: Expand Slack Inbound Progress
-
-Use `docs/phantom-parity.md` as the source of truth for what remains. The inbound router now exists; the next Slack parity slice should make inbound Slack runs easier to follow while they are executing. Full Phantom browser chat and Telegram support are not current targets.
-
-Implementation plan: `docs/superpowers/plans/2026-05-01-slack-inbound-parity.md`.
-
-Suggested work:
-
-- Add progressive Slack thread updates during coordinator execution.
-- Add status reactions for queued, running, completed, and failed states.
-- Map useful Slack reaction/button feedback into durable inbound event metadata or a follow-up feedback store.
-- Keep UI scope limited to operator visibility unless a Codex-native chat surface becomes a product requirement.
-
-### P2: Deepen Web Chat Continuity
-
-The first `/chat` product surface now exists. The next web-chat slice should avoid re-cloning Phantom wholesale and instead add continuity where Codex operations need it.
-
-Suggested work:
-
-- Add durable binary attachment storage with size limits and operator export coverage.
-- Add artifact views linked to run outputs and tool results.
-- Decide whether Phantom's full 32-event browser wire protocol is worth matching or whether the current versioned Codex envelope should remain the stable contract.
-- Add service-worker-backed push notifications only after there is a concrete notification source beyond browser permission state.
-
 ## Known Constraints
 
-- Full Phantom-style self-evolution remains intentionally disabled.
-- Dynamic shell/script MCP tools remain constrained to template-style dynamic tools.
-- Docker socket mounting is not part of the default deployment path.
+- Production-level parity means Phantom feature parity excluding Telegram, implemented as production-safe features.
+- `docs/phantom-parity.md` owns the parity matrix, exclusions, and priority order.
+- `CONTEXT.md` owns canonical project language.
+- ADRs under `docs/adr/` own durable scope decisions.
 - Metrics reset on process restart unless scraped externally.
-- Multi-channel inbound chat parity is intentionally narrowed to webhook and Slack for now.
-- Phantom's full browser chat internals are not a clone target; `codex-phantom` has a narrower Codex-native `/chat` surface.
-- Telegram support is not a parity target.
 
 ## Update Protocol
 
@@ -161,5 +157,5 @@ After each development wave:
 2. Move completed items from `Next Tasks` into `Just Completed`.
 3. Add exact verification commands that passed.
 4. Add new blockers or risks under `Next Tasks`, ordered by production impact.
-5. Update `docs/phantom-parity.md` when the wave changes Phantom match/defer status.
+5. Update `docs/phantom-parity.md` when the wave changes parity matrix status or priority.
 6. Keep this document concise; link to detailed plans under `docs/superpowers/plans/` instead of duplicating implementation detail.

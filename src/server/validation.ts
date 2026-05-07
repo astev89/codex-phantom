@@ -26,8 +26,19 @@ export type ChatMessageInput = {
     sizeBytes: number;
     description?: string;
   }>;
+  attachmentIds?: string[];
   subagents?: SubagentRequest[];
   timeoutMs?: number;
+};
+
+export type ChatArtifactInput = {
+  sessionId: string;
+  runId?: string;
+  title: string;
+  kind: "text" | "json" | "file";
+  contentType: string;
+  content: JsonValue;
+  metadata?: JsonValue;
 };
 
 export type ScheduleJobInput = {
@@ -94,8 +105,30 @@ export function validateChatBody(input: unknown): ChatMessageInput {
     conversationId: optionalString(value.conversationId),
     message,
     attachments: validateAttachments(value.attachments),
+    attachmentIds: optionalStringArray(value.attachmentIds, "attachmentIds"),
     subagents: validateSubagents(value.subagents),
     timeoutMs: optionalPositiveInteger(value.timeoutMs, "timeoutMs")
+  };
+}
+
+export function validateChatArtifactBody(input: unknown): ChatArtifactInput {
+  const value = asRecord(input);
+  const kind = nonEmptyString(value.kind, "kind");
+  if (kind !== "text" && kind !== "json" && kind !== "file") {
+    throw new HttpError(400, "kind must be text, json, or file");
+  }
+  const content = toJsonValue(value.content, "content");
+  if ((kind === "text" || kind === "file") && typeof content !== "string") {
+    throw new HttpError(400, "content must be a string for text and file artifacts");
+  }
+  return {
+    sessionId: nonEmptyString(value.sessionId, "sessionId"),
+    runId: optionalString(value.runId),
+    title: nonEmptyString(value.title, "title"),
+    kind,
+    contentType: nonEmptyString(value.contentType, "contentType"),
+    content,
+    metadata: value.metadata === undefined ? undefined : toJsonValue(value.metadata, "metadata")
   };
 }
 

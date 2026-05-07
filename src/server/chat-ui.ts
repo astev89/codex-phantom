@@ -149,6 +149,25 @@ export function renderChatApp(agentName: string): string {
         color: var(--muted);
         font-size: 0.82rem;
       }
+      .assets {
+        border-top: 1px solid var(--line);
+        margin-top: 14px;
+        padding-top: 12px;
+        color: var(--muted);
+        font-size: 0.82rem;
+      }
+      .assets h2 {
+        color: var(--ink);
+        font-size: 0.78rem;
+        margin: 0 0 6px;
+        text-transform: uppercase;
+      }
+      .assets a {
+        display: block;
+        color: var(--accent);
+        margin: 5px 0;
+        overflow-wrap: anywhere;
+      }
       @media (max-width: 760px) {
         .app { grid-template-columns: 1fr; }
         aside { max-height: 220px; border-right: 0; border-bottom: 1px solid var(--line); }
@@ -161,6 +180,7 @@ export function renderChatApp(agentName: string): string {
       <aside>
         <button id="newSession" class="secondary" type="button">New Chat</button>
         <div id="sessions"></div>
+        <div id="assets" class="assets"></div>
       </aside>
       <main>
         <header>
@@ -185,7 +205,8 @@ export function renderChatApp(agentName: string): string {
       const state = {
         sessions: [],
         activeSessionId: localStorage.getItem('codex-phantom.chat.activeSessionId') || '',
-        attachments: []
+        pendingFiles: [],
+        uploadedAttachments: []
       };
       const channel = 'BroadcastChannel' in window ? new BroadcastChannel('codex-phantom.chat') : null;
       channel?.addEventListener('message', (event) => {
@@ -223,6 +244,7 @@ export function renderChatApp(agentName: string): string {
           for (const item of run.transcript || []) messages.push(item);
         }
         renderMessages(messages);
+        renderAssets(data.attachments || [], data.artifacts || []);
         renderSessions();
       }
 
@@ -243,6 +265,27 @@ export function renderChatApp(agentName: string): string {
         const root = document.getElementById('messages');
         root.innerHTML = '';
         for (const message of messages) appendMessage(message.role, message.content);
+      }
+
+      function renderAssets(attachments, artifacts) {
+        const root = document.getElementById('assets');
+        root.innerHTML = '';
+        if (!attachments.length && !artifacts.length) return;
+        const heading = document.createElement('h2');
+        heading.textContent = 'Continuity';
+        root.appendChild(heading);
+        for (const attachment of attachments) {
+          const link = document.createElement('a');
+          link.href = attachment.downloadUrl || '#';
+          link.textContent = attachment.name + ' (' + formatBytes(attachment.sizeBytes) + ')';
+          root.appendChild(link);
+        }
+        for (const artifact of artifacts) {
+          const link = document.createElement('a');
+          link.href = artifact.downloadUrl;
+          link.textContent = artifact.title + ' (' + artifact.kind + ')';
+          root.appendChild(link);
+        }
       }
 
       function appendMessage(role, content) {
@@ -286,12 +329,8 @@ export function renderChatApp(agentName: string): string {
       }
 
       document.getElementById('fileInput').addEventListener('change', (event) => {
-        state.attachments = Array.from(event.target.files || []).map((file) => ({
-          name: file.name,
-          contentType: file.type || 'application/octet-stream',
-          sizeBytes: file.size
-        }));
-        document.getElementById('attachments').textContent = state.attachments.map((file) => file.name).join(', ');
+        state.pendingFiles = Array.from(event.target.files || []);
+        renderPendingFiles();
       });
 
       document.getElementById('pushButton').addEventListener('click', async () => {
@@ -305,9 +344,13 @@ export function renderChatApp(agentName: string): string {
 
       document.getElementById('newSession').addEventListener('click', () => {
         state.activeSessionId = '';
+        state.pendingFiles = [];
+        state.uploadedAttachments = [];
         localStorage.removeItem('codex-phantom.chat.activeSessionId');
         document.getElementById('title').textContent = ${toScriptJson(defaultTitle)};
         renderMessages([]);
+        renderAssets([], []);
+        renderPendingFiles();
         renderSessions();
       });
 
@@ -320,6 +363,12 @@ export function renderChatApp(agentName: string): string {
         appendMessage('user', text);
         const assistant = appendMessage('assistant', '');
         document.getElementById('status').textContent = 'Running';
+        state.uploadedAttachments = state.activeSessionId ? await uploadPendingAttachments(state.activeSessionId) : [];
+        const fallbackAttachmentMetadata = state.activeSessionId ? [] : state.pendingFiles.map((file) => ({
+          name: file.name,
+          contentType: file.type || 'application/octet-stream',
+          sizeBytes: file.size
+        }));
         const response = await fetch('/chat/message', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -327,7 +376,8 @@ export function renderChatApp(agentName: string): string {
             sessionId: state.activeSessionId || undefined,
             conversationId: state.activeSessionId ? undefined : 'web-chat',
             message: text,
-            attachments: state.attachments
+            attachmentIds: state.uploadedAttachments.map((attachment) => attachment.id),
+            attachments: fallbackAttachmentMetadata
           })
         });
         const reader = response.body.getReader();
@@ -362,10 +412,40 @@ export function renderChatApp(agentName: string): string {
             }
           }
         }
-        state.attachments = [];
-        document.getElementById('attachments').textContent = '';
+        if (state.activeSessionId && state.pendingFiles.length > 0 && state.uploadedAttachments.length === 0) {
+          await uploadPendingAttachments(state.activeSessionId);
+        }
+        state.pendingFiles = [];
+        state.uploadedAttachments = [];
+        document.getElementById('fileInput').value = '';
+        renderPendingFiles();
         await loadSessions();
       });
+
+      async function uploadPendingAttachments(sessionId) {
+        if (!state.pendingFiles.length) return [];
+        document.getElementById('status').textContent = 'Uploading';
+        const form = new FormData();
+        form.set('sessionId', sessionId);
+        for (const file of state.pendingFiles) form.append('file', file, file.name);
+        const response = await fetch('/chat/attachments', { method: 'POST', body: form });
+        if (!response.ok) throw new Error('Attachment upload failed');
+        const data = await response.json();
+        return data.attachments || [];
+      }
+
+      function renderPendingFiles() {
+        document.getElementById('attachments').textContent = state.pendingFiles.map((file) =>
+          file.name + ' (' + formatBytes(file.size) + ')'
+        ).join(', ');
+      }
+
+      function formatBytes(value) {
+        if (!Number.isFinite(value)) return '0 B';
+        if (value < 1024) return value + ' B';
+        if (value < 1024 * 1024) return Math.round(value / 1024) + ' KB';
+        return Math.round(value / 1024 / 1024) + ' MB';
+      }
 
       loadSessions();
     </script>

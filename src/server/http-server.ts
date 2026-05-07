@@ -1,8 +1,10 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import { Buffer } from "node:buffer";
 import type { AppConfig } from "../config.ts";
 import { modelAdapterMode } from "../config.ts";
 import type { JsonValue } from "../shared/types.ts";
+import { createId } from "../shared/ids.ts";
 import { validateWebhookSecret } from "../channels/webhook.ts";
 import { ChannelRegistry } from "../channels/registry.ts";
 import { ChannelDeliveryStore } from "../channels/delivery-log.ts";
@@ -12,7 +14,9 @@ import type { SlackTransport } from "../channels/slack.ts";
 import { SlackChannel } from "../channels/slack.ts";
 import { OrchestrationService } from "../orchestration/service.ts";
 import { SchedulerService } from "../scheduler/service.ts";
-import { SessionStore } from "../chat/session-store.ts";
+import { SessionStore, type ChatAttachmentRecord } from "../chat/session-store.ts";
+import { ChatBlobStore } from "../chat/blob-store.ts";
+import { ChatArtifactStore, type ChatArtifactRecord, type ChatArtifactKind } from "../chat/artifact-store.ts";
 import { ChatWireEventBuilder, formatSseEvent } from "../chat/wire-events.ts";
 import { McpServer } from "../mcp/server.ts";
 import { McpAuditStore } from "../mcp/audit.ts";
@@ -37,6 +41,7 @@ import {
   parseJsonBody,
   validateOperatorSettingsBody,
   validateSlackMessageBody,
+  validateChatArtifactBody,
   validateChatBody,
   validateMcpBody,
   validateScheduleBody,
@@ -63,6 +68,8 @@ export class HttpServer {
   private readonly channelDeliveries: ChannelDeliveryStore;
   private readonly channelInbound: InboundChannelEventStore;
   private readonly inboundRouter: InboundChannelRouter;
+  private readonly chatBlobs: ChatBlobStore;
+  private readonly chatArtifacts: ChatArtifactStore;
   private readonly governance: ToolGovernanceService;
   private readonly slack: SlackChannel;
   private readonly settings: OperatorSettingsStore;
@@ -103,6 +110,8 @@ export class HttpServer {
     this.channelDeliveries = new ChannelDeliveryStore(database);
     this.channelInbound = new InboundChannelEventStore(database);
     this.inboundRouter = new InboundChannelRouter(channels, this.channelInbound, orchestration);
+    this.chatBlobs = new ChatBlobStore(config.dataDir);
+    this.chatArtifacts = new ChatArtifactStore(database);
     this.governance = governance;
     this.slack = new SlackChannel(config, channels, this.channelDeliveries, slackTransport);
     this.settings = new OperatorSettingsStore(database);
@@ -248,7 +257,7 @@ export class HttpServer {
         this.requireOperatorAuth(req);
         const scope = url.searchParams.get("scope") ?? "timeline";
         const format = url.searchParams.get("format") === "ndjson" ? "ndjson" : "json";
-        const payload = this.buildExportPayload(scope);
+        const payload = await this.buildExportPayload(scope);
         const exportPayload = buildOperatorExport(format, {
           scope,
           items: payload.items
@@ -404,17 +413,123 @@ export class HttpServer {
         return;
       }
 
+      if (req.method === "POST" && url.pathname === "/chat/attachments") {
+        this.requireOperatorAuth(req);
+        const contentType = req.headers["content-type"];
+        const boundary = parseMultipartBoundary(typeof contentType === "string" ? contentType : "");
+        const body = await readBufferBody(req, 25_000_000);
+        const multipart = parseMultipartBody(body, boundary);
+        const sessionId = requiredMultipartField(multipart, "sessionId");
+        const runId = optionalMultipartField(multipart, "runId");
+        const session = await this.requireWebChatSession(sessionId);
+        if (runId) {
+          await this.requireSessionRun(session, runId);
+        }
+        const files = multipart.files.filter((file) => file.fieldName === "file");
+        if (files.length === 0) {
+          throw new HttpError(400, "At least one file is required");
+        }
+        if (files.length > 10) {
+          throw new HttpError(400, "file must contain 10 or fewer items");
+        }
+        const attachments = [];
+        for (const file of files) {
+          if (file.content.byteLength > 25_000_000) {
+            throw new HttpError(413, "Attachment exceeds 25000000 bytes");
+          }
+          const id = createId("att");
+          const blob = await this.chatBlobs.write(id, file.content);
+          attachments.push(await this.sessions.recordUploadedAttachment({
+            id,
+            sessionId: session.sessionId,
+            runId,
+            name: file.fileName,
+            contentType: file.contentType || "application/octet-stream",
+            sizeBytes: blob.sizeBytes,
+            storagePath: blob.storagePath,
+            sha256: blob.sha256
+          }));
+        }
+        this.json(res, 201, { requestId, attachments: attachments.map(toAttachmentSummary) });
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname.startsWith("/chat/attachments/")) {
+        this.requireOperatorAuth(req);
+        const attachmentId = decodeURIComponent(url.pathname.replace("/chat/attachments/", ""));
+        const attachment = await this.sessions.getAttachment(attachmentId);
+        if (!attachment?.storagePath) {
+          throw new HttpError(404, "Attachment not found");
+        }
+        await this.requireWebChatSession(attachment.sessionId);
+        const content = await this.chatBlobs.read(attachment.storagePath);
+        res.writeHead(200, {
+          "Content-Type": attachment.contentType,
+          "Content-Length": content.byteLength,
+          "Content-Disposition": `attachment; filename="${safeDownloadName(attachment.name)}"`
+        });
+        res.end(content);
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/chat/artifacts") {
+        this.requireOperatorAuth(req);
+        const body = validateChatArtifactBody(parseJsonBody(await readTextBody(req)));
+        const session = await this.requireWebChatSession(body.sessionId);
+        if (body.runId) {
+          await this.requireSessionRun(session, body.runId);
+        }
+        const content = artifactContentBuffer(body.kind, body.content);
+        const id = createId("art");
+        const blob = await this.chatBlobs.write(id, content);
+        const artifact = await this.chatArtifacts.create({
+          id,
+          sessionId: session.sessionId,
+          runId: body.runId,
+          title: body.title,
+          kind: body.kind,
+          contentType: body.contentType,
+          sizeBytes: blob.sizeBytes,
+          storagePath: blob.storagePath,
+          sha256: blob.sha256,
+          metadata: body.metadata ?? null
+        });
+        this.json(res, 201, { requestId, artifact: toArtifactSummary(artifact) });
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname.startsWith("/chat/artifacts/")) {
+        this.requireOperatorAuth(req);
+        const artifactId = decodeURIComponent(url.pathname.replace("/chat/artifacts/", ""));
+        const artifact = await this.chatArtifacts.get(artifactId);
+        if (!artifact) {
+          throw new HttpError(404, "Artifact not found");
+        }
+        await this.requireWebChatSession(artifact.sessionId);
+        const content = await this.chatBlobs.read(artifact.storagePath);
+        res.writeHead(200, {
+          "Content-Type": artifact.contentType,
+          "Content-Length": content.byteLength,
+          "Content-Disposition": `attachment; filename="${safeDownloadName(artifactFileName(artifact))}"`
+        });
+        res.end(content);
+        return;
+      }
+
       if (req.method === "GET" && url.pathname.startsWith("/chat/sessions/")) {
         this.requireOperatorAuth(req);
         const sessionId = decodeURIComponent(url.pathname.replace("/chat/sessions/", ""));
-        const session = await this.sessions.get(sessionId);
-        if (!session || session.channelId !== "web") {
-          throw new HttpError(404, "Chat session not found");
-        }
+        const session = await this.requireWebChatSession(sessionId);
         const persistedRunIds = session.runIds.filter((runId) => runId.startsWith("coord_") || runId.startsWith("sub_"));
         const runs = (await Promise.all(persistedRunIds.map((runId) => this.runs.get(runId)))).filter((run) => run !== null);
         const attachments = await this.sessions.listAttachments(session.sessionId);
-        this.json(res, 200, { session, runs, attachments });
+        const artifacts = await this.chatArtifacts.listForSession(session.sessionId);
+        this.json(res, 200, {
+          session,
+          runs,
+          attachments: attachments.map(toAttachmentSummary),
+          artifacts: artifacts.map(toArtifactSummary)
+        });
         return;
       }
 
@@ -464,6 +579,9 @@ export class HttpServer {
             if (!session.title) {
               await this.sessions.rename(result.sessionId, buildAutoTitle(body.message), "auto");
             }
+          }
+          if (body.attachmentIds && body.attachmentIds.length > 0) {
+            await this.sessions.linkAttachmentsToRun(result.sessionId, result.runId, body.attachmentIds);
           }
           if (body.attachments && body.attachments.length > 0) {
             await this.sessions.recordAttachments(result.sessionId, result.runId, body.attachments);
@@ -698,7 +816,7 @@ export class HttpServer {
     }
   }
 
-  private buildExportPayload(scope: string): { items: Array<Record<string, JsonValue>> } {
+  private async buildExportPayload(scope: string): Promise<{ items: Array<Record<string, JsonValue>> }> {
     switch (scope) {
       case "requests":
         return { items: this.requestAudits.list(250) };
@@ -710,6 +828,19 @@ export class HttpServer {
         return { items: this.mcpAudit.list(250) };
       case "runs":
         return { items: this.database.all("SELECT * FROM run_events ORDER BY created_at DESC LIMIT 250") };
+      case "chat":
+        return {
+          items: [
+            ...(await this.sessions.listStoredAttachments(250)).map((attachment) => ({
+              ...toAttachmentSummary(attachment),
+              kind: "attachment"
+            })),
+            ...(await this.chatArtifacts.list(250)).map((artifact) => ({
+              ...toArtifactSummary(artifact),
+              kind: "artifact"
+            }))
+          ]
+        };
       case "timeline":
       default:
         return {
@@ -757,6 +888,24 @@ export class HttpServer {
       message.includes("slack channel is not enabled") ||
       message.includes("channel disabled") ||
       message.includes("disabled channel");
+  }
+
+  private async requireWebChatSession(sessionId: string) {
+    const session = await this.sessions.get(sessionId);
+    if (!session || session.channelId !== "web") {
+      throw new HttpError(404, "Chat session not found");
+    }
+    return session;
+  }
+
+  private async requireSessionRun(session: Awaited<ReturnType<SessionStore["get"]>> & {}, runId: string): Promise<void> {
+    if (!session.runIds.includes(runId)) {
+      throw new HttpError(404, "Run not found for chat session");
+    }
+    const run = await this.runs.get(runId);
+    if (!run) {
+      throw new HttpError(404, "Run not found for chat session");
+    }
   }
 
   private json(res: ServerResponse, status: number, body: unknown): void {
@@ -843,6 +992,10 @@ function buildAutoTitle(message: string): string {
 }
 
 async function readTextBody(req: IncomingMessage, maxBytes = DEFAULT_MAX_BODY_BYTES): Promise<string> {
+  return (await readBufferBody(req, maxBytes)).toString("utf8");
+}
+
+async function readBufferBody(req: IncomingMessage, maxBytes = DEFAULT_MAX_BODY_BYTES): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let totalBytes = 0;
   let bodyExceededLimit = false;
@@ -858,7 +1011,7 @@ async function readTextBody(req: IncomingMessage, maxBytes = DEFAULT_MAX_BODY_BY
   if (bodyExceededLimit) {
     throw new HttpError(413, `Request body exceeds ${maxBytes} bytes`);
   }
-  return Buffer.concat(chunks).toString("utf8");
+  return Buffer.concat(chunks);
 }
 
 function toRequest(req: IncomingMessage, body?: string, extraHeaders?: Record<string, string>): Request {
@@ -872,4 +1025,150 @@ function toRequest(req: IncomingMessage, body?: string, extraHeaders?: Record<st
     headers,
     body: req.method === "GET" || req.method === "HEAD" ? undefined : body
   });
+}
+
+type MultipartFile = {
+  fieldName: string;
+  fileName: string;
+  contentType: string;
+  content: Buffer;
+};
+
+type MultipartBody = {
+  fields: Map<string, string>;
+  files: MultipartFile[];
+};
+
+function parseMultipartBoundary(contentType: string): string {
+  const boundary = contentType.match(/boundary=([^;]+)/)?.[1]?.trim().replace(/^"|"$/g, "");
+  if (!boundary) {
+    throw new HttpError(400, "multipart boundary is required");
+  }
+  return boundary;
+}
+
+function parseMultipartBody(body: Buffer, boundary: string): MultipartBody {
+  const fields = new Map<string, string>();
+  const files: MultipartFile[] = [];
+  const boundaryText = `--${boundary}`;
+  const parts = body.toString("latin1").split(boundaryText).slice(1, -1);
+  for (const rawPart of parts) {
+    const part = rawPart.replace(/^\r\n/, "").replace(/\r\n$/, "");
+    const headerEnd = part.indexOf("\r\n\r\n");
+    if (headerEnd === -1) {
+      continue;
+    }
+    const rawHeaders = part.slice(0, headerEnd);
+    const content = Buffer.from(part.slice(headerEnd + 4), "latin1");
+    const headers = parsePartHeaders(rawHeaders);
+    const disposition = headers.get("content-disposition") ?? "";
+    const fieldName = disposition.match(/name="([^"]+)"/)?.[1];
+    if (!fieldName) {
+      continue;
+    }
+    const fileName = disposition.match(/filename="([^"]*)"/)?.[1];
+    if (fileName !== undefined) {
+      files.push({
+        fieldName,
+        fileName: safeDownloadName(fileName || "upload.bin"),
+        contentType: headers.get("content-type") ?? "application/octet-stream",
+        content
+      });
+    } else {
+      fields.set(fieldName, content.toString("utf8"));
+    }
+  }
+  return { fields, files };
+}
+
+function parsePartHeaders(rawHeaders: string): Map<string, string> {
+  const headers = new Map<string, string>();
+  for (const line of rawHeaders.split("\r\n")) {
+    const separator = line.indexOf(":");
+    if (separator === -1) {
+      continue;
+    }
+    headers.set(line.slice(0, separator).trim().toLowerCase(), line.slice(separator + 1).trim());
+  }
+  return headers;
+}
+
+function requiredMultipartField(body: MultipartBody, field: string): string {
+  const value = optionalMultipartField(body, field);
+  if (!value) {
+    throw new HttpError(400, `${field} is required`);
+  }
+  return value;
+}
+
+function optionalMultipartField(body: MultipartBody, field: string): string | undefined {
+  const value = body.fields.get(field)?.trim();
+  return value || undefined;
+}
+
+function toAttachmentSummary(attachment: ChatAttachmentRecord): Record<string, JsonValue> {
+  return removeUndefined({
+    id: attachment.id,
+    sessionId: attachment.sessionId,
+    runId: attachment.runId,
+    name: attachment.name,
+    contentType: attachment.contentType,
+    sizeBytes: attachment.sizeBytes,
+    description: attachment.description,
+    sha256: attachment.sha256,
+    downloadUrl: attachment.storagePath ? `/chat/attachments/${attachment.id}` : undefined,
+    createdAt: attachment.createdAt
+  });
+}
+
+function toArtifactSummary(artifact: ChatArtifactRecord): Record<string, JsonValue> {
+  return removeUndefined({
+    id: artifact.id,
+    sessionId: artifact.sessionId,
+    runId: artifact.runId,
+    title: artifact.title,
+    kind: artifact.kind,
+    contentType: artifact.contentType,
+    sizeBytes: artifact.sizeBytes,
+    sha256: artifact.sha256,
+    metadata: artifact.metadata,
+    downloadUrl: `/chat/artifacts/${artifact.id}`,
+    createdAt: artifact.createdAt,
+    updatedAt: artifact.updatedAt
+  });
+}
+
+function removeUndefined(record: Record<string, JsonValue | undefined>): Record<string, JsonValue> {
+  return Object.fromEntries(Object.entries(record).filter(([, value]) => value !== undefined)) as Record<string, JsonValue>;
+}
+
+function artifactContentBuffer(kind: ChatArtifactKind, content: JsonValue): Buffer {
+  if (kind === "json") {
+    return Buffer.from(JSON.stringify(content, null, 2), "utf8");
+  }
+  if (typeof content !== "string") {
+    throw new HttpError(400, "content must be a string");
+  }
+  return Buffer.from(content, "utf8");
+}
+
+function artifactFileName(artifact: ChatArtifactRecord): string {
+  return `${artifact.title}${extensionForContentType(artifact.contentType)}`;
+}
+
+function extensionForContentType(contentType: string): string {
+  switch (contentType.toLowerCase()) {
+    case "text/markdown":
+      return ".md";
+    case "application/json":
+      return ".json";
+    case "text/plain":
+      return ".txt";
+    default:
+      return "";
+  }
+}
+
+function safeDownloadName(name: string): string {
+  return name.replace(/[\\/\r\n"]/g, "_").trim() || "download";
 }
