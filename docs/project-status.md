@@ -14,6 +14,25 @@ The project is now past its first serious production-hardening pass. It is not y
 
 ## Just Completed
 
+Operator first-run readiness wave completed locally on 2026-05-13:
+
+- Added bundled `config/roles.yaml` and `config/operator.yaml` first-run setup inventories.
+- Added `ROLE_CONFIG_PATH` and `OPERATOR_CONFIG_PATH` runtime configuration with docs and `.env.example` entries.
+- Added setup readiness checks for non-default secrets, storage, readable role/config files, required channels, OpenAI model access, and memory backend status.
+- Exposed readiness through authenticated `GET /admin/readiness`, `/admin/summary`, detailed `/health`, and the operator console.
+- Documented how setup readiness differs from generic process health.
+
+Verification from this wave:
+
+```bash
+node --experimental-strip-types --test tests/readiness.test.ts tests/config.test.ts tests/server.test.ts
+npm run typecheck
+npm test
+npm run build
+git diff --check
+GitNexus detect_changes(scope="all")
+```
+
 Slack feedback wave completed locally on 2026-05-13:
 
 - Added signed Slack interaction handling for final-reply feedback buttons.
@@ -194,12 +213,12 @@ npm run build
 
 Use `docs/phantom-parity.md` as the canonical production-level parity roadmap. Keep this section limited to immediate handoff notes and proof gaps.
 
-### P1: Operator First-Run Readiness
+### P1: Operator YAML Policy Loading
 
 Suggested work:
 
-- Add YAML-first roles/config layering and first-run setup readiness.
-- Validate required operator secrets and channel setup before production boot.
+- Load role/config policy from `ROLE_CONFIG_PATH` and `OPERATOR_CONFIG_PATH`.
+- Keep compiled role baselines as fallback and validate YAML safely before use.
 - Keep magic-link auth out of scope unless the user base changes.
 
 ### P2: Managed Memory Continuity

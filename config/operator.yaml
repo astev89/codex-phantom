@@ -1,0 +1,12 @@
+version: 1
+requiredChannels:
+  - web
+  - scheduler
+  - webhook
+optionalChannels:
+  - slack
+productionChecks:
+  requireNonDefaultSecrets: true
+  requireOpenAiApiKey: true
+  requireWritableDataDir: true
+  requireReadableRoleConfig: true

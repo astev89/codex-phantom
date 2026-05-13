@@ -60,6 +60,7 @@ import { renderChatApp } from "./chat-ui.ts";
 import { OperatorSettingsStore } from "./settings.ts";
 import { RequestAuditStore } from "./request-audit.ts";
 import { buildStartupDiagnostics } from "./diagnostics.ts";
+import { buildSetupReadiness } from "./readiness.ts";
 import { buildOperatorExport } from "./export.ts";
 import {
   validateChannelUpdateBody,
@@ -207,6 +208,14 @@ export class HttpServer {
       }
 
       if (req.method === "GET" && url.pathname === "/health") {
+        const memoryStatus = this.memory.getStatus();
+        const channels = this.channels.list();
+        const setupReadiness = buildSetupReadiness({
+          config: this.config,
+          memory: memoryStatus,
+          channels,
+          databaseReady: this.database.isReady(),
+        });
         const publicHealth = {
           ok: true,
           agent: this.config.agentName,
@@ -215,11 +224,12 @@ export class HttpServer {
             database: this.database.isReady(),
             scheduler: this.scheduler.isRunning(),
             modelAdapter: modelAdapterMode(this.config),
-            semanticRetrieval: this.memory.getStatus().semanticRetrievalEnabled,
+            semanticRetrieval: memoryStatus.semanticRetrievalEnabled,
             authConfigured:
               this.config.operatorBearerToken.length > 0 &&
               this.config.mcpBearerToken.length > 0 &&
               this.config.externalChannelSecret.length > 0,
+            setupReady: setupReadiness.ok,
           },
         };
         if (!this.hasOperatorAuth(req)) {
@@ -232,7 +242,8 @@ export class HttpServer {
             provider: "pino",
             level: this.config.logLevel,
           },
-          memory: this.memory.getStatus(),
+          memory: memoryStatus,
+          setupReadiness,
           channels: this.channels.summary(),
           channelDeliveries: this.channelDeliveries.summary(),
           channelInbound: this.channelInbound.summary(),
@@ -262,6 +273,13 @@ export class HttpServer {
       if (req.method === "GET" && url.pathname === "/admin/summary") {
         this.requireOperatorAuth(req);
         const channels = this.channels.list();
+        const memoryStatus = this.memory.getStatus();
+        const setupReadiness = buildSetupReadiness({
+          config: this.config,
+          memory: memoryStatus,
+          channels,
+          databaseReady: this.database.isReady(),
+        });
         this.json(res, 200, {
           logging: { provider: "pino", level: this.config.logLevel },
           deployment: {
@@ -275,13 +293,31 @@ export class HttpServer {
           channelFeedback: this.slackFeedback.summary(),
           governance: this.governance.summary(),
           settings: this.settings.get(),
+          setupReadiness,
           requestAudits: { recent: this.requestAudits.list(10).length },
           channels,
           diagnostics: buildStartupDiagnostics(
             this.config,
-            this.memory.getStatus(),
-            channels
+            memoryStatus,
+            channels,
+            setupReadiness
           ),
+        });
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/admin/readiness") {
+        this.requireOperatorAuth(req);
+        const channels = this.channels.list();
+        const setupReadiness = buildSetupReadiness({
+          config: this.config,
+          memory: this.memory.getStatus(),
+          channels,
+          databaseReady: this.database.isReady(),
+        });
+        this.json(res, setupReadiness.ok ? 200 : 503, {
+          requestId,
+          readiness: setupReadiness,
         });
         return;
       }
@@ -289,11 +325,19 @@ export class HttpServer {
       if (req.method === "GET" && url.pathname === "/admin/diagnostics") {
         this.requireOperatorAuth(req);
         const channels = this.channels.list();
+        const memoryStatus = this.memory.getStatus();
+        const setupReadiness = buildSetupReadiness({
+          config: this.config,
+          memory: memoryStatus,
+          channels,
+          databaseReady: this.database.isReady(),
+        });
         this.json(res, 200, {
           diagnostics: buildStartupDiagnostics(
             this.config,
-            this.memory.getStatus(),
-            channels
+            memoryStatus,
+            channels,
+            setupReadiness
           ),
         });
         return;

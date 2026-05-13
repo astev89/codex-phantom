@@ -671,7 +671,11 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     const healthResponse = await fetch(`http://127.0.0.1:${port}/health`);
     const healthJson = (await healthResponse.json()) as {
       ok: boolean;
-      readiness: { scheduler: boolean; semanticRetrieval: boolean };
+      readiness: {
+        scheduler: boolean;
+        semanticRetrieval: boolean;
+        setupReady: boolean;
+      };
       memory?: {
         pendingBackfillCount: number;
         vectorBackend: string;
@@ -683,6 +687,7 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assert.equal(healthJson.ok, true);
     assert.equal(healthJson.readiness.scheduler, true);
     assert.equal(healthJson.readiness.semanticRetrieval, false);
+    assert.equal(healthJson.readiness.setupReady, true);
     assert.equal(healthJson.memory, undefined);
     assert.equal(healthJson.logging, undefined);
 
@@ -694,7 +699,16 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     );
     const detailedHealthJson = (await detailedHealthResponse.json()) as {
       ok: boolean;
-      readiness: { scheduler: boolean; semanticRetrieval: boolean };
+      readiness: {
+        scheduler: boolean;
+        semanticRetrieval: boolean;
+        setupReady: boolean;
+      };
+      setupReadiness: {
+        ok: boolean;
+        status: string;
+        summary: { warnings: number; failures: number };
+      };
       memory: {
         pendingBackfillCount: number;
         vectorBackend: string;
@@ -706,10 +720,37 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assert.equal(detailedHealthJson.ok, true);
     assert.equal(detailedHealthJson.readiness.scheduler, true);
     assert.equal(detailedHealthJson.readiness.semanticRetrieval, false);
+    assert.equal(detailedHealthJson.readiness.setupReady, true);
+    assert.equal(detailedHealthJson.setupReadiness.ok, true);
+    assert.equal(detailedHealthJson.setupReadiness.status, "warning");
+    assert.equal(detailedHealthJson.setupReadiness.summary.failures, 0);
+    assert.ok(detailedHealthJson.setupReadiness.summary.warnings >= 1);
     assert.equal(detailedHealthJson.memory.pendingBackfillCount, 0);
     assert.equal(detailedHealthJson.memory.vectorBackend, "sqlite_fallback");
     assert.equal(detailedHealthJson.memory.qdrantConfigured, false);
     assert.equal(detailedHealthJson.logging.provider, "pino");
+
+    const readinessResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/readiness`,
+      {
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
+    const readinessJson = (await readinessResponse.json()) as {
+      readiness: {
+        ok: boolean;
+        status: string;
+        checks: Array<{ id: string; status: string; action?: string }>;
+      };
+    };
+    assert.equal(readinessResponse.status, 200);
+    assert.equal(readinessJson.readiness.ok, true);
+    assert.equal(readinessJson.readiness.status, "warning");
+    assert.ok(
+      readinessJson.readiness.checks.some(
+        (check) => check.id === "role-config" && check.status === "pass"
+      )
+    );
 
     const streamResponse = await fetch(
       `http://127.0.0.1:${port}/chat/message`,
@@ -1666,6 +1707,7 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
         negative: number;
         recent: Array<{ rating: string; source: string }>;
       };
+      setupReadiness: { ok: boolean; status: string };
       settings: { dashboardRefreshSeconds: number };
       channels: Array<{ id: string; enabled: boolean }>;
     };
@@ -1685,6 +1727,8 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
           feedback.rating === "positive" && feedback.source === "button"
       )
     );
+    assert.equal(adminSummaryJson.setupReadiness.ok, true);
+    assert.equal(adminSummaryJson.setupReadiness.status, "warning");
     assert.equal(adminSummaryJson.settings.dashboardRefreshSeconds, 5);
     assert.ok(
       adminSummaryJson.channels.some(

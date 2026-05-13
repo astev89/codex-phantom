@@ -1,0 +1,40 @@
+version: 1
+roles:
+  explorer:
+    mode: read_only
+    fileGlobs:
+      - "**/*"
+    allowedToolIds:
+      - memory.query
+      - echo.summary
+    allowedMcpServers:
+      - github
+      - docs
+  builder:
+    mode: scoped_write
+    fileGlobs:
+      - "src/**/*"
+      - "tests/**/*"
+    allowedToolIds:
+      - echo.summary
+      - dynamic.note
+    allowedMcpServers:
+      - repo
+  verifier:
+    mode: read_only
+    fileGlobs:
+      - "src/**/*"
+      - "tests/**/*"
+    allowedToolIds:
+      - echo.summary
+    allowedMcpServers:
+      - browser
+      - ci
+  researcher:
+    mode: read_only
+    fileGlobs: []
+    allowedToolIds:
+      - echo.summary
+    allowedMcpServers:
+      - docs
+      - web
