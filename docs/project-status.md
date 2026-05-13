@@ -158,9 +158,9 @@ Use `docs/phantom-parity.md` as the canonical production-level parity roadmap. K
 
 Suggested work:
 
-- Rewrite the Slack production parity plan now that deployment and backup/restore proof has passed.
-- Treat `docs/superpowers/plans/2026-05-01-slack-inbound-parity.md` as historical context only.
-- Keep Telegram out of scope and keep Slack failures isolated from already-acked inbound events.
+- Implement `docs/superpowers/plans/2026-05-13-slack-production-parity.md` in mergeable slices.
+- Start with Slack transport primitives, then durable progress state and progressive thread updates.
+- Keep Telegram out of scope and keep Slack side-effect failures isolated from already-acked inbound events.
 
 ## Known Constraints
 
