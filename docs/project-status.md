@@ -4,15 +4,34 @@ This is the living status ledger for `codex-phantom`. Update it at the end of ea
 
 Last updated: 2026-05-13
 Branch: `jarvis/transcript-artifact-continuity`
-Latest verified commit: `aa487be`
+Latest verified commit: `c1c3458290b0e0124d82ccdffc6df6636b7695a6`
 
 ## Current State
 
-`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, a Codex-native `/chat` product surface with durable attachment/artifact continuity, hybrid long-term memory with Qdrant-backed vector recall, SQLite fallback, lifecycle controls, restart-safe maintenance, decay/reinforcement-aware ranking, governed self-evolution proposals with operator-approved apply/rollback for settings changes, and preview-only internal tool bundle manifests.
+`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, a Codex-native `/chat` product surface with durable attachment/artifact continuity, hybrid long-term memory with Qdrant-backed vector recall, SQLite fallback, lifecycle controls, restart-safe maintenance, decay/reinforcement-aware ranking, governed self-evolution proposals with operator-approved apply/rollback for settings changes, and governed internal tool bundles with preview, approval, enable, disable, and uninstall lifecycle.
 
 The project is now past its first serious production-hardening pass. It is not yet equivalent to the original Phantom project, but the core runtime is materially safer to run: request sizes are bounded, secrets are rejected in production when defaults are used, outbound model calls have timeouts, scheduler jobs recover deterministically after restarts, MCP events are durably audited, external webhooks are signed, Slack sends retry transient failures, operator-console workflows have browser coverage, and the Docker image runs compiled JavaScript instead of stripped TypeScript.
 
 ## Just Completed
+
+Internal tool bundle lifecycle wave completed locally on 2026-05-13:
+
+- Added approval, enable, disable, and uninstall lifecycle transitions for valid internal tool bundle imports.
+- Added durable lifecycle audit records and recent failure visibility.
+- Enabled bundles materialize read-only tools through the existing approved dynamic-tool path so runtime execution still respects tool scopes and permission policy.
+- Disabled bundles unregister runtime tools and remove their dynamic tool rows while preserving bundle records; uninstalled bundles perform the same cleanup and mark the import uninstalled.
+- Kept public marketplace behavior and installation execution out of scope.
+
+Verification from this wave:
+
+```bash
+node --experimental-strip-types --test tests/tool-bundles.test.ts tests/server.test.ts
+npm run typecheck
+npm test
+npm run build
+git diff --check
+GitNexus detect_changes(scope="all")
+```
 
 Internal tool bundle manifest wave completed locally on 2026-05-13:
 
@@ -364,14 +383,14 @@ npm run build
 
 Use `docs/phantom-parity.md` as the canonical production-level parity roadmap. Keep this section limited to immediate handoff notes and proof gaps.
 
-### P1: Internal Tool Bundle Lifecycle
+### P1: Artifact Intelligence
 
 Suggested work:
 
-- Add lifecycle operations for approved internal tool bundles: enable, disable, and uninstall.
-- Preserve governance approval boundaries before any bundle tool can execute.
-- Record lifecycle transitions in durable audit surfaces and expose recent failures.
-- Keep public marketplace behavior out of scope for this internal project.
+- Add automatic artifact extraction from selected tool events or structured run outputs.
+- Keep extracted artifacts linked to the source session and run.
+- Bound extraction size and ignore unsafe/non-artifact payloads.
+- Preserve the existing explicit artifact APIs.
 
 ## Known Constraints
 
