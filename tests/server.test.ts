@@ -1301,6 +1301,132 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assert.equal(bundlePreviewJson.preview.status, "valid");
     assert.equal(bundlePreviewJson.preview.bundleId, "internal.research");
 
+    const blockedEnableResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/tools/bundles/${encodeURIComponent(bundlePreviewJson.preview.id)}/enable`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({ actor: "operator" }),
+      }
+    );
+    assert.equal(blockedEnableResponse.status, 409);
+
+    const approveBundleResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/tools/bundles/${encodeURIComponent(bundlePreviewJson.preview.id)}/approve`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          actor: "operator",
+          notes: "read-only internal bundle",
+        }),
+      }
+    );
+    const approveBundleJson = (await approveBundleResponse.json()) as {
+      bundle: { lifecycleState: string; approvedBy: string };
+    };
+    assert.equal(approveBundleResponse.status, 200);
+    assert.equal(approveBundleJson.bundle.lifecycleState, "approved");
+    assert.equal(approveBundleJson.bundle.approvedBy, "operator");
+
+    const enableBundleResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/tools/bundles/${encodeURIComponent(bundlePreviewJson.preview.id)}/enable`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({ actor: "operator" }),
+      }
+    );
+    const enableBundleJson = (await enableBundleResponse.json()) as {
+      bundle: { lifecycleState: string; enabledBy: string };
+    };
+    assert.equal(enableBundleResponse.status, 200);
+    assert.equal(enableBundleJson.bundle.lifecycleState, "enabled");
+    assert.equal(enableBundleJson.bundle.enabledBy, "operator");
+
+    const bundleMcpListResponse = await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.mcpBearerToken}`,
+      },
+      body: JSON.stringify({ method: "tools/list" }),
+    });
+    const bundleMcpListJson = (await bundleMcpListResponse.json()) as {
+      tools: Array<{ id: string; scopes: string[] }>;
+    };
+    assert.ok(
+      bundleMcpListJson.tools.some(
+        (tool) =>
+          tool.id === "internal.research.lookup" && tool.scopes.includes("read")
+      )
+    );
+
+    const disableBundleResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/tools/bundles/${encodeURIComponent(bundlePreviewJson.preview.id)}/disable`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({ actor: "operator" }),
+      }
+    );
+    const disableBundleJson = (await disableBundleResponse.json()) as {
+      bundle: { lifecycleState: string; disabledBy: string };
+    };
+    assert.equal(disableBundleResponse.status, 200);
+    assert.equal(disableBundleJson.bundle.lifecycleState, "disabled");
+
+    const disabledBundleMcpListResponse = await fetch(
+      `http://127.0.0.1:${port}/mcp`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.mcpBearerToken}`,
+        },
+        body: JSON.stringify({ method: "tools/list" }),
+      }
+    );
+    const disabledBundleMcpListJson =
+      (await disabledBundleMcpListResponse.json()) as {
+        tools: Array<{ id: string }>;
+      };
+    assert.equal(
+      disabledBundleMcpListJson.tools.some(
+        (tool) => tool.id === "internal.research.lookup"
+      ),
+      false
+    );
+
+    const uninstallBundleResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/tools/bundles/${encodeURIComponent(bundlePreviewJson.preview.id)}/uninstall`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({ actor: "operator" }),
+      }
+    );
+    const uninstallBundleJson = (await uninstallBundleResponse.json()) as {
+      bundle: { lifecycleState: string; uninstalledBy: string };
+    };
+    assert.equal(uninstallBundleResponse.status, 200);
+    assert.equal(uninstallBundleJson.bundle.lifecycleState, "uninstalled");
+
     const invalidBundlePreviewResponse = await fetch(
       `http://127.0.0.1:${port}/admin/tools/bundles/preview`,
       {
@@ -1345,8 +1471,9 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       }
     );
     const bundleImportsJson = (await bundleImportsResponse.json()) as {
-      imports: Array<{ id: string; status: string }>;
-      summary: { valid: number; invalid: number };
+      imports: Array<{ id: string; status: string; lifecycleState: string }>;
+      audit: Array<{ action: string; importId: string }>;
+      summary: { valid: number; invalid: number; uninstalled: number };
     };
     assert.equal(bundleImportsResponse.status, 200);
     assert.ok(
@@ -1356,6 +1483,14 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     );
     assert.equal(bundleImportsJson.summary.valid, 1);
     assert.equal(bundleImportsJson.summary.invalid, 1);
+    assert.equal(bundleImportsJson.summary.uninstalled, 1);
+    assert.ok(
+      bundleImportsJson.audit.some(
+        (entry) =>
+          entry.importId === bundlePreviewJson.preview.id &&
+          entry.action === "uninstalled"
+      )
+    );
 
     const dynamicMcpListResponse = await fetch(`http://127.0.0.1:${port}/mcp`, {
       method: "POST",
@@ -1832,7 +1967,7 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       logging: { provider: string };
       deployment: { qdrantEnabled: boolean };
       governance: { pendingDynamicTools: number; approvedDynamicTools: number };
-      toolBundles: { valid: number; invalid: number };
+      toolBundles: { valid: number; invalid: number; uninstalled: number };
       selfEvolution: { proposed: number };
       channelDeliveries: { delivered: number; recentFailed: unknown[] };
       channelInbound: {
@@ -1856,6 +1991,7 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assert.equal(adminSummaryJson.governance.approvedDynamicTools, 1);
     assert.equal(adminSummaryJson.toolBundles.valid, 1);
     assert.equal(adminSummaryJson.toolBundles.invalid, 1);
+    assert.equal(adminSummaryJson.toolBundles.uninstalled, 1);
     assert.equal(adminSummaryJson.selfEvolution.proposed, 0);
     assert.ok(adminSummaryJson.channelDeliveries.delivered >= 2);
     assert.deepEqual(adminSummaryJson.channelDeliveries.recentFailed, []);
@@ -2144,7 +2280,11 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       governanceAudit: Array<{ toolId: string; action: string }>;
       selfEvolutionProposals: Array<{ id: string; status: string }>;
       selfEvolutionMutations: Array<{ status: string }>;
-      toolBundleImports: Array<{ id: string; status: string }>;
+      toolBundleImports: Array<{
+        id: string;
+        status: string;
+        lifecycleState: string;
+      }>;
     };
     assert.ok(timelineJson.sessions.length > 0);
     assert.ok(timelineJson.runs.length > 0);
@@ -2173,7 +2313,9 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     );
     assert.ok(
       timelineJson.toolBundleImports.some(
-        (entry) => entry.id === bundlePreviewJson.preview.id
+        (entry) =>
+          entry.id === bundlePreviewJson.preview.id &&
+          entry.lifecycleState === "uninstalled"
       )
     );
 

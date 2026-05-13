@@ -27,11 +27,24 @@ test("tool bundle import preview records valid manifests without activating tool
   });
 
   assert.equal(preview.status, "valid");
+  assert.equal(preview.lifecycleState, "previewed");
   assert.equal(preview.bundleId, "internal.research");
   assert.equal(preview.importedBy, "operator");
   assert.ok(preview.diagnostics.some((item) => item.level === "warning"));
   assert.equal(store.summary().valid, 1);
   assert.equal(store.list()[0]?.id, preview.id);
+  const approved = store.approve(preview.id, "operator", "read-only bundle");
+  assert.equal(approved.lifecycleState, "approved");
+  assert.equal(approved.approvedBy, "operator");
+  const enabled = store.markEnabled(preview.id, "operator");
+  assert.equal(enabled.lifecycleState, "enabled");
+  const disabled = store.markDisabled(preview.id, "operator");
+  assert.equal(disabled.lifecycleState, "disabled");
+  const uninstalled = store.markUninstalled(preview.id, "operator");
+  assert.equal(uninstalled.lifecycleState, "uninstalled");
+  assert.ok(
+    store.listAudit(preview.id).some((entry) => entry.action === "uninstalled")
+  );
   database.close();
 });
 

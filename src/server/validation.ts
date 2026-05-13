@@ -105,6 +105,11 @@ export type ToolBundlePreviewInput = {
   importedBy?: string;
 };
 
+export type ToolBundleLifecycleInput = {
+  actor: string;
+  notes?: string;
+};
+
 export function parseJsonBody(text: string): unknown {
   if (!text) {
     throw new HttpError(400, "Request body is required");
@@ -344,6 +349,16 @@ export function validateToolBundlePreviewBody(
   return {
     manifest,
     importedBy: optionalString(value.importedBy),
+  };
+}
+
+export function validateToolBundleLifecycleBody(
+  input: unknown
+): ToolBundleLifecycleInput {
+  const value = asRecord(input);
+  return {
+    actor: nonEmptyString(value.actor, "actor"),
+    notes: optionalString(value.notes),
   };
 }
 

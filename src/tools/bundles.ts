@@ -31,8 +31,34 @@ export type ToolBundleImportRecord = {
   version: string;
   manifest: JsonValue;
   status: "valid" | "invalid";
+  lifecycleState:
+    | "previewed"
+    | "approved"
+    | "enabled"
+    | "disabled"
+    | "uninstalled"
+    | "failed";
   diagnostics: ToolBundleDiagnostic[];
   importedBy: string;
+  approvedBy?: string;
+  approvedAt?: string;
+  enabledBy?: string;
+  enabledAt?: string;
+  disabledBy?: string;
+  disabledAt?: string;
+  uninstalledBy?: string;
+  uninstalledAt?: string;
+  failureReason?: string;
+  createdAt: string;
+};
+
+export type ToolBundleLifecycleAuditRecord = {
+  id: number;
+  importId: string;
+  bundleId: string;
+  action: string;
+  actor: string;
+  notes?: string;
   createdAt: string;
 };
 
@@ -43,8 +69,34 @@ type ToolBundleImportRow = {
   version: string;
   manifest_json: string;
   status: "valid" | "invalid";
+  lifecycle_state:
+    | "previewed"
+    | "approved"
+    | "enabled"
+    | "disabled"
+    | "uninstalled"
+    | "failed";
   diagnostics_json: string;
   imported_by: string;
+  approved_by: string | null;
+  approved_at: string | null;
+  enabled_by: string | null;
+  enabled_at: string | null;
+  disabled_by: string | null;
+  disabled_at: string | null;
+  uninstalled_by: string | null;
+  uninstalled_at: string | null;
+  failure_reason: string | null;
+  created_at: string;
+};
+
+type ToolBundleLifecycleAuditRow = {
+  id: number;
+  import_id: string;
+  bundle_id: string;
+  action: string;
+  actor: string;
+  notes: string | null;
   created_at: string;
 };
 
@@ -70,9 +122,9 @@ export class ToolBundleImportStore {
       `
         INSERT INTO tool_bundle_imports (
           id, bundle_id, name, version, manifest_json, status,
-          diagnostics_json, imported_by, created_at
+          lifecycle_state, diagnostics_json, imported_by, created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       id,
       manifest.id,
@@ -80,11 +132,28 @@ export class ToolBundleImportStore {
       manifest.version,
       encodeJson(input.manifest),
       status,
+      "previewed",
       encodeJson(diagnostics),
       requireText(input.importedBy, "importedBy"),
       now
     );
+    this.recordAudit(id, manifest.id, "previewed", input.importedBy, status);
     return this.getRequired(id);
+  }
+
+  get(id: string): ToolBundleImportRecord | null {
+    const row = this.database.get<ToolBundleImportRow>(
+      `
+        SELECT id, bundle_id, name, version, manifest_json, status,
+               lifecycle_state, diagnostics_json, imported_by, approved_by,
+               approved_at, enabled_by, enabled_at, disabled_by, disabled_at,
+               uninstalled_by, uninstalled_at, failure_reason, created_at
+        FROM tool_bundle_imports
+        WHERE id = ?
+      `,
+      id
+    );
+    return row ? toImportRecord(row) : null;
   }
 
   list(limit = 50): ToolBundleImportRecord[] {
@@ -92,7 +161,9 @@ export class ToolBundleImportStore {
       .all<ToolBundleImportRow>(
         `
           SELECT id, bundle_id, name, version, manifest_json, status,
-                 diagnostics_json, imported_by, created_at
+                 lifecycle_state, diagnostics_json, imported_by, approved_by,
+                 approved_at, enabled_by, enabled_at, disabled_by, disabled_at,
+                 uninstalled_by, uninstalled_at, failure_reason, created_at
           FROM tool_bundle_imports
           ORDER BY created_at DESC, id DESC
           LIMIT ?
@@ -105,6 +176,11 @@ export class ToolBundleImportStore {
   summary(): {
     valid: number;
     invalid: number;
+    approved: number;
+    enabled: number;
+    disabled: number;
+    uninstalled: number;
+    recentFailed: ToolBundleImportRecord[];
     recent: ToolBundleImportRecord[];
   } {
     const rows = this.database.all<{
@@ -117,28 +193,248 @@ export class ToolBundleImportStore {
         GROUP BY status
       `
     );
+    const lifecycleRows = this.database.all<{
+      lifecycle_state: ToolBundleImportRecord["lifecycleState"];
+      count: number;
+    }>(
+      `
+        SELECT lifecycle_state, COUNT(*) AS count
+        FROM tool_bundle_imports
+        GROUP BY lifecycle_state
+      `
+    );
     const counts = new Map(rows.map((row) => [row.status, row.count]));
+    const lifecycleCounts = new Map(
+      lifecycleRows.map((row) => [row.lifecycle_state, row.count])
+    );
     return {
       valid: counts.get("valid") ?? 0,
       invalid: counts.get("invalid") ?? 0,
+      approved: lifecycleCounts.get("approved") ?? 0,
+      enabled: lifecycleCounts.get("enabled") ?? 0,
+      disabled: lifecycleCounts.get("disabled") ?? 0,
+      uninstalled: lifecycleCounts.get("uninstalled") ?? 0,
+      recentFailed: this.listByLifecycle("failed", 5),
       recent: this.list(5),
     };
   }
 
+  approve(id: string, actor: string, notes?: string): ToolBundleImportRecord {
+    const existing = this.getRequired(id);
+    if (existing.status !== "valid") {
+      throw new Error("Only valid tool bundle previews can be approved");
+    }
+    if (existing.lifecycleState !== "previewed") {
+      throw new Error("Only previewed tool bundles can be approved");
+    }
+    const now = new Date().toISOString();
+    this.database.transaction(() => {
+      this.database.run(
+        `
+          UPDATE tool_bundle_imports
+          SET lifecycle_state = 'approved',
+              approved_by = ?,
+              approved_at = ?,
+              failure_reason = NULL
+          WHERE id = ?
+        `,
+        requireText(actor, "actor"),
+        now,
+        id
+      );
+      this.recordAudit(id, existing.bundleId, "approved", actor, notes);
+    });
+    return this.getRequired(id);
+  }
+
+  markEnabled(
+    id: string,
+    actor: string,
+    notes?: string
+  ): ToolBundleImportRecord {
+    const existing = this.getRequired(id);
+    if (!["approved", "disabled"].includes(existing.lifecycleState)) {
+      throw new Error("Only approved or disabled tool bundles can be enabled");
+    }
+    const now = new Date().toISOString();
+    this.database.transaction(() => {
+      this.database.run(
+        `
+          UPDATE tool_bundle_imports
+          SET lifecycle_state = 'enabled',
+              enabled_by = ?,
+              enabled_at = ?,
+              failure_reason = NULL
+          WHERE id = ?
+        `,
+        requireText(actor, "actor"),
+        now,
+        id
+      );
+      this.recordAudit(id, existing.bundleId, "enabled", actor, notes);
+    });
+    return this.getRequired(id);
+  }
+
+  markDisabled(
+    id: string,
+    actor: string,
+    notes?: string
+  ): ToolBundleImportRecord {
+    const existing = this.getRequired(id);
+    if (existing.lifecycleState !== "enabled") {
+      throw new Error("Only enabled tool bundles can be disabled");
+    }
+    const now = new Date().toISOString();
+    this.database.transaction(() => {
+      this.database.run(
+        `
+          UPDATE tool_bundle_imports
+          SET lifecycle_state = 'disabled',
+              disabled_by = ?,
+              disabled_at = ?
+          WHERE id = ?
+        `,
+        requireText(actor, "actor"),
+        now,
+        id
+      );
+      this.recordAudit(id, existing.bundleId, "disabled", actor, notes);
+    });
+    return this.getRequired(id);
+  }
+
+  markUninstalled(
+    id: string,
+    actor: string,
+    notes?: string
+  ): ToolBundleImportRecord {
+    const existing = this.getRequired(id);
+    if (existing.lifecycleState === "uninstalled") {
+      throw new Error("Tool bundle is already uninstalled");
+    }
+    const now = new Date().toISOString();
+    this.database.transaction(() => {
+      this.database.run(
+        `
+          UPDATE tool_bundle_imports
+          SET lifecycle_state = 'uninstalled',
+              uninstalled_by = ?,
+              uninstalled_at = ?
+          WHERE id = ?
+        `,
+        requireText(actor, "actor"),
+        now,
+        id
+      );
+      this.recordAudit(id, existing.bundleId, "uninstalled", actor, notes);
+    });
+    return this.getRequired(id);
+  }
+
+  markFailed(
+    id: string,
+    actor: string,
+    reason: string
+  ): ToolBundleImportRecord {
+    const existing = this.getRequired(id);
+    this.database.transaction(() => {
+      this.database.run(
+        `
+          UPDATE tool_bundle_imports
+          SET lifecycle_state = 'failed',
+              failure_reason = ?
+          WHERE id = ?
+        `,
+        requireText(reason, "reason"),
+        id
+      );
+      this.recordAudit(id, existing.bundleId, "failed", actor, reason);
+    });
+    return this.getRequired(id);
+  }
+
+  listAudit(importId?: string, limit = 50): ToolBundleLifecycleAuditRecord[] {
+    const boundedLimit = Math.max(1, Math.min(limit, 200));
+    if (importId) {
+      return this.database
+        .all<ToolBundleLifecycleAuditRow>(
+          `
+            SELECT id, import_id, bundle_id, action, actor, notes, created_at
+            FROM tool_bundle_lifecycle_audit
+            WHERE import_id = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+          `,
+          importId,
+          boundedLimit
+        )
+        .map(toAuditRecord);
+    }
+    return this.database
+      .all<ToolBundleLifecycleAuditRow>(
+        `
+          SELECT id, import_id, bundle_id, action, actor, notes, created_at
+          FROM tool_bundle_lifecycle_audit
+          ORDER BY created_at DESC, id DESC
+          LIMIT ?
+        `,
+        boundedLimit
+      )
+      .map(toAuditRecord);
+  }
+
   private getRequired(id: string): ToolBundleImportRecord {
-    const row = this.database.get<ToolBundleImportRow>(
-      `
-        SELECT id, bundle_id, name, version, manifest_json, status,
-               diagnostics_json, imported_by, created_at
-        FROM tool_bundle_imports
-        WHERE id = ?
-      `,
-      id
-    );
-    if (!row) {
+    const record = this.get(id);
+    if (!record) {
       throw new Error(`Failed to record tool bundle import: ${id}`);
     }
-    return toImportRecord(row);
+    return record;
+  }
+
+  private listByLifecycle(
+    lifecycleState: ToolBundleImportRecord["lifecycleState"],
+    limit: number
+  ): ToolBundleImportRecord[] {
+    return this.database
+      .all<ToolBundleImportRow>(
+        `
+          SELECT id, bundle_id, name, version, manifest_json, status,
+                 lifecycle_state, diagnostics_json, imported_by, approved_by,
+                 approved_at, enabled_by, enabled_at, disabled_by, disabled_at,
+                 uninstalled_by, uninstalled_at, failure_reason, created_at
+          FROM tool_bundle_imports
+          WHERE lifecycle_state = ?
+          ORDER BY created_at DESC, id DESC
+          LIMIT ?
+        `,
+        lifecycleState,
+        Math.max(1, Math.min(limit, 200))
+      )
+      .map(toImportRecord);
+  }
+
+  private recordAudit(
+    importId: string,
+    bundleId: string,
+    action: string,
+    actor: string,
+    notes?: string
+  ): void {
+    this.database.run(
+      `
+        INSERT INTO tool_bundle_lifecycle_audit (
+          import_id, bundle_id, action, actor, notes, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+      `,
+      importId,
+      bundleId,
+      action,
+      requireText(actor, "actor"),
+      notes ?? null,
+      new Date().toISOString()
+    );
   }
 }
 
@@ -318,8 +614,32 @@ function toImportRecord(row: ToolBundleImportRow): ToolBundleImportRecord {
     version: row.version,
     manifest: decodeJson(row.manifest_json, {}),
     status: row.status,
+    lifecycleState: row.lifecycle_state,
     diagnostics: decodeJson(row.diagnostics_json, []),
     importedBy: row.imported_by,
+    approvedBy: row.approved_by ?? undefined,
+    approvedAt: row.approved_at ?? undefined,
+    enabledBy: row.enabled_by ?? undefined,
+    enabledAt: row.enabled_at ?? undefined,
+    disabledBy: row.disabled_by ?? undefined,
+    disabledAt: row.disabled_at ?? undefined,
+    uninstalledBy: row.uninstalled_by ?? undefined,
+    uninstalledAt: row.uninstalled_at ?? undefined,
+    failureReason: row.failure_reason ?? undefined,
+    createdAt: row.created_at,
+  };
+}
+
+function toAuditRecord(
+  row: ToolBundleLifecycleAuditRow
+): ToolBundleLifecycleAuditRecord {
+  return {
+    id: row.id,
+    importId: row.import_id,
+    bundleId: row.bundle_id,
+    action: row.action,
+    actor: row.actor,
+    notes: row.notes ?? undefined,
     createdAt: row.created_at,
   };
 }

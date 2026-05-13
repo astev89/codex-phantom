@@ -85,6 +85,7 @@ import {
   validateSelfEvolutionReviewBody,
   validateSelfEvolutionRollbackBody,
   validateToolApprovalBody,
+  validateToolBundleLifecycleBody,
   validateToolBundlePreviewBody,
   validateWebhookBody,
 } from "./validation.ts";
@@ -507,6 +508,10 @@ export class HttpServer {
         const limit = url.searchParams.get("limit");
         this.json(res, 200, {
           imports: this.toolBundles.list(limit ? Number(limit) : 50),
+          audit: this.toolBundles.listAudit(
+            undefined,
+            limit ? Number(limit) : 50
+          ),
           summary: this.toolBundles.summary(),
         });
         return;
@@ -529,6 +534,54 @@ export class HttpServer {
           preview,
         });
         return;
+      }
+
+      if (
+        req.method === "POST" &&
+        url.pathname.startsWith("/admin/tools/bundles/")
+      ) {
+        this.requireOperatorAuth(req);
+        const { importId, action } = parseToolBundleActionPath(url.pathname);
+        const body = validateToolBundleLifecycleBody(
+          parseJsonBody(await readTextBody(req))
+        );
+        if (action === "approve") {
+          const bundle = this.toolBundles.approve(
+            importId,
+            body.actor,
+            body.notes
+          );
+          this.json(res, 200, { requestId, bundle });
+          return;
+        }
+        if (action === "enable") {
+          const bundle = this.enableToolBundle(
+            importId,
+            body.actor,
+            body.notes
+          );
+          this.json(res, 200, { requestId, bundle });
+          return;
+        }
+        if (action === "disable") {
+          const bundle = this.disableToolBundle(
+            importId,
+            body.actor,
+            body.notes
+          );
+          this.json(res, 200, { requestId, bundle });
+          return;
+        }
+        if (action === "uninstall") {
+          const bundle = this.uninstallToolBundle(
+            importId,
+            body.actor,
+            body.notes
+          );
+          this.json(res, 200, { requestId, bundle });
+          return;
+        }
+        throw new HttpError(404, "Not found");
       }
 
       if (
@@ -1463,6 +1516,73 @@ export class HttpServer {
     }
   }
 
+  private enableToolBundle(
+    importId: string,
+    actor: string,
+    notes?: string
+  ): ReturnType<ToolBundleImportStore["markEnabled"]> {
+    const bundle = this.toolBundles.get(importId);
+    if (!bundle) {
+      throw new HttpError(404, "Tool bundle import not found");
+    }
+    if (bundle.status !== "valid") {
+      throw new HttpError(409, "Only valid tool bundle imports can be enabled");
+    }
+    if (!["approved", "disabled"].includes(bundle.lifecycleState)) {
+      throw new HttpError(
+        409,
+        "Tool bundle must be approved before it can be enabled"
+      );
+    }
+    try {
+      for (const tool of extractBundleTools(bundle.manifest)) {
+        this.dynamicTools.registerApproved(tool, {
+          approvedBy: actor,
+          notes: notes ?? `enabled from bundle ${bundle.bundleId}`,
+        });
+      }
+      return this.toolBundles.markEnabled(importId, actor, notes);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Failed to enable tool bundle";
+      const failed = this.toolBundles.markFailed(importId, actor, message);
+      throw new HttpError(400, message, failed as unknown as JsonValue);
+    }
+  }
+
+  private disableToolBundle(
+    importId: string,
+    actor: string,
+    notes?: string
+  ): ReturnType<ToolBundleImportStore["markDisabled"]> {
+    const bundle = this.toolBundles.get(importId);
+    if (!bundle) {
+      throw new HttpError(404, "Tool bundle import not found");
+    }
+    if (bundle.lifecycleState !== "enabled") {
+      throw new HttpError(409, "Only enabled tool bundles can be disabled");
+    }
+    for (const tool of extractBundleTools(bundle.manifest)) {
+      this.dynamicTools.unregister(tool.id);
+    }
+    return this.toolBundles.markDisabled(importId, actor, notes);
+  }
+
+  private uninstallToolBundle(
+    importId: string,
+    actor: string,
+    notes?: string
+  ): ReturnType<ToolBundleImportStore["markUninstalled"]> {
+    const bundle = this.toolBundles.get(importId);
+    if (!bundle) {
+      throw new HttpError(404, "Tool bundle import not found");
+    }
+    for (const tool of extractBundleTools(bundle.manifest)) {
+      this.dynamicTools.unregister(tool.id);
+    }
+    return this.toolBundles.markUninstalled(importId, actor, notes);
+  }
+
   private applySelfEvolutionProposal(
     proposalId: string,
     input: { appliedBy: string; confirmHighRisk?: boolean }
@@ -1941,6 +2061,59 @@ function parseSelfEvolutionActionPath(pathname: string): {
     proposalId: decodeURIComponent(encodedProposalId),
     action,
   };
+}
+
+function parseToolBundleActionPath(pathname: string): {
+  importId: string;
+  action: string;
+} {
+  const suffix = pathname.replace("/admin/tools/bundles/", "");
+  const [encodedImportId, action] = suffix.split("/");
+  if (!encodedImportId || !action || action === "preview") {
+    throw new HttpError(404, "Not found");
+  }
+  return {
+    importId: decodeURIComponent(encodedImportId),
+    action,
+  };
+}
+
+function extractBundleTools(manifest: JsonValue): Array<{
+  id: string;
+  description: string;
+  scopes: string[];
+  inputSchema?: JsonValue;
+  responseTemplate: string;
+}> {
+  const manifestObject = asJsonObject(manifest, "manifest");
+  if (!Array.isArray(manifestObject.tools)) {
+    throw new Error("manifest.tools must be an array");
+  }
+  return manifestObject.tools.map((item, index) => {
+    const tool = asJsonObject(item, `manifest.tools[${index}]`);
+    if (
+      typeof tool.id !== "string" ||
+      typeof tool.description !== "string" ||
+      typeof tool.responseTemplate !== "string"
+    ) {
+      throw new Error(`manifest.tools[${index}] is missing required fields`);
+    }
+    const scopes = tool.scopes === undefined ? ["read"] : tool.scopes;
+    if (
+      !Array.isArray(scopes) ||
+      scopes.some((scope) => typeof scope !== "string")
+    ) {
+      throw new Error(`manifest.tools[${index}].scopes must be strings`);
+    }
+    const stringScopes = scopes as string[];
+    return {
+      id: tool.id,
+      description: tool.description,
+      scopes: stringScopes,
+      inputSchema: tool.inputSchema,
+      responseTemplate: tool.responseTemplate,
+    };
+  });
 }
 
 function extractOperatorSettingsPatch(

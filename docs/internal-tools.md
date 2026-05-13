@@ -34,7 +34,43 @@ curl -X POST http://localhost:3210/admin/tools/bundles/preview \
 
 Valid previews return `200` with diagnostics and are stored as `valid`. Invalid previews return `400`, but the failed attempt is still stored as `invalid` for audit.
 
-Recent imports are available at:
+## Lifecycle API
+
+Bundle previews must be approved before they can be enabled:
+
+```bash
+curl -X POST http://localhost:3210/admin/tools/bundles/tbi_123/approve \
+  -H "Authorization: Bearer $OPERATOR_BEARER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"actor":"operator","notes":"Read-only tools reviewed."}'
+```
+
+Enable registers the bundle's tools as approved dynamic tools using the existing runtime permission checks:
+
+```bash
+curl -X POST http://localhost:3210/admin/tools/bundles/tbi_123/enable \
+  -H "Authorization: Bearer $OPERATOR_BEARER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"actor":"operator"}'
+```
+
+Disable removes the bundle tools from the runtime registry and dynamic tool table while keeping the bundle import and audit trail. Uninstall performs the same cleanup and marks the bundle import uninstalled:
+
+```bash
+curl -X POST http://localhost:3210/admin/tools/bundles/tbi_123/disable \
+  -H "Authorization: Bearer $OPERATOR_BEARER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"actor":"operator"}'
+```
+
+```bash
+curl -X POST http://localhost:3210/admin/tools/bundles/tbi_123/uninstall \
+  -H "Authorization: Bearer $OPERATOR_BEARER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"actor":"operator"}'
+```
+
+Recent imports and lifecycle audit records are available at:
 
 - `GET /admin/tools/bundles`
 - `GET /admin/tools/governance`
@@ -42,4 +78,4 @@ Recent imports are available at:
 - `GET /admin/timeline`
 - `GET /admin/export?scope=governance`
 
-Installation requirements may be recorded in a manifest, but preview does not execute them. Bundle enable/disable/uninstall is the next lifecycle slice.
+Installation requirements may be recorded in a manifest, but preview and enable do not execute them. Runtime execution remains bounded by the bundle manifest's read-only scopes and the existing tool permission policy.
