@@ -993,6 +993,76 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     );
     assert.equal(await attachmentDownloadResponse.text(), "hello attachment");
 
+    const binaryUploadForm = new FormData();
+    binaryUploadForm.set("sessionId", webSession.sessionId);
+    binaryUploadForm.set(
+      "file",
+      new Blob(["binary-secret"], { type: "application/octet-stream" }),
+      "binary.dat"
+    );
+    const binaryUploadResponse = await fetch(`${baseUrl}/chat/attachments`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      body: binaryUploadForm,
+    });
+    assert.equal(binaryUploadResponse.status, 201);
+    const binaryUploadJson = (await binaryUploadResponse.json()) as {
+      attachments: Array<{ id: string; name: string }>;
+    };
+    const binaryAttachment = binaryUploadJson.attachments[0];
+    assert.equal(binaryAttachment.name, "binary.dat");
+
+    const unauthenticatedAttachmentSearchResponse = await fetch(
+      `${baseUrl}/chat/attachments/search?q=hello`
+    );
+    assert.equal(unauthenticatedAttachmentSearchResponse.status, 401);
+
+    const attachmentSearchResponse = await fetch(
+      `${baseUrl}/chat/attachments/search?q=hello`,
+      {
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
+    assert.equal(attachmentSearchResponse.status, 200);
+    const attachmentSearchJson = (await attachmentSearchResponse.json()) as {
+      matches: Array<{
+        attachmentId: string;
+        sessionId: string;
+        runId?: string;
+        name: string;
+        excerpt: string;
+        indexedBytes: number;
+        skippedReason?: string;
+        downloadUrl: string;
+      }>;
+    };
+    assert.deepEqual(
+      attachmentSearchJson.matches.map((match) => match.attachmentId),
+      [uploadedAttachment.id]
+    );
+    assert.equal(
+      attachmentSearchJson.matches[0].sessionId,
+      webSession.sessionId
+    );
+    assert.match(attachmentSearchJson.matches[0].excerpt, /hello attachment/);
+    assert.equal(attachmentSearchJson.matches[0].indexedBytes, 16);
+    assert.equal(
+      attachmentSearchJson.matches[0].downloadUrl,
+      `/chat/attachments/${uploadedAttachment.id}`
+    );
+
+    const binaryAttachmentSearchResponse = await fetch(
+      `${baseUrl}/chat/attachments/search?q=binary-secret`,
+      {
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
+    const binaryAttachmentSearchJson =
+      (await binaryAttachmentSearchResponse.json()) as {
+        matches: Array<{ attachmentId: string }>;
+      };
+    assert.deepEqual(binaryAttachmentSearchJson.matches, []);
+
     const linkedStreamResponse = await fetch(
       `http://127.0.0.1:${port}/chat/message`,
       {
@@ -1030,6 +1100,12 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       }>;
       runs: Array<{ runId: string }>;
       artifacts: Array<{ id: string }>;
+      attachmentTextIndexes: Array<{
+        attachmentId: string;
+        runId?: string;
+        indexedBytes: number;
+        skippedReason?: string;
+      }>;
     };
     const linkedAttachment = linkedSessionJson.attachments.find(
       (attachment) => attachment.id === uploadedAttachment.id
@@ -1040,6 +1116,22 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assert.equal(
       linkedAttachment.downloadUrl,
       `/chat/attachments/${uploadedAttachment.id}`
+    );
+    assert.ok(
+      linkedSessionJson.attachmentTextIndexes.some(
+        (entry) =>
+          entry.attachmentId === uploadedAttachment.id &&
+          entry.runId === linkedAttachment.runId &&
+          entry.indexedBytes === 16 &&
+          !entry.skippedReason
+      )
+    );
+    assert.ok(
+      linkedSessionJson.attachmentTextIndexes.some(
+        (entry) =>
+          entry.attachmentId === binaryAttachment.id &&
+          entry.skippedReason === "unsafe_content_type"
+      )
     );
 
     const autoArtifactStreamResponse = await fetch(
@@ -2624,7 +2716,13 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     );
     const chatExportJson = (await chatExportResponse.json()) as {
       scope: string;
-      items: Array<{ kind: string; id: string; sessionId: string }>;
+      items: Array<{
+        kind: string;
+        id?: string;
+        attachmentId?: string;
+        sessionId: string;
+        indexedBytes?: number;
+      }>;
     };
     assert.equal(chatExportJson.scope, "chat");
     assert.ok(
@@ -2641,6 +2739,15 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
           item.kind === "artifact" &&
           item.id === artifactJson.artifact.id &&
           item.sessionId === webSession.sessionId
+      )
+    );
+    assert.ok(
+      chatExportJson.items.some(
+        (item) =>
+          item.kind === "attachment_text_index" &&
+          item.attachmentId === uploadedAttachment.id &&
+          item.sessionId === webSession.sessionId &&
+          item.indexedBytes === 16
       )
     );
 

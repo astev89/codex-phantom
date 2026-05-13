@@ -45,6 +45,11 @@ import {
   type ChatArtifactKind,
 } from "../chat/artifact-store.ts";
 import {
+  AttachmentTextIndexStore,
+  type AttachmentTextIndexRecord,
+  type AttachmentTextSearchResult,
+} from "../chat/attachment-text-index.ts";
+import {
   extractArtifactDraftsFromEvent,
   extractArtifactDraftsFromOutputText,
   MAX_EXTRACTED_ARTIFACTS_PER_RUN,
@@ -120,6 +125,7 @@ export class HttpServer {
   private readonly inboundRouter: InboundChannelRouter;
   private readonly chatBlobs: ChatBlobStore;
   private readonly chatArtifacts: ChatArtifactStore;
+  private readonly attachmentTextIndex: AttachmentTextIndexStore;
   private readonly governance: ToolGovernanceService;
   private readonly selfEvolution: SelfEvolutionProposalStore;
   private readonly slack: SlackChannel;
@@ -171,6 +177,7 @@ export class HttpServer {
     );
     this.chatBlobs = new ChatBlobStore(config.dataDir);
     this.chatArtifacts = new ChatArtifactStore(database);
+    this.attachmentTextIndex = new AttachmentTextIndexStore(database);
     this.governance = governance;
     this.selfEvolution = new SelfEvolutionProposalStore(database);
     this.slack = new SlackChannel(
@@ -836,22 +843,41 @@ export class HttpServer {
           }
           const id = createId("att");
           const blob = await this.chatBlobs.write(id, file.content);
-          attachments.push(
-            await this.sessions.recordUploadedAttachment({
-              id,
-              sessionId: session.sessionId,
-              runId,
-              name: file.fileName,
-              contentType: file.contentType || "application/octet-stream",
-              sizeBytes: blob.sizeBytes,
-              storagePath: blob.storagePath,
-              sha256: blob.sha256,
-            })
-          );
+          const attachment = await this.sessions.recordUploadedAttachment({
+            id,
+            sessionId: session.sessionId,
+            runId,
+            name: file.fileName,
+            contentType: file.contentType || "application/octet-stream",
+            sizeBytes: blob.sizeBytes,
+            storagePath: blob.storagePath,
+            sha256: blob.sha256,
+          });
+          this.attachmentTextIndex.indexAttachment(attachment, file.content);
+          attachments.push(attachment);
         }
         this.json(res, 201, {
           requestId,
           attachments: attachments.map(toAttachmentSummary),
+        });
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/chat/attachments/search") {
+        this.requireOperatorAuth(req);
+        const query = (url.searchParams.get("q") ?? "").trim();
+        if (!query) {
+          throw new HttpError(400, "q is required");
+        }
+        const limit = url.searchParams.get("limit");
+        const matches = this.attachmentTextIndex.search(
+          query,
+          limit ? Number.parseInt(limit, 10) : 25
+        );
+        this.json(res, 200, {
+          requestId,
+          query,
+          matches: matches.map(toAttachmentTextSearchSummary),
         });
         return;
       }
@@ -950,11 +976,17 @@ export class HttpServer {
         const artifacts = await this.chatArtifacts.listForSession(
           session.sessionId
         );
+        const attachmentTextIndexes = this.attachmentTextIndex.listForSession(
+          session.sessionId
+        );
         this.json(res, 200, {
           session,
           runs,
           attachments: attachments.map(toAttachmentSummary),
           artifacts: artifacts.map(toArtifactSummary),
+          attachmentTextIndexes: attachmentTextIndexes.map(
+            toAttachmentTextIndexSummary
+          ),
         });
         return;
       }
@@ -1035,6 +1067,11 @@ export class HttpServer {
           }
           if (body.attachmentIds && body.attachmentIds.length > 0) {
             await this.sessions.linkAttachmentsToRun(
+              result.sessionId,
+              result.runId,
+              body.attachmentIds
+            );
+            this.attachmentTextIndex.updateRunForAttachments(
               result.sessionId,
               result.runId,
               body.attachmentIds
@@ -1519,6 +1556,10 @@ export class HttpServer {
             ...(await this.chatArtifacts.list(250)).map((artifact) => ({
               ...toArtifactSummary(artifact),
               kind: "artifact",
+            })),
+            ...this.attachmentTextIndex.list(250).map((record) => ({
+              ...toAttachmentTextIndexSummary(record),
+              kind: "attachment_text_index",
             })),
           ],
         };
@@ -2067,6 +2108,34 @@ function toAttachmentSummary(
       ? `/chat/attachments/${attachment.id}`
       : undefined,
     createdAt: attachment.createdAt,
+  });
+}
+
+function toAttachmentTextIndexSummary(
+  record: AttachmentTextIndexRecord
+): Record<string, JsonValue> {
+  return removeUndefined({
+    attachmentId: record.attachmentId,
+    sessionId: record.sessionId,
+    runId: record.runId,
+    contentType: record.contentType,
+    indexedBytes: record.indexedBytes,
+    skippedReason: record.skippedReason,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+  });
+}
+
+function toAttachmentTextSearchSummary(
+  result: AttachmentTextSearchResult
+): Record<string, JsonValue> {
+  return removeUndefined({
+    ...toAttachmentTextIndexSummary(result),
+    name: result.name,
+    sizeBytes: result.sizeBytes,
+    sha256: result.sha256,
+    downloadUrl: result.downloadUrl,
+    excerpt: result.excerpt,
   });
 }
 

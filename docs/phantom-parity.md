@@ -30,7 +30,7 @@ Completed or intentionally covered:
 | Managed memory parity      | Mostly complete | Contradiction/supersession lifecycle links, restart-safe scheduled maintenance, deterministic summarization/promotion, bounded active-row pruning, decay/reinforcement scoring, and hybrid retrieval ranking are implemented. Remaining gaps are polish-level unless new Phantom memory behavior is discovered.  |
 | Governed self-evolution    | Mostly complete | Durable proposal records, operator APIs, agent proposal tool, approval/rejection, high-risk confirmation, operator-settings apply, rollback metadata, mutation audit, and malformed/direct-apply rejection are implemented. Remaining gaps: safe mutation classes for prompts, memory policy, tools, and roles.  |
 | Internal tool parity       | Mostly complete | Governed internal tool bundle manifests, import preview, approval, enable, disable, uninstall, lifecycle audit, recent failure visibility, and runtime permission boundaries are implemented. Remaining gaps are polish-level unless a new internal tool behavior is discovered. No public marketplace required. |
-| Artifact intelligence      | Mostly complete | Uploaded attachments, explicit artifacts, and bounded automatic artifact extraction from selected tool events/final structured outputs exist. Remaining gap: searchable attachment contents for safe text-like files.                                                                                            |
+| Artifact intelligence      | Mostly complete | Uploaded attachments, searchable safe text attachment contents, explicit artifacts, and bounded automatic artifact extraction from selected tool events/final structured outputs exist. Remaining gaps are polish-level unless a new Phantom artifact behavior is discovered.                                    |
 
 ## Explicit Exclusions
 
@@ -42,5 +42,4 @@ Completed or intentionally covered:
 
 ## Priority Order
 
-1. Searchable safe text attachments.
-2. Newly discovered non-Telegram channel gaps.
+1. Newly discovered non-Telegram channel gaps.

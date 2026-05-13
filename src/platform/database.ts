@@ -111,6 +111,20 @@ export class AppDatabase {
         FOREIGN KEY (session_id) REFERENCES sessions(session_id)
       );
 
+      CREATE TABLE IF NOT EXISTS chat_attachment_text_index (
+        attachment_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        run_id TEXT,
+        content_type TEXT NOT NULL,
+        indexed_text TEXT,
+        indexed_bytes INTEGER NOT NULL DEFAULT 0,
+        skipped_reason TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (attachment_id) REFERENCES chat_attachments(id),
+        FOREIGN KEY (session_id) REFERENCES sessions(session_id)
+      );
+
       CREATE TABLE IF NOT EXISTS chat_artifacts (
         id TEXT PRIMARY KEY,
         session_id TEXT NOT NULL,
@@ -376,6 +390,8 @@ export class AppDatabase {
       CREATE INDEX IF NOT EXISTS idx_runs_parent_run_id ON runs(parent_run_id);
       CREATE INDEX IF NOT EXISTS idx_run_events_run_id ON run_events(run_id, sequence);
       CREATE INDEX IF NOT EXISTS idx_chat_attachments_session_id ON chat_attachments(session_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_chat_attachment_text_index_session_id ON chat_attachment_text_index(session_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_chat_attachment_text_index_run_id ON chat_attachment_text_index(run_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_chat_artifacts_session_id ON chat_artifacts(session_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_jobs_status_scheduled_at ON jobs(status, scheduled_at);
       CREATE INDEX IF NOT EXISTS idx_memory_entries_category_created_at ON memory_entries(category, created_at DESC);
