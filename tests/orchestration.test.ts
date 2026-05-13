@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CodexAdapter } from "../src/agent/codex-adapter.ts";
@@ -9,9 +9,15 @@ import { SessionStore } from "../src/chat/session-store.ts";
 import { MemoryStore } from "../src/memory/store.ts";
 import { AppDatabase } from "../src/platform/database.ts";
 import { RunGraphStore } from "../src/orchestration/run-graph-store.ts";
+import { loadRolePolicyConfig } from "../src/orchestration/role-config.ts";
 import { OrchestrationService } from "../src/orchestration/service.ts";
+import { buildScopedPolicy } from "../src/orchestration/roles.ts";
 import { ToolRegistry } from "../src/tools/registry.ts";
-import { makeConfig, makeDisabledEmbeddings, makeFakeVectorStore } from "./helpers.ts";
+import {
+  makeConfig,
+  makeDisabledEmbeddings,
+  makeFakeVectorStore,
+} from "./helpers.ts";
 
 test("tracks deterministic subagents and stores run events", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "codex-phantom-orch-"));
@@ -25,7 +31,7 @@ test("tracks deterministic subagents and stores run events", async () => {
     scopes: ["read"],
     kind: "in_process",
     allowedRoles: ["coordinator", "explorer", "verifier"],
-    handler: async (input) => input
+    handler: async (input) => input,
   });
   registry.register({
     id: "memory.query",
@@ -33,7 +39,7 @@ test("tracks deterministic subagents and stores run events", async () => {
     scopes: ["read"],
     kind: "in_process",
     allowedRoles: ["coordinator", "explorer"],
-    handler: async () => ({ ok: true })
+    handler: async () => ({ ok: true }),
   });
   registry.registerDynamic({
     id: "dynamic.note",
@@ -41,7 +47,7 @@ test("tracks deterministic subagents and stores run events", async () => {
     scopes: ["write"],
     kind: "in_process",
     allowedRoles: ["builder", "coordinator"],
-    handler: async (input) => ({ saved: input })
+    handler: async (input) => ({ saved: input }),
   });
   const runtime = new AgentRuntime(
     config,
@@ -51,7 +57,11 @@ test("tracks deterministic subagents and stores run events", async () => {
       database,
       config,
       makeDisabledEmbeddings(),
-      makeFakeVectorStore({ backend: "qdrant", available: false, configured: false }),
+      makeFakeVectorStore({
+        backend: "qdrant",
+        available: false,
+        configured: false,
+      }),
       makeFakeVectorStore({ backend: "sqlite_fallback", available: true })
     ),
     registry
@@ -67,8 +77,8 @@ test("tracks deterministic subagents and stores run events", async () => {
       message: "build summary",
       subagents: [
         { role: "explorer", objective: "inspect architecture" },
-        { role: "verifier", objective: "check regressions" }
-      ]
+        { role: "verifier", objective: "check regressions" },
+      ],
     },
     async (event) => {
       events.push(event.type);
@@ -94,20 +104,16 @@ test("enforces permission-scoped tools", async () => {
     description: "echo",
     scopes: ["read"],
     kind: "in_process",
-    handler: async () => ({ ok: true })
+    handler: async () => ({ ok: true }),
   });
   await assert.rejects(
     () =>
-      registry.call(
-        "echo.summary",
-        null,
-        {
-          mode: "read_only",
-          fileGlobs: ["**/*"],
-          allowedToolIds: [],
-          allowedMcpServers: []
-        }
-      ),
+      registry.call("echo.summary", null, {
+        mode: "read_only",
+        fileGlobs: ["**/*"],
+        allowedToolIds: [],
+        allowedMcpServers: [],
+      }),
     /not permitted/
   );
 });
@@ -121,21 +127,31 @@ test("runtime executes tool calls before returning the final answer", async () =
     transport: async function* () {
       iteration += 1;
       if (iteration === 1) {
-        yield { type: "response.created", response: { id: "resp_1", model: "gpt-5" } };
+        yield {
+          type: "response.created",
+          response: { id: "resp_1", model: "gpt-5" },
+        };
         yield {
           type: "response.function_call_arguments.done",
           item_id: "call_1",
           name: "echo.summary",
-          arguments: "{\"topic\":\"production\"}"
+          arguments: '{"topic":"production"}',
         };
         yield { type: "response.completed", response: { id: "resp_1" } };
         return;
       }
-      yield { type: "response.created", response: { id: "resp_2", model: "gpt-5" } };
-      yield { type: "response.output_text.delta", item_id: "msg_1", delta: "tool complete" };
+      yield {
+        type: "response.created",
+        response: { id: "resp_2", model: "gpt-5" },
+      };
+      yield {
+        type: "response.output_text.delta",
+        item_id: "msg_1",
+        delta: "tool complete",
+      };
       yield { type: "response.output_text.done" };
       yield { type: "response.completed", response: { id: "resp_2" } };
-    }
+    },
   });
   const registry = new ToolRegistry();
   registry.register({
@@ -143,7 +159,7 @@ test("runtime executes tool calls before returning the final answer", async () =
     description: "echo",
     scopes: ["read"],
     kind: "in_process",
-    handler: async (input) => ({ echoed: input })
+    handler: async (input) => ({ echoed: input }),
   });
 
   const runtime = new AgentRuntime(
@@ -154,7 +170,11 @@ test("runtime executes tool calls before returning the final answer", async () =
       database,
       config,
       makeDisabledEmbeddings(),
-      makeFakeVectorStore({ backend: "qdrant", available: false, configured: false }),
+      makeFakeVectorStore({
+        backend: "qdrant",
+        available: false,
+        configured: false,
+      }),
       makeFakeVectorStore({ backend: "sqlite_fallback", available: true })
     ),
     registry
@@ -169,9 +189,9 @@ test("runtime executes tool calls before returning the final answer", async () =
         mode: "full_access",
         fileGlobs: ["**/*"],
         allowedToolIds: ["echo.summary"],
-        allowedMcpServers: []
+        allowedMcpServers: [],
       },
-      toolCapabilities: registry.list()
+      toolCapabilities: registry.list(),
     },
     async () => {}
   );
@@ -179,4 +199,71 @@ test("runtime executes tool calls before returning the final answer", async () =
   assert.equal(result.result.outputText, "tool complete");
   assert.equal(iteration, 2);
   database.close();
+});
+
+test("loads YAML role policy overlays for scoped subagent policy", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "codex-phantom-roles-"));
+  const roleConfigPath = join(dataDir, "roles.yaml");
+  await writeFile(
+    roleConfigPath,
+    `
+version: 1
+roles:
+  explorer:
+    mode: read_only
+    fileGlobs:
+      - docs/**/*
+    allowedToolIds:
+      - echo.summary
+    allowedMcpServers:
+      - docs
+  builder:
+    mode: scoped_write
+    fileGlobs:
+      - src/**/*
+    allowedToolIds:
+      - dynamic.note
+    allowedMcpServers:
+      - repo
+`
+  );
+  const loaded = loadRolePolicyConfig(roleConfigPath);
+
+  assert.equal(loaded.status.source, "yaml");
+  assert.equal(loaded.status.valid, true);
+  const policy = buildScopedPolicy(
+    {
+      mode: "scoped_write",
+      fileGlobs: ["src/**/*", "docs/**/*"],
+      allowedToolIds: ["echo.summary", "dynamic.note"],
+      allowedMcpServers: ["repo", "docs"],
+    },
+    { role: "explorer" },
+    loaded.baselines
+  );
+  assert.deepEqual(policy.fileGlobs, ["docs/**/*"]);
+  assert.deepEqual(policy.allowedToolIds, ["echo.summary"]);
+  assert.deepEqual(policy.allowedMcpServers, ["docs"]);
+});
+
+test("invalid YAML role policy fails with actionable errors", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "codex-phantom-roles-"));
+  const roleConfigPath = join(dataDir, "roles.yaml");
+  await writeFile(
+    roleConfigPath,
+    `
+version: 1
+roles:
+  explorer:
+    mode: root
+    fileGlobs: []
+    allowedToolIds: []
+    allowedMcpServers: []
+`
+  );
+
+  assert.throws(
+    () => loadRolePolicyConfig(roleConfigPath),
+    /roles\.explorer\.mode/
+  );
 });

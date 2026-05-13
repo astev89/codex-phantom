@@ -17,19 +17,20 @@ Completed or intentionally covered:
 - Signed inbound webhook contract with timestamped HMAC verification and bounded replay tolerance.
 - Slack inbound progressive thread updates, status reactions, feedback buttons, reaction feedback, and durable progress/feedback records.
 - Operator first-run readiness checks for secrets, storage, role/config files, required channels, model access, and memory backend status.
+- YAML-first role policy loading with compiled baselines as fallback for tests/internal construction.
 
 ## Parity Matrix
 
-| Area                       | Status          | Production-level parity target                                                                                                                                                                                                                           |
-| -------------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Web Chat parity            | Mostly complete | Match user-visible Phantom chat capabilities without requiring exact 32-event wire protocol compatibility. Remaining gaps: service-worker push, offline cache only if needed, and any discovered product behavior not yet covered.                       |
-| Slack parity               | Mostly complete | App mentions, DMs, channel/group mentions, reactions, thread replies, progressive updates, status reactions, feedback buttons, and reaction feedback are implemented. Remaining gaps are polish-level unless a new Phantom Slack behavior is discovered. |
-| Channel parity             | Partial         | Slack, Web Chat, signed webhook, and future discovered non-Telegram Phantom channels are in scope. Telegram is excluded.                                                                                                                                 |
-| Operator onboarding parity | Partial         | Bundled YAML role/operator config files and first-run readiness checks exist. Remaining gap: load operator role/config policy from YAML instead of using compiled baselines only. Magic-link auth is not required for this internal project.             |
-| Managed memory parity      | Partial         | Add contradiction/supersession handling, scheduled consolidation, promote/prune behavior, decay/reinforcement, and then richer hybrid retrieval tuning.                                                                                                  |
-| Governed self-evolution    | Not implemented | Match Phantom adaptive/self-evolving behavior through proposals, policy gates, audit trails, approval for risky changes, and rollback. Unrestricted self-mutation remains out of scope.                                                                  |
-| Internal tool parity       | Partial         | Replace Phantom marketplace expectations with governed internal tool bundles, manifests, import/enable/disable lifecycle, approval state, and audit. No public marketplace required.                                                                     |
-| Artifact intelligence      | Partial         | Uploaded attachments and explicit artifacts exist. Remaining gaps: automatic artifact extraction from selected tool events or structured outputs and searchable attachment contents for safe text-like files.                                            |
+| Area                       | Status          | Production-level parity target                                                                                                                                                                                                                                                               |
+| -------------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Web Chat parity            | Mostly complete | Match user-visible Phantom chat capabilities without requiring exact 32-event wire protocol compatibility. Remaining gaps: service-worker push, offline cache only if needed, and any discovered product behavior not yet covered.                                                           |
+| Slack parity               | Mostly complete | App mentions, DMs, channel/group mentions, reactions, thread replies, progressive updates, status reactions, feedback buttons, and reaction feedback are implemented. Remaining gaps are polish-level unless a new Phantom Slack behavior is discovered.                                     |
+| Channel parity             | Partial         | Slack, Web Chat, signed webhook, and future discovered non-Telegram Phantom channels are in scope. Telegram is excluded.                                                                                                                                                                     |
+| Operator onboarding parity | Mostly complete | Bundled YAML role/operator config files, first-run readiness checks, startup YAML role-policy loading, and admin source/status visibility exist. Magic-link auth is not required for this internal project. Remaining gaps are polish-level unless new Phantom setup behavior is discovered. |
+| Managed memory parity      | Partial         | Add contradiction/supersession handling, scheduled consolidation, promote/prune behavior, decay/reinforcement, and then richer hybrid retrieval tuning.                                                                                                                                      |
+| Governed self-evolution    | Not implemented | Match Phantom adaptive/self-evolving behavior through proposals, policy gates, audit trails, approval for risky changes, and rollback. Unrestricted self-mutation remains out of scope.                                                                                                      |
+| Internal tool parity       | Partial         | Replace Phantom marketplace expectations with governed internal tool bundles, manifests, import/enable/disable lifecycle, approval state, and audit. No public marketplace required.                                                                                                         |
+| Artifact intelligence      | Partial         | Uploaded attachments and explicit artifacts exist. Remaining gaps: automatic artifact extraction from selected tool events or structured outputs and searchable attachment contents for safe text-like files.                                                                                |
 
 ## Explicit Exclusions
 
@@ -41,9 +42,8 @@ Completed or intentionally covered:
 
 ## Priority Order
 
-1. Operator onboarding parity: load role/config policy from YAML and keep compiled baselines as fallback.
-2. Managed memory parity: contradiction/supersession and scheduled consolidation before retrieval tuning.
-3. Governed self-evolution.
-4. Internal tool parity.
-5. Artifact intelligence.
-6. Newly discovered non-Telegram channel gaps.
+1. Managed memory parity: contradiction/supersession and scheduled consolidation before retrieval tuning.
+2. Governed self-evolution.
+3. Internal tool parity.
+4. Artifact intelligence.
+5. Newly discovered non-Telegram channel gaps.

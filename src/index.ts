@@ -10,6 +10,7 @@ import { CodexAdapter } from "./agent/codex-adapter.ts";
 import { AgentRuntime } from "./agent/runtime.ts";
 import { RunGraphStore } from "./orchestration/run-graph-store.ts";
 import { OrchestrationService } from "./orchestration/service.ts";
+import { loadRolePolicyConfig } from "./orchestration/role-config.ts";
 import { SchedulerService } from "./scheduler/service.ts";
 import { McpAuditStore } from "./mcp/audit.ts";
 import { McpServer } from "./mcp/server.ts";
@@ -31,34 +32,51 @@ const dynamicTools = new DynamicToolRegistry(database, tools);
 const governance = new ToolGovernanceService(database);
 const runs = new RunGraphStore(database);
 const mcpAudit = new McpAuditStore(database);
+const rolePolicy = loadRolePolicyConfig(config.roleConfigPath);
 
 tools.register({
   id: "memory.query",
   description: "Read current persisted memory slices.",
   scopes: ["read"],
   kind: "in_process",
-  handler: async (input) => memory.query(typeof input === "string" ? input : JSON.stringify(input))
+  handler: async (input) =>
+    memory.query(typeof input === "string" ? input : JSON.stringify(input)),
 });
 tools.register({
   id: "echo.summary",
   description: "Return a compact textual summary.",
   scopes: ["read"],
   kind: "in_process",
-  handler: async (input) => ({ summary: `summary:${JSON.stringify(input)}` })
+  handler: async (input) => ({ summary: `summary:${JSON.stringify(input)}` }),
 });
 tools.register({
   id: "dynamic.note",
   description: "A mutable note tool used by builders in scoped mode.",
   scopes: ["write"],
   kind: "in_process",
-  handler: async (input) => ({ saved: true, input, createdAt: new Date().toISOString() })
+  handler: async (input) => ({
+    saved: true,
+    input,
+    createdAt: new Date().toISOString(),
+  }),
 });
 
 const adapter = new CodexAdapter(config);
 const runtime = new AgentRuntime(config, adapter, sessions, memory, tools);
-const orchestration = new OrchestrationService(runtime, tools, runs);
+const orchestration = new OrchestrationService(
+  runtime,
+  tools,
+  runs,
+  rolePolicy
+);
 const scheduler = new SchedulerService(database, orchestration);
-const mcp = new McpServer(config.mcpBearerToken, tools, metrics, undefined, mcpAudit);
+const mcp = new McpServer(
+  config.mcpBearerToken,
+  tools,
+  metrics,
+  undefined,
+  mcpAudit
+);
 const server = new HttpServer(
   config,
   orchestration,
@@ -83,7 +101,7 @@ await server.listen();
 logger.info("server_listening", {
   port: config.port,
   agent: config.agentName,
-  datastorePath: config.datastorePath
+  datastorePath: config.datastorePath,
 });
 
 const shutdown = async (signal: string): Promise<void> => {

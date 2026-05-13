@@ -21,6 +21,8 @@ Readiness checks cover:
 
 Bundled defaults live in `config/roles.yaml` and `config/operator.yaml` and are copied into the production Docker image. Treat them as the first-run baseline; override the paths only when an operator wants environment-specific policy files.
 
+`ROLE_CONFIG_PATH` is loaded at startup and overlays the compiled role baselines used for subagent policy narrowing. The runtime currently supports the internal roles `explorer`, `builder`, `verifier`, and `researcher`; unknown roles or invalid policy shapes fail startup with an actionable error. `/admin/summary` and `/admin/diagnostics` expose the active role-policy source and validation status.
+
 ## Example
 
 ```bash

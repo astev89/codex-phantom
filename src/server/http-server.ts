@@ -294,13 +294,15 @@ export class HttpServer {
           governance: this.governance.summary(),
           settings: this.settings.get(),
           setupReadiness,
+          rolePolicy: this.orchestration.getRolePolicyStatus(),
           requestAudits: { recent: this.requestAudits.list(10).length },
           channels,
           diagnostics: buildStartupDiagnostics(
             this.config,
             memoryStatus,
             channels,
-            setupReadiness
+            setupReadiness,
+            this.orchestration.getRolePolicyStatus()
           ),
         });
         return;
@@ -337,7 +339,8 @@ export class HttpServer {
             this.config,
             memoryStatus,
             channels,
-            setupReadiness
+            setupReadiness,
+            this.orchestration.getRolePolicyStatus()
           ),
         });
         return;

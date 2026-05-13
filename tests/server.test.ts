@@ -1714,6 +1714,7 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
         recent: Array<{ rating: string; source: string }>;
       };
       setupReadiness: { ok: boolean; status: string };
+      rolePolicy: { source: string; valid: boolean; roles: string[] };
       settings: { dashboardRefreshSeconds: number };
       channels: Array<{ id: string; enabled: boolean }>;
     };
@@ -1735,6 +1736,9 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     );
     assert.equal(adminSummaryJson.setupReadiness.ok, true);
     assert.equal(adminSummaryJson.setupReadiness.status, "warning");
+    assert.equal(adminSummaryJson.rolePolicy.source, "compiled_fallback");
+    assert.equal(adminSummaryJson.rolePolicy.valid, true);
+    assert.ok(adminSummaryJson.rolePolicy.roles.includes("explorer"));
     assert.equal(adminSummaryJson.settings.dashboardRefreshSeconds, 5);
     assert.ok(
       adminSummaryJson.channels.some(
@@ -1983,6 +1987,7 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
         appEnv: string;
         modelAdapter: string;
         missingRecommendedEnv: string[];
+        rolePolicy: { source: string; valid: boolean };
         channelReadiness: Array<{
           id: string;
           enabled: boolean;
@@ -1992,6 +1997,11 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     };
     assert.equal(diagnosticsJson.diagnostics.appEnv, "test");
     assert.equal(diagnosticsJson.diagnostics.modelAdapter, "fallback");
+    assert.equal(
+      diagnosticsJson.diagnostics.rolePolicy.source,
+      "compiled_fallback"
+    );
+    assert.equal(diagnosticsJson.diagnostics.rolePolicy.valid, true);
     assert.ok(
       diagnosticsJson.diagnostics.missingRecommendedEnv.includes(
         "OPENAI_API_KEY"

@@ -14,6 +14,42 @@ The project is now past its first serious production-hardening pass. It is not y
 
 ## Just Completed
 
+Operator YAML policy loading wave completed locally on 2026-05-13:
+
+- Promoted `yaml` to a runtime dependency for production-safe config parsing.
+- Added startup loading and validation for `ROLE_CONFIG_PATH`.
+- Routed validated YAML role baselines into subagent policy narrowing while preserving compiled fallback baselines for tests/internal construction.
+- Exposed active role-policy source and validation status through `/admin/summary` and `/admin/diagnostics`.
+- Kept risky unknown roles rejected so future governed self-evolution proposals cannot silently expand runtime authority.
+
+Verification from this wave:
+
+```bash
+node --experimental-strip-types --test tests/orchestration.test.ts tests/server.test.ts
+npm run typecheck
+npm test
+npm run build
+git diff --check
+GitNexus detect_changes(scope="all")
+```
+
+Review fix wave completed locally on 2026-05-13:
+
+- Copied bundled `config/` files into the production Docker image.
+- Changed readiness from readable-file checks to YAML validation and operator-configured required channel checks.
+- Preserved inbound thread context when Slack reaction feedback is mapped from a known response/progress message.
+
+Verification from this wave:
+
+```bash
+node --experimental-strip-types --test tests/readiness.test.ts tests/deployment.test.ts tests/server.test.ts
+npm run typecheck
+npm test
+npm run build
+git diff --check
+GitNexus detect_changes(scope="all")
+```
+
 Operator first-run readiness wave completed locally on 2026-05-13:
 
 - Added bundled `config/roles.yaml` and `config/operator.yaml` first-run setup inventories.
@@ -213,13 +249,12 @@ npm run build
 
 Use `docs/phantom-parity.md` as the canonical production-level parity roadmap. Keep this section limited to immediate handoff notes and proof gaps.
 
-### P1: Operator YAML Policy Loading
+### P1: Managed Memory Contradiction And Supersession
 
 Suggested work:
 
-- Load role/config policy from `ROLE_CONFIG_PATH` and `OPERATOR_CONFIG_PATH`.
-- Keep compiled role baselines as fallback and validate YAML safely before use.
-- Keep magic-link auth out of scope unless the user base changes.
+- Add explicit memory supersession/contradiction links before retrieval tuning.
+- Keep operator-visible audit details for why a memory was superseded.
 
 ### P2: Managed Memory Continuity
 

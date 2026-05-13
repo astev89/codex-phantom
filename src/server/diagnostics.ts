@@ -2,6 +2,7 @@ import type { AppConfig } from "../config.ts";
 import { modelAdapterMode } from "../config.ts";
 import type { MemoryStatus } from "../memory/types.ts";
 import type { ChannelRecord } from "../channels/registry.ts";
+import type { RolePolicyConfigStatus } from "../orchestration/role-config.ts";
 import type { SetupReadiness } from "./readiness.ts";
 
 export type StartupDiagnostics = {
@@ -20,13 +21,15 @@ export type StartupDiagnostics = {
   channelReadiness: ChannelRecord[];
   missingRecommendedEnv: string[];
   setupReadiness?: SetupReadiness;
+  rolePolicy?: RolePolicyConfigStatus;
 };
 
 export function buildStartupDiagnostics(
   config: AppConfig,
   memory: MemoryStatus,
   channels: ChannelRecord[],
-  setupReadiness?: SetupReadiness
+  setupReadiness?: SetupReadiness,
+  rolePolicy?: RolePolicyConfigStatus
 ): StartupDiagnostics {
   const missingRecommendedEnv = new Set<string>();
   if (modelAdapterMode(config) === "fallback") {
@@ -66,5 +69,6 @@ export function buildStartupDiagnostics(
     channelReadiness: channels,
     missingRecommendedEnv: [...missingRecommendedEnv].sort(),
     setupReadiness,
+    rolePolicy,
   };
 }
