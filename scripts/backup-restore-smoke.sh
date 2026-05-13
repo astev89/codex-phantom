@@ -71,6 +71,8 @@ verify_restored_state() {
 docker compose up -d --build
 wait_for_health
 seed_restore_data
+docker compose restart codex-phantom
+wait_for_health
 verify_restored_state
 
 docker run --rm \

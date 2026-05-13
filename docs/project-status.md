@@ -2,9 +2,9 @@
 
 This is the living status ledger for `codex-phantom`. Update it at the end of each development wave, after tests pass and before handing off or opening a PR.
 
-Last updated: 2026-05-04
+Last updated: 2026-05-13
 Branch: `jarvis/transcript-artifact-continuity`
-Latest verified commit: `9c133e5`
+Latest verified commit: production-proof working tree after `2dd4086`
 
 ## Current State
 
@@ -13,6 +13,28 @@ Latest verified commit: `9c133e5`
 The project is now past its first serious production-hardening pass. It is not yet equivalent to the original Phantom project, but the core runtime is materially safer to run: request sizes are bounded, secrets are rejected in production when defaults are used, outbound model calls have timeouts, scheduler jobs recover deterministically after restarts, MCP events are durably audited, external webhooks are signed, Slack sends retry transient failures, operator-console workflows have browser coverage, and the Docker image runs compiled JavaScript instead of stripped TypeScript.
 
 ## Just Completed
+
+Production proof wave completed locally on 2026-05-13:
+
+- Confirmed `codex-phantom-data` was disposable before backup/restore validation.
+- Recorded preflight state: branch `jarvis/transcript-artifact-continuity`, base commit `2dd4086`, Docker volumes `codex-phantom-data` and `codex-phantom-qdrant-data` present.
+- Ran deployment smoke with required production-like environment names set and values redacted: `APP_ENV`, `OPERATOR_BEARER_TOKEN`, `MCP_BEARER_TOKEN`, `EXTERNAL_CHANNEL_SECRET`, and `OPENAI_API_KEY`.
+- Fixed the production Docker runtime install so dev-only `prepare` scripts do not run when installing production dependencies.
+- Ran backup/restore smoke against disposable `codex-phantom-data`; the script seeded deterministic SQLite state, archived the volume, removed and recreated it, restored the archive, restarted Compose, and verified state through HTTP APIs.
+- Recorded post-smoke state: `codex-phantom-codex-phantom-1` healthy on `3210`, `codex-phantom-qdrant-1` running on `6333`, and both named volumes present.
+
+Verification from this wave:
+
+```bash
+APP_ENV=production OPERATOR_BEARER_TOKEN=<redacted> MCP_BEARER_TOKEN=<redacted> EXTERNAL_CHANNEL_SECRET=<redacted> OPENAI_API_KEY=<redacted> scripts/deployment-smoke.sh
+APP_ENV=production OPERATOR_BEARER_TOKEN=<redacted> MCP_BEARER_TOKEN=<redacted> EXTERNAL_CHANNEL_SECRET=<redacted> OPENAI_API_KEY=<redacted> scripts/backup-restore-smoke.sh
+node --experimental-strip-types --test tests/deployment.test.ts
+npm run typecheck
+npm test
+npm run build
+git diff --check
+GitNexus detect_changes(scope="all")
+```
 
 Transcript and artifact continuity wave completed locally on 2026-05-04:
 
@@ -132,14 +154,13 @@ npm run build
 
 Use `docs/phantom-parity.md` as the canonical production-level parity roadmap. Keep this section limited to immediate handoff notes and proof gaps.
 
-### P1: Record Production Proof
-
-The deployment and backup/restore smoke scripts now exist, but this local implementation run did not execute them because the restore script recreates the `codex-phantom-data` Docker volume. Use `docs/deployment-smoke-runbook.md` to run and record the validation safely.
+### P1: Slack Production Parity Plan
 
 Suggested work:
 
-- Run the preflight, deployment smoke, and backup/restore smoke from the runbook.
-- If both scripts pass, update this ledger with the evidence listed in the runbook.
+- Rewrite the Slack production parity plan now that deployment and backup/restore proof has passed.
+- Treat `docs/superpowers/plans/2026-05-01-slack-inbound-parity.md` as historical context only.
+- Keep Telegram out of scope and keep Slack failures isolated from already-acked inbound events.
 
 ## Known Constraints
 

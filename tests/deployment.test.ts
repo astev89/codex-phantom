@@ -21,13 +21,17 @@ test("Dockerfile runs as a non-root service with a healthcheck and writable data
 
   assert.match(dockerfile, /^FROM node:24-slim AS build$/m);
   assert.match(dockerfile, /^FROM node:24-slim$/m);
+  assert.match(dockerfile, /npm ci --omit=dev --ignore-scripts/);
   assert.match(dockerfile, /COPY --from=build \/app\/dist \.\/dist/);
   assert.match(dockerfile, /mkdir -p \/app\/data/);
   assert.match(dockerfile, /chown -R node:node \/app/);
   assert.match(dockerfile, /^USER node$/m);
   assert.match(dockerfile, /^HEALTHCHECK\b/m);
   assert.match(dockerfile, /http:\/\/127\.0\.0\.1:\$PORT\/health/);
-  assert.doesNotMatch(dockerfile, /CMD \["node", "--experimental-strip-types", "src\/index\.ts"\]/);
+  assert.doesNotMatch(
+    dockerfile,
+    /CMD \["node", "--experimental-strip-types", "src\/index\.ts"\]/
+  );
   assert.match(dockerfile, /CMD \["node", "dist\/index\.js"\]/);
 });
 
@@ -36,8 +40,14 @@ test("docker compose defines restart and persistence settings for local producti
 
   assert.match(compose, /restart: unless-stopped/);
   assert.match(compose, /required: false/);
-  assert.match(compose, /OPERATOR_BEARER_TOKEN: \$\{OPERATOR_BEARER_TOKEN:\?Set OPERATOR_BEARER_TOKEN\}/);
-  assert.match(compose, /OPENAI_API_KEY: \$\{OPENAI_API_KEY:\?Set OPENAI_API_KEY\}/);
+  assert.match(
+    compose,
+    /OPERATOR_BEARER_TOKEN: \$\{OPERATOR_BEARER_TOKEN:\?Set OPERATOR_BEARER_TOKEN\}/
+  );
+  assert.match(
+    compose,
+    /OPENAI_API_KEY: \$\{OPENAI_API_KEY:\?Set OPENAI_API_KEY\}/
+  );
   assert.match(compose, /QDRANT_ENABLED: "true"/);
   assert.match(compose, /QDRANT_URL: http:\/\/qdrant:6333/);
   assert.match(compose, /codex-phantom-data:\/app\/data/);
@@ -46,7 +56,10 @@ test("docker compose defines restart and persistence settings for local producti
 
 test("deployment smoke scripts and docs cover boot, restart persistence, and backup restore", async () => {
   const script = await readFile("scripts/deployment-smoke.sh", "utf8");
-  const restoreScript = await readFile("scripts/backup-restore-smoke.sh", "utf8");
+  const restoreScript = await readFile(
+    "scripts/backup-restore-smoke.sh",
+    "utf8"
+  );
   const seedScript = await readFile("scripts/restore-smoke-seed.mjs", "utf8");
   const readme = await readFile("README.md", "utf8");
   const parity = await readFile("docs/phantom-parity.md", "utf8");
@@ -75,6 +88,8 @@ test("deployment smoke scripts and docs cover boot, restart persistence, and bac
   assert.match(restoreScript, /\/admin\/mcp\/audit/);
   assert.match(restoreScript, /\/admin\/timeline/);
   assert.match(seedScript, /session_restore_smoke/);
+  assert.match(seedScript, /"operator"/);
+  assert.match(seedScript, /memoryTimelineLimit: 13/);
   assert.match(seedScript, /run_restore_smoke/);
   assert.match(seedScript, /job_restore_smoke/);
   assert.match(seedScript, /mem_restore_smoke/);

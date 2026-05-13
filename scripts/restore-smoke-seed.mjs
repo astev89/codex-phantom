@@ -3,7 +3,8 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-const databasePath = process.env.CODEX_PHANTOM_DATABASE_PATH ?? "/app/data/codex-phantom.sqlite";
+const databasePath =
+  process.env.CODEX_PHANTOM_DATABASE_PATH ?? "/app/data/codex-phantom.sqlite";
 const now = new Date("2026-04-28T12:00:00.000Z").toISOString();
 const future = new Date("2099-01-01T00:00:00.000Z").toISOString();
 
@@ -123,21 +124,30 @@ db.exec(`
 
 db.exec("BEGIN");
 try {
-  db.prepare(`
+  db.prepare(
+    `
     INSERT OR REPLACE INTO operator_settings (id, settings_json, created_at, updated_at)
     VALUES (?, ?, ?, ?)
-  `).run("default", json({
-    dashboardRefreshSeconds: 11,
-    chatDefaultConversationId: "restore-smoke",
-    memoryTimelineLimit: 13
-  }), now, now);
+  `
+  ).run(
+    "operator",
+    json({
+      dashboardRefreshSeconds: 11,
+      chatDefaultConversationId: "restore-smoke",
+      memoryTimelineLimit: 13,
+    }),
+    now,
+    now
+  );
 
-  db.prepare(`
+  db.prepare(
+    `
     INSERT OR REPLACE INTO sessions (
       session_id, channel_id, conversation_id, provider_session_id, previous_response_id,
       last_event_cursor, resumability_json, created_at, updated_at, run_ids_json
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
+  `
+  ).run(
     "session_restore_smoke",
     "web",
     "restore-smoke",
@@ -150,13 +160,15 @@ try {
     json(["run_restore_smoke"])
   );
 
-  db.prepare(`
+  db.prepare(
+    `
     INSERT OR REPLACE INTO runs (
       run_id, parent_run_id, role, objective, status, permission_policy_json,
       allowed_mcp_servers_json, allowed_tool_ids_json, child_run_ids_json, max_budget_usd,
       timeout_ms, summary, transcript_json, started_at, finished_at, terminal_state_json
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
+  `
+  ).run(
     "run_restore_smoke",
     null,
     "coordinator",
@@ -169,18 +181,23 @@ try {
     null,
     30000,
     "restore smoke summary",
-    json([{ role: "user", content: "restore smoke" }, { role: "assistant", content: "restored" }]),
+    json([
+      { role: "user", content: "restore smoke" },
+      { role: "assistant", content: "restored" },
+    ]),
     now,
     now,
     json({ outputText: "restored" })
   );
 
-  db.prepare(`
+  db.prepare(
+    `
     INSERT OR REPLACE INTO jobs (
       id, name, message, scheduled_at, subagents_json, status, created_at,
       started_at, finished_at, attempt_count, max_attempts, failure_reason, last_run_id
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
+  `
+  ).run(
     "job_restore_smoke",
     "restore-smoke-job",
     "restore smoke scheduled job",
@@ -196,12 +213,14 @@ try {
     null
   );
 
-  db.prepare(`
+  db.prepare(
+    `
     INSERT OR REPLACE INTO memory_entries (
       id, category, content, created_at, source_user_input, source_assistant_output,
       score, source_type, importance, access_count, is_summary, is_fact
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
+  `
+  ).run(
     "mem_restore_smoke",
     "procedural",
     "Restore smoke memory survived backup and restore.",
@@ -216,12 +235,14 @@ try {
     1
   );
 
-  db.prepare(`
+  db.prepare(
+    `
     INSERT OR REPLACE INTO dynamic_tools (
       id, description, scopes_json, input_schema_json, response_template,
       created_at, updated_at, approval_state, approved_by, approved_at, governance_notes
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
+  `
+  ).run(
     "restore.brief",
     "Restore smoke dynamic tool",
     json(["read"]),
@@ -235,15 +256,25 @@ try {
     "seeded for backup restore smoke"
   );
 
-  db.prepare(`
+  db.prepare(
+    `
     INSERT INTO tool_governance_audit (tool_id, action, actor, notes, created_at)
     VALUES (?, ?, ?, ?, ?)
-  `).run("restore.brief", "approved", "restore-smoke", "seeded restore smoke approval", now);
+  `
+  ).run(
+    "restore.brief",
+    "approved",
+    "restore-smoke",
+    "seeded restore smoke approval",
+    now
+  );
 
-  db.prepare(`
+  db.prepare(
+    `
     INSERT INTO mcp_audit_logs (request_id, method, tool_name, outcome, status_code, error_message, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run("req_restore_smoke", "tools/list", null, "success", 200, null, now);
+  `
+  ).run("req_restore_smoke", "tools/list", null, "success", 200, null, now);
 
   db.exec("COMMIT");
 } catch (error) {
