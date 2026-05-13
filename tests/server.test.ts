@@ -1063,6 +1063,63 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       };
     assert.deepEqual(binaryAttachmentSearchJson.matches, []);
 
+    const boundedText =
+      `${"a".repeat(199_980)}inside-boundary` +
+      `${"b".repeat(100)}outside-boundary`;
+    const boundedUploadForm = new FormData();
+    boundedUploadForm.set("sessionId", webSession.sessionId);
+    boundedUploadForm.set(
+      "file",
+      new Blob([boundedText], { type: "text/plain" }),
+      "bounded.txt"
+    );
+    const boundedUploadResponse = await fetch(`${baseUrl}/chat/attachments`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      body: boundedUploadForm,
+    });
+    assert.equal(boundedUploadResponse.status, 201);
+    const boundedUploadJson = (await boundedUploadResponse.json()) as {
+      attachments: Array<{ id: string; name: string }>;
+    };
+    const boundedAttachment = boundedUploadJson.attachments[0];
+    assert.equal(boundedAttachment.name, "bounded.txt");
+
+    const boundedInsideSearchResponse = await fetch(
+      `${baseUrl}/chat/attachments/search?q=inside-boundary`,
+      {
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
+    const boundedInsideSearchJson =
+      (await boundedInsideSearchResponse.json()) as {
+        matches: Array<{ attachmentId: string; indexedBytes: number }>;
+      };
+    assert.ok(
+      boundedInsideSearchJson.matches.some(
+        (match) =>
+          match.attachmentId === boundedAttachment.id &&
+          match.indexedBytes === 200_000
+      )
+    );
+
+    const boundedOutsideSearchResponse = await fetch(
+      `${baseUrl}/chat/attachments/search?q=outside-boundary`,
+      {
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
+    const boundedOutsideSearchJson =
+      (await boundedOutsideSearchResponse.json()) as {
+        matches: Array<{ attachmentId: string }>;
+      };
+    assert.equal(
+      boundedOutsideSearchJson.matches.some(
+        (match) => match.attachmentId === boundedAttachment.id
+      ),
+      false
+    );
+
     const linkedStreamResponse = await fetch(
       `http://127.0.0.1:${port}/chat/message`,
       {
@@ -1131,6 +1188,14 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
         (entry) =>
           entry.attachmentId === binaryAttachment.id &&
           entry.skippedReason === "unsafe_content_type"
+      )
+    );
+    assert.ok(
+      linkedSessionJson.attachmentTextIndexes.some(
+        (entry) =>
+          entry.attachmentId === boundedAttachment.id &&
+          entry.indexedBytes === 200_000 &&
+          !entry.skippedReason
       )
     );
 
@@ -1645,6 +1710,87 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       ),
       false
     );
+
+    const restartedTools = new ToolRegistry();
+    restartedTools.register({
+      id: "echo.summary",
+      description: "echo",
+      scopes: ["read"],
+      kind: "in_process",
+      handler: async (input) => input,
+    });
+    const restartedDynamicTools = new DynamicToolRegistry(
+      database,
+      restartedTools
+    );
+    const restartedMetrics = new MetricsStore();
+    const restartedMcp = new McpServer(
+      config.mcpBearerToken,
+      restartedTools,
+      restartedMetrics,
+      undefined,
+      mcpAudit
+    );
+    const restartedRuntime = new AgentRuntime(
+      config,
+      new FakeAdapter(),
+      sessions,
+      memory,
+      restartedTools
+    );
+    const restartedOrchestration = new OrchestrationService(
+      restartedRuntime,
+      restartedTools,
+      runs
+    );
+    const restartedServer = new HttpServer(
+      config,
+      restartedOrchestration,
+      new SchedulerService(database, restartedOrchestration),
+      sessions,
+      runs,
+      restartedMcp,
+      database,
+      new Logger("error"),
+      restartedMetrics,
+      memory,
+      restartedDynamicTools,
+      new ChannelRegistry(database, config),
+      new ToolGovernanceService(database),
+      slackTransport
+    );
+    const restartedInstance = await restartedServer.listen();
+    const restartedAddress = restartedInstance.address();
+    if (!restartedAddress || typeof restartedAddress === "string") {
+      throw new Error("restarted server failed to bind");
+    }
+    try {
+      const restartedMcpListResponse = await fetch(
+        `http://127.0.0.1:${restartedAddress.port}/mcp`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${config.mcpBearerToken}`,
+          },
+          body: JSON.stringify({ method: "tools/list" }),
+        }
+      );
+      const restartedMcpListJson = (await restartedMcpListResponse.json()) as {
+        tools: Array<{ id: string }>;
+      };
+      assert.equal(
+        restartedMcpListJson.tools.some(
+          (tool) => tool.id === "internal.research.lookup"
+        ),
+        false
+      );
+      assert.ok(
+        restartedMcpListJson.tools.some((tool) => tool.id === "echo.summary")
+      );
+    } finally {
+      await restartedServer.close();
+    }
 
     const uninstallBundleResponse = await fetch(
       `http://127.0.0.1:${port}/admin/tools/bundles/${encodeURIComponent(bundlePreviewJson.preview.id)}/uninstall`,
