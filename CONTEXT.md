@@ -37,8 +37,12 @@ Executable evidence that production claims hold in a real deployment-like enviro
 _Avoid_: Parity feature, feature gap
 
 **Channel parity**:
-Matching Phantom channel capabilities across Slack, Web Chat, signed webhook, and any future discovered channels except Telegram.
+Matching Phantom channel capabilities across Slack, Web Chat, signed webhook, Email, and any future discovered channels except Telegram.
 _Avoid_: Telegram parity
+
+**Email channel parity**:
+Matching Phantom's built-in email channel capability with production-safe IMAP/SMTP configuration, inbound thread routing, outbound replies, attachment handling, auth boundaries, audit, and operator visibility.
+_Avoid_: Newsletter feature, generic email notifications
 
 **Production-safe feature**:
 A parity feature with auth boundaries, bounded inputs, auditability, operator visibility, recovery behavior, failure isolation, and verification evidence.
@@ -63,6 +67,7 @@ _Avoid_: Implemented feature, feature complete
 - **Production proof** validates **Production-level parity** but is not itself a Phantom feature.
 - **Channel parity** is part of **Production-level parity**.
 - **Channel parity** explicitly excludes Telegram and defaults future discovered Phantom channels to in scope unless carved out.
+- **Email channel parity** is part of **Channel parity** because Phantom ships a built-in Email channel.
 - **Production-level parity** backlog order is **Production proof**, **Slack parity**, **Operator onboarding parity**, **Managed memory parity**, **Governed self-evolution**, **Internal tool parity**, artifact intelligence, then newly discovered non-Telegram **Channel parity** gaps.
 - Every feature counted toward **Production-level parity** must be a **Production-safe feature**.
 
@@ -95,6 +100,9 @@ _Avoid_: Implemented feature, feature complete
 > **Dev:** "Can we ignore Telegram when comparing channels?"
 > **Domain expert:** "Yes — **Channel parity** excludes Telegram, but other Phantom channels default to in scope."
 >
+> **Dev:** "Does Phantom's built-in Email channel count?"
+> **Domain expert:** "Yes — **Email channel parity** is in scope because Phantom ships email as a first-class channel. Implement it with production-safe IMAP/SMTP boundaries."
+>
 > **Dev:** "Should memory work happen before Slack parity?"
 > **Domain expert:** "No — after **Production proof**, prioritize **Slack parity**, then **Operator onboarding parity**, then **Managed memory parity**."
 >
@@ -112,3 +120,4 @@ _Avoid_: Implemented feature, feature complete
 - "advanced memory" was vague; resolved: target **Managed memory parity** with lifecycle and quality controls, not just better vector search.
 - "Docker smoke" was mixed into parity work; resolved: classify it as **Production proof**, not a Phantom feature gap.
 - "channel parity" previously meant webhook and Slack only; resolved: all Phantom channels are in scope except Telegram unless explicitly carved out.
+- "Email" was discovered during the non-Telegram channel recompare; resolved: Phantom ships it as a built-in channel, so it is in scope for **Channel parity**.

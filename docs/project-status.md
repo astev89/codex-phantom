@@ -14,6 +14,22 @@ The project is now past its first serious production-hardening pass. It is not y
 
 ## Just Completed
 
+Phantom non-Telegram channel recompare completed locally on 2026-05-13:
+
+- Recompared Phantom channel source/docs through GitNexus and source search.
+- Confirmed built-in Phantom channels: Slack, Web Chat, Webhook, Telegram, and Email.
+- Preserved Telegram as explicitly excluded.
+- Classified Phantom Email as the remaining non-Telegram channel parity gap and opened [#21](https://github.com/astev89/codex-phantom/issues/21).
+- Treated Discord as a README self-extension story, not a shipped built-in channel requiring an ADR carve-out.
+
+Verification from this wave:
+
+```bash
+rg -n "telegram|slack|webhook|web chat|/chat|channel|notification|push|gmail|email|discord|whatsapp|sms|twilio" /Users/aaronstevens/dev/phantom/src /Users/aaronstevens/dev/phantom/docs /Users/aaronstevens/dev/phantom -g"*.ts" -g"*.tsx" -g"*.md"
+GitNexus query(repo="phantom", query="channel integrations Slack Telegram web chat webhook inbound outbound events notifications")
+GitNexus query(repo="codex-phantom", query="channel integrations Slack web chat webhook inbound outbound events notifications")
+```
+
 Searchable safe text attachment wave completed locally on 2026-05-13:
 
 - Added bounded safe text indexing for uploaded chat attachments.
@@ -419,15 +435,16 @@ npm run build
 
 Use `docs/phantom-parity.md` as the canonical production-level parity roadmap. Keep this section limited to immediate handoff notes and proof gaps.
 
-### P1: Recompare Phantom Non-Telegram Channels
+### P1: Email Channel Parity
 
 Suggested work:
 
-- Recompare Phantom channel surfaces with current code/docs.
-- Identify any non-Telegram channel capabilities not represented in `codex-phantom`.
-- Update `CONTEXT.md` for resolved terms or explicit channel carve-outs.
-- Add an ADR for any durable exclusion that would be surprising later.
-- Update `docs/phantom-parity.md` with either newly discovered channel gaps or confirmed no-op evidence.
+- Add a production-safe Email channel modeled on Phantom's built-in channel.
+- Support IMAP/SMTP configuration, inbound thread routing, outbound replies, and attachment-aware metadata.
+- Add auth/secret validation, bounded body and attachment handling, delivery audit, retries, operator visibility, and docs.
+- Keep Discord out of scope unless it becomes a shipped Phantom channel rather than a self-extension story.
+
+Tracking issue: [#21](https://github.com/astev89/codex-phantom/issues/21).
 
 ## Known Constraints
 

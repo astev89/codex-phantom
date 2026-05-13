@@ -25,7 +25,7 @@ Completed or intentionally covered:
 | -------------------------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Web Chat parity            | Mostly complete | Match user-visible Phantom chat capabilities without requiring exact 32-event wire protocol compatibility. Remaining gaps: service-worker push, offline cache only if needed, and any discovered product behavior not yet covered.                                                                               |
 | Slack parity               | Mostly complete | App mentions, DMs, channel/group mentions, reactions, thread replies, progressive updates, status reactions, feedback buttons, and reaction feedback are implemented. Remaining gaps are polish-level unless a new Phantom Slack behavior is discovered.                                                         |
-| Channel parity             | Partial         | Slack, Web Chat, signed webhook, and future discovered non-Telegram Phantom channels are in scope. Telegram is excluded.                                                                                                                                                                                         |
+| Channel parity             | Partial         | Slack, Web Chat, signed webhook, and Email are in scope. Telegram is excluded. Recompare found Phantom's built-in Email channel as the remaining non-Telegram channel gap; Discord appears as a self-extension story, not a shipped built-in channel.                                                            |
 | Operator onboarding parity | Mostly complete | Bundled YAML role/operator config files, first-run readiness checks, startup YAML role-policy loading, and admin source/status visibility exist. Magic-link auth is not required for this internal project. Remaining gaps are polish-level unless new Phantom setup behavior is discovered.                     |
 | Managed memory parity      | Mostly complete | Contradiction/supersession lifecycle links, restart-safe scheduled maintenance, deterministic summarization/promotion, bounded active-row pruning, decay/reinforcement scoring, and hybrid retrieval ranking are implemented. Remaining gaps are polish-level unless new Phantom memory behavior is discovered.  |
 | Governed self-evolution    | Mostly complete | Durable proposal records, operator APIs, agent proposal tool, approval/rejection, high-risk confirmation, operator-settings apply, rollback metadata, mutation audit, and malformed/direct-apply rejection are implemented. Remaining gaps: safe mutation classes for prompts, memory policy, tools, and roles.  |
@@ -42,4 +42,13 @@ Completed or intentionally covered:
 
 ## Priority Order
 
-1. Newly discovered non-Telegram channel gaps.
+1. Email channel parity ([#21](https://github.com/astev89/codex-phantom/issues/21)).
+
+## Channel Recompare Evidence
+
+2026-05-13 recompare notes:
+
+- Phantom built-ins found through GitNexus/source scan: Slack, Web Chat, Webhook, Telegram, and Email.
+- Telegram remains explicitly excluded.
+- Email is in scope: Phantom `src/channels/email.ts` implements IMAP IDLE inbound polling, SMTP outbound replies, thread headers, HTML formatting, and attachment-capable channel metadata. Tracked as [#21](https://github.com/astev89/codex-phantom/issues/21).
+- Discord was mentioned in Phantom's README as an example of self-extension, but no built-in Discord channel was found in source. No ADR carve-out is needed unless Discord becomes a shipped Phantom channel.
