@@ -44,6 +44,12 @@ import {
   type ChatArtifactRecord,
   type ChatArtifactKind,
 } from "../chat/artifact-store.ts";
+import {
+  extractArtifactDraftsFromEvent,
+  extractArtifactDraftsFromOutputText,
+  MAX_EXTRACTED_ARTIFACTS_PER_RUN,
+  type ExtractedArtifactDraft,
+} from "../chat/artifact-extraction.ts";
 import { ChatWireEventBuilder, formatSseEvent } from "../chat/wire-events.ts";
 import { McpServer } from "../mcp/server.ts";
 import { McpAuditStore } from "../mcp/audit.ts";
@@ -974,12 +980,29 @@ export class HttpServer {
           conversationId: body.conversationId ?? "web-chat",
           attachmentCount: body.attachments?.length ?? 0,
         });
+        const extractedArtifacts: ExtractedArtifactDraft[] = [];
+        const collectExtractedArtifacts = (
+          drafts: ExtractedArtifactDraft[]
+        ): void => {
+          for (const draft of drafts) {
+            if (extractedArtifacts.length >= MAX_EXTRACTED_ARTIFACTS_PER_RUN) {
+              return;
+            }
+            extractedArtifacts.push(draft);
+          }
+        };
         const emit = (event: AgentRunEvent): void => {
           emitWire("agent.event", event as unknown as JsonValue, {
             sessionId: "sessionId" in event ? event.sessionId : undefined,
             runId: event.runId,
             rawEvent: event,
           });
+          collectExtractedArtifacts(
+            extractArtifactDraftsFromEvent(
+              event,
+              MAX_EXTRACTED_ARTIFACTS_PER_RUN - extractedArtifacts.length
+            )
+          );
         };
         try {
           const result = await this.orchestration.runCoordinator(
@@ -1024,6 +1047,17 @@ export class HttpServer {
               body.attachments
             );
           }
+          collectExtractedArtifacts(
+            extractArtifactDraftsFromOutputText(
+              result.outputText,
+              MAX_EXTRACTED_ARTIFACTS_PER_RUN - extractedArtifacts.length
+            )
+          );
+          const persistedArtifacts = await this.persistExtractedArtifacts(
+            result.sessionId,
+            result.runId,
+            extractedArtifacts
+          );
           emit({
             type: "final",
             runId: result.runId,
@@ -1033,6 +1067,7 @@ export class HttpServer {
             "run.completed",
             {
               outputText: result.outputText,
+              artifacts: persistedArtifacts.map(toArtifactSummary),
             },
             {
               sessionId: result.sessionId,
@@ -1751,6 +1786,33 @@ export class HttpServer {
     if (!run) {
       throw new HttpError(404, "Run not found for chat session");
     }
+  }
+
+  private async persistExtractedArtifacts(
+    sessionId: string,
+    runId: string,
+    drafts: ExtractedArtifactDraft[]
+  ): Promise<ChatArtifactRecord[]> {
+    const artifacts: ChatArtifactRecord[] = [];
+    for (const draft of drafts) {
+      const id = createId("art");
+      const blob = await this.chatBlobs.write(id, draft.content);
+      artifacts.push(
+        await this.chatArtifacts.create({
+          id,
+          sessionId,
+          runId,
+          title: draft.title,
+          kind: draft.kind,
+          contentType: draft.contentType,
+          sizeBytes: blob.sizeBytes,
+          storagePath: blob.storagePath,
+          sha256: blob.sha256,
+          metadata: draft.metadata,
+        })
+      );
+    }
+    return artifacts;
   }
 
   private json(res: ServerResponse, status: number, body: unknown): void {

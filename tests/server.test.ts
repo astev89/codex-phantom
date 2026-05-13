@@ -57,7 +57,53 @@ class FakeAdapter implements AgentAdapter {
     request: AgentRunRequest,
     onEvent: (event: AgentRunEvent) => Promise<void> | void
   ): Promise<AgentRunResult> {
-    const outputText = `assistant:${request.messages.at(-1)?.content ?? ""}`;
+    const lastMessage = request.messages.at(-1);
+    const lastContent = lastMessage?.content ?? "";
+    if (
+      lastMessage?.role === "user" &&
+      lastContent === "create automatic artifact"
+    ) {
+      return {
+        runId: request.runId,
+        outputText: "",
+        transcript: request.messages,
+        toolCalls: [
+          {
+            toolCallId: "tool_auto_artifact",
+            toolName: "echo.summary",
+            argumentsText: JSON.stringify({
+              artifacts: [
+                {
+                  title: "Auto Summary",
+                  kind: "text",
+                  contentType: "text/markdown",
+                  content: "# Auto\nGenerated",
+                  metadata: { scenario: "tool-output" },
+                },
+                {
+                  title: "Ignored Binary",
+                  kind: "file",
+                  contentType: "application/octet-stream",
+                  content: "unsafe",
+                },
+              ],
+            }),
+          },
+        ],
+      };
+    }
+
+    const outputText =
+      lastMessage?.role === "tool"
+        ? JSON.stringify({
+            artifact: {
+              title: "Final Structured Artifact",
+              kind: "json",
+              contentType: "application/json",
+              content: { ok: true },
+            },
+          })
+        : `assistant:${lastContent}`;
     await onEvent({
       type: "init",
       runId: request.runId,
@@ -994,6 +1040,104 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assert.equal(
       linkedAttachment.downloadUrl,
       `/chat/attachments/${uploadedAttachment.id}`
+    );
+
+    const autoArtifactStreamResponse = await fetch(
+      `http://127.0.0.1:${port}/chat/message`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          sessionId: webSession.sessionId,
+          message: "create automatic artifact",
+        }),
+      }
+    );
+    const autoArtifactStreamText = await autoArtifactStreamResponse.text();
+    assert.match(autoArtifactStreamText, /Auto Summary/);
+    assert.match(autoArtifactStreamText, /Final Structured Artifact/);
+
+    const sessionWithAutoArtifactsResponse = await fetch(
+      `http://127.0.0.1:${port}/chat/sessions/${webSession.sessionId}`,
+      {
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
+    const sessionWithAutoArtifactsJson =
+      (await sessionWithAutoArtifactsResponse.json()) as {
+        artifacts: Array<{
+          id: string;
+          runId?: string;
+          title: string;
+          kind: string;
+          contentType: string;
+          sizeBytes: number;
+          sha256: string;
+          downloadUrl: string;
+          metadata: {
+            autoExtracted?: boolean;
+            source?: {
+              sourceType?: string;
+              toolName?: string;
+              toolCallId?: string;
+            };
+            originalMetadata?: { scenario?: string } | null;
+          };
+        }>;
+      };
+    const autoSummaryArtifact = sessionWithAutoArtifactsJson.artifacts.find(
+      (artifact) => artifact.title === "Auto Summary"
+    );
+    assert.ok(autoSummaryArtifact);
+    assert.ok(autoSummaryArtifact.runId?.startsWith("coord_"));
+    assert.equal(autoSummaryArtifact.kind, "text");
+    assert.equal(autoSummaryArtifact.contentType, "text/markdown");
+    assert.equal(
+      autoSummaryArtifact.sizeBytes,
+      Buffer.byteLength("# Auto\nGenerated")
+    );
+    assert.equal(
+      autoSummaryArtifact.sha256,
+      createHash("sha256").update("# Auto\nGenerated").digest("hex")
+    );
+    assert.equal(autoSummaryArtifact.metadata.autoExtracted, true);
+    assert.equal(autoSummaryArtifact.metadata.source?.sourceType, "tool_event");
+    assert.equal(autoSummaryArtifact.metadata.source?.toolName, "echo.summary");
+    assert.equal(
+      autoSummaryArtifact.metadata.source?.toolCallId,
+      "tool_auto_artifact"
+    );
+    assert.equal(
+      autoSummaryArtifact.metadata.originalMetadata?.scenario,
+      "tool-output"
+    );
+    assert.ok(
+      sessionWithAutoArtifactsJson.artifacts.some(
+        (artifact) =>
+          artifact.title === "Final Structured Artifact" &&
+          artifact.kind === "json" &&
+          artifact.metadata.source?.sourceType === "final_output"
+      )
+    );
+    assert.ok(
+      sessionWithAutoArtifactsJson.artifacts.every(
+        (artifact) => artifact.title !== "Ignored Binary"
+      )
+    );
+
+    const autoArtifactDownloadResponse = await fetch(
+      `${baseUrl}/chat/artifacts/${autoSummaryArtifact.id}`,
+      {
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
+    assert.equal(autoArtifactDownloadResponse.status, 200);
+    assert.equal(
+      await autoArtifactDownloadResponse.text(),
+      "# Auto\nGenerated"
     );
 
     const artifactResponse = await fetch(`${baseUrl}/chat/artifacts`, {

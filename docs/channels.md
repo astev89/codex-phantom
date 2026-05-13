@@ -38,6 +38,7 @@ The chat app supports:
 - markdown rendering for common headings, emphasis, links, and code blocks;
 - durable uploaded attachments for existing sessions, with metadata fallback for first-message files;
 - explicit generated artifact records;
+- automatic artifact extraction from selected tool outputs and final structured output envelopes;
 - browser notification permission prompts;
 - automatic session titles derived from the first user message.
 
@@ -58,9 +59,11 @@ Continuity APIs:
 - `POST /chat/artifacts`: create an explicit artifact with `sessionId`, optional `runId`, `title`, `kind`, `contentType`, `content`, and optional `metadata`.
 - `GET /chat/artifacts/:id`: authenticated artifact download.
 
+Automatic extraction accepts bounded JSON envelopes shaped as `artifact` or `artifacts` from successful tool output events and final structured output text. Extracted records are linked to the source session/run, tagged with source metadata, capped at five artifacts and 1 MB each, and limited to safe text-like or JSON content types.
+
 Uploaded blobs are stored under `CODEX_PHANTOM_DATA_DIR/chat-blobs/` with generated storage names. SQLite stores user filename, content type, size, SHA-256, session/run linkage, and timestamps. Artifact `kind` is one of `text`, `json`, or `file`.
 
-This surface still does not register a service worker, searchable attachment contents, automatic artifact extraction, or Phantom's full 32-event browser wire protocol.
+This surface still does not register a service worker, searchable attachment contents, or Phantom's full 32-event browser wire protocol.
 
 ## Inbound Webhook Channel
 
