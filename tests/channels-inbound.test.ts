@@ -22,6 +22,12 @@ import {
   validateSlackRequest,
   type SlackEventsPayload,
 } from "../src/channels/slack-events.ts";
+import {
+  SlackFeedbackStore,
+  mapSlackInteractionFeedback,
+  mapSlackReactionFeedback,
+  slackFeedbackBlocks,
+} from "../src/channels/slack-feedback.ts";
 
 class RecordingSlackTransport implements SlackTransport {
   readonly messages: Array<{
@@ -417,6 +423,97 @@ test("slack channel supports message updates, reactions, and block payloads", as
         .filter((delivery) => delivery.status === "delivered").length,
       4
     );
+  } finally {
+    database.close();
+  }
+});
+
+test("slack feedback helpers map buttons and reactions and dedupe records", async () => {
+  const dataDir = await mkdtemp(
+    join(tmpdir(), "codex-phantom-slack-feedback-")
+  );
+  const database = new AppDatabase(join(dataDir, "feedback.sqlite"));
+  const inbound = new InboundChannelEventStore(database);
+  const feedback = new SlackFeedbackStore(database);
+
+  try {
+    const blocks = slackFeedbackBlocks("inbound_123");
+    assert.equal(blocks[0]?.type, "actions");
+    assert.ok(JSON.stringify(blocks).includes("codex_feedback_positive"));
+    assert.ok(JSON.stringify(blocks).includes("codex_feedback_negative"));
+
+    const interaction = mapSlackInteractionFeedback({
+      type: "block_actions",
+      user: { id: "U123" },
+      channel: { id: "C123" },
+      container: { message_ts: "1713900000.000200" },
+      message: { thread_ts: "1713900000.000100" },
+      actions: [
+        {
+          action_id: "codex_feedback_positive",
+          value: "inbound_123",
+          action_ts: "1713900001.000000",
+        },
+      ],
+    });
+    assert.equal(interaction?.inboundEventId, "inbound_123");
+    assert.equal(interaction?.rating, "positive");
+    assert.equal(interaction?.messageTs, "1713900000.000200");
+
+    const reactionPayload: SlackEventsPayload = {
+      type: "event_callback",
+      event_id: "EvFeedback",
+      event: {
+        type: "reaction_added",
+        user: "U456",
+        reaction: "thumbsdown",
+        item: { channel: "C123", ts: "1713900000.000200" },
+      },
+    };
+    const reaction = mapSlackReactionFeedback(reactionPayload);
+    assert.equal(reaction?.providerEventId, "EvFeedback");
+    assert.equal(reaction?.rating, "negative");
+    assert.equal(
+      mapSlackReactionFeedback({
+        ...reactionPayload,
+        event_id: "EvNonFeedback",
+        event: { ...reactionPayload.event, reaction: "eyes" },
+      }),
+      null
+    );
+
+    const inboundRecord = inbound.recordReceived({
+      channelId: "slack",
+      providerEventId: "EvInbound",
+      conversationId: "slack:C123:1713900000.000100",
+      senderId: "U123",
+      message: "hello",
+      rawPayload: { event_id: "EvInbound" },
+    });
+    const first = feedback.record({
+      inboundEvent: inboundRecord.record,
+      channelId: "slack",
+      providerEventId: interaction?.providerEventId ?? "interaction",
+      rating: "positive",
+      source: "button",
+      userId: interaction?.userId,
+      slackChannel: interaction?.slackChannel,
+      messageTs: interaction?.messageTs,
+      threadTs: interaction?.threadTs,
+      rawPayload: { type: "block_actions" },
+    });
+    const second = feedback.record({
+      inboundEvent: inboundRecord.record,
+      channelId: "slack",
+      providerEventId: interaction?.providerEventId ?? "interaction",
+      rating: "positive",
+      source: "button",
+      rawPayload: { type: "block_actions" },
+    });
+    assert.equal(first.duplicate, false);
+    assert.equal(second.duplicate, true);
+    assert.equal(feedback.summary().positive, 1);
+    assert.equal(feedback.summary().negative, 0);
   } finally {
     database.close();
   }

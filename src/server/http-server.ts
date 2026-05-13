@@ -19,6 +19,12 @@ import {
   type InboundResponseTarget,
 } from "../channels/inbound.ts";
 import {
+  SlackFeedbackStore,
+  mapSlackInteractionFeedback,
+  mapSlackReactionFeedback,
+  slackFeedbackBlocks,
+} from "../channels/slack-feedback.ts";
+import {
   mapSlackEventToInboundMessage,
   validateSlackRequest,
   type SlackEventsPayload,
@@ -88,6 +94,7 @@ export class HttpServer {
   private readonly channels: ChannelRegistry;
   private readonly channelDeliveries: ChannelDeliveryStore;
   private readonly channelInbound: InboundChannelEventStore;
+  private readonly slackFeedback: SlackFeedbackStore;
   private readonly inboundRouter: InboundChannelRouter;
   private readonly chatBlobs: ChatBlobStore;
   private readonly chatArtifacts: ChatArtifactStore;
@@ -130,6 +137,7 @@ export class HttpServer {
     this.channels = channels;
     this.channelDeliveries = new ChannelDeliveryStore(database);
     this.channelInbound = new InboundChannelEventStore(database);
+    this.slackFeedback = new SlackFeedbackStore(database);
     this.inboundRouter = new InboundChannelRouter(
       channels,
       this.channelInbound,
@@ -228,6 +236,7 @@ export class HttpServer {
           channels: this.channels.summary(),
           channelDeliveries: this.channelDeliveries.summary(),
           channelInbound: this.channelInbound.summary(),
+          channelFeedback: this.slackFeedback.summary(),
           governance: this.governance.summary(),
           settings: this.settings.get(),
           metrics: this.metrics.snapshot(),
@@ -263,6 +272,7 @@ export class HttpServer {
           },
           channelDeliveries: this.channelDeliveries.summary(),
           channelInbound: this.channelInbound.summary(),
+          channelFeedback: this.slackFeedback.summary(),
           governance: this.governance.summary(),
           settings: this.settings.get(),
           requestAudits: { recent: this.requestAudits.list(10).length },
@@ -385,6 +395,16 @@ export class HttpServer {
             channelId,
             limit: limit ? Number(limit) : undefined,
           }),
+        });
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/admin/channels/feedback") {
+        this.requireOperatorAuth(req);
+        const limit = url.searchParams.get("limit");
+        this.json(res, 200, {
+          feedback: this.slackFeedback.list(limit ? Number(limit) : 50),
+          summary: this.slackFeedback.summary(),
         });
         return;
       }
@@ -839,6 +859,33 @@ export class HttpServer {
           this.json(res, 200, { challenge: payload.challenge });
           return;
         }
+        const reactionFeedback = mapSlackReactionFeedback(payload);
+        if (reactionFeedback?.messageTs) {
+          const inboundEvent = this.channelInbound.findBySlackMessageTs(
+            reactionFeedback.messageTs
+          );
+          if (inboundEvent) {
+            const recorded = this.slackFeedback.record({
+              inboundEvent,
+              channelId: "slack",
+              providerEventId: reactionFeedback.providerEventId,
+              rating: reactionFeedback.rating,
+              source: "reaction",
+              userId: reactionFeedback.userId,
+              slackChannel: reactionFeedback.slackChannel,
+              messageTs: reactionFeedback.messageTs,
+              threadTs: reactionFeedback.threadTs,
+              rawPayload: reactionFeedback.rawPayload,
+            });
+            this.json(res, 202, {
+              requestId,
+              status: recorded.duplicate ? "duplicate" : "feedback",
+              duplicate: recorded.duplicate,
+              feedback: recorded.record,
+            });
+            return;
+          }
+        }
         const message = mapSlackEventToInboundMessage(payload, {
           botUserId: this.config.slackBotUserId,
         });
@@ -869,10 +916,7 @@ export class HttpServer {
             ) {
               await progressReporter?.completed(record.outputText);
             }
-            await this.deliverInboundResponse(
-              record.responseTarget,
-              record.outputText
-            );
+            await this.deliverInboundResponse(record);
           },
           onFailure: async (record) => {
             if (record.responseTarget?.type === "slack_thread") {
@@ -892,6 +936,62 @@ export class HttpServer {
           inboundEventId: routed.record.id,
           status: routed.duplicate ? "duplicate" : "accepted",
           duplicate: routed.duplicate,
+        });
+        return;
+      }
+
+      if (
+        req.method === "POST" &&
+        url.pathname === "/channels/slack/interactions"
+      ) {
+        const rawBody = await readTextBody(req);
+        if (!this.config.slackSigningSecret) {
+          throw new HttpError(
+            412,
+            "SLACK_SIGNING_SECRET is required for Slack interactions"
+          );
+        }
+        const request = toRequest(req, rawBody);
+        if (
+          !validateSlackRequest(
+            request.headers,
+            this.config.slackSigningSecret,
+            rawBody
+          )
+        ) {
+          throw new HttpError(401, "Unauthorized");
+        }
+        const payloadText = new URLSearchParams(rawBody).get("payload");
+        if (!payloadText) {
+          throw new HttpError(400, "Slack interaction payload is required");
+        }
+        const payload = parseJsonBody(payloadText) as Record<string, unknown>;
+        const feedback = mapSlackInteractionFeedback(payload);
+        if (!feedback) {
+          this.json(res, 200, { requestId, status: "ignored" });
+          return;
+        }
+        const inboundEvent = this.channelInbound.get(feedback.inboundEventId);
+        if (!inboundEvent) {
+          throw new HttpError(404, "Inbound event not found for feedback");
+        }
+        const recorded = this.slackFeedback.record({
+          inboundEvent,
+          channelId: "slack",
+          providerEventId: feedback.providerEventId,
+          rating: feedback.rating,
+          source: "button",
+          userId: feedback.userId,
+          slackChannel: feedback.slackChannel,
+          messageTs: feedback.messageTs,
+          threadTs: feedback.threadTs,
+          rawPayload: payload as JsonValue,
+        });
+        this.json(res, 200, {
+          requestId,
+          status: recorded.duplicate ? "duplicate" : "recorded",
+          duplicate: recorded.duplicate,
+          feedback: recorded.record,
         });
         return;
       }
@@ -1067,6 +1167,7 @@ export class HttpServer {
           items: [
             ...this.channelDeliveries.list(undefined, 250),
             ...this.channelInbound.list({ limit: 250 }),
+            ...this.slackFeedback.list(250),
           ],
         };
       case "governance":
@@ -1101,26 +1202,35 @@ export class HttpServer {
             ...this.requestAudits.list(50),
             ...this.channelDeliveries.list(undefined, 50),
             ...this.channelInbound.list({ limit: 50 }),
+            ...this.slackFeedback.list(50),
             ...this.governance.listAudit(50),
           ],
         };
     }
   }
 
-  private async deliverInboundResponse(
-    target: InboundResponseTarget | undefined,
-    outputText: string | undefined
-  ): Promise<void> {
+  private async deliverInboundResponse(record: {
+    id: string;
+    responseTarget?: InboundResponseTarget;
+    outputText?: string;
+  }): Promise<void> {
+    const target = record.responseTarget;
+    const outputText = record.outputText;
     if (!target || !outputText) {
       return;
     }
     if (target.type === "slack_thread") {
       try {
-        await this.slack.sendMessage({
+        const delivered = await this.slack.sendMessage({
           channel: target.channel,
           text: outputText,
           threadTs: target.threadTs,
+          blocks: slackFeedbackBlocks(record.id),
         });
+        this.channelInbound.recordSlackResponseMessage(
+          record.id,
+          delivered.result.ts
+        );
       } catch (error) {
         if (this.shouldIgnoreInboundResponseDeliveryError(error)) {
           this.logger.warn("inbound_response_delivery_skipped", {

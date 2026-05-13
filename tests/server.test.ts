@@ -34,7 +34,11 @@ import {
   makeDisabledEmbeddings,
   makeFakeVectorStore,
 } from "./helpers.ts";
-import { SlackChannel, type SlackTransport } from "../src/channels/slack.ts";
+import {
+  SlackChannel,
+  type SlackBlock,
+  type SlackTransport,
+} from "../src/channels/slack.ts";
 import { ChannelDeliveryStore } from "../src/channels/delivery-log.ts";
 
 class FakeAdapter implements AgentAdapter {
@@ -91,9 +95,18 @@ class FakeAdapter implements AgentAdapter {
 }
 
 class FakeSlackTransport implements SlackTransport {
-  readonly sent: Array<{ channel: string; text: string; threadTs?: string }> =
-    [];
-  readonly updated: Array<{ channel: string; ts: string; text: string }> = [];
+  readonly sent: Array<{
+    channel: string;
+    text: string;
+    threadTs?: string;
+    blocks?: SlackBlock[];
+  }> = [];
+  readonly updated: Array<{
+    channel: string;
+    ts: string;
+    text: string;
+    blocks?: SlackBlock[];
+  }> = [];
   readonly reactions: Array<{
     channel: string;
     timestamp: string;
@@ -129,6 +142,7 @@ class FakeSlackTransport implements SlackTransport {
     channel: string;
     text: string;
     threadTs?: string;
+    blocks?: SlackBlock[];
   }): Promise<{
     ok: boolean;
     ts?: string;
@@ -138,8 +152,13 @@ class FakeSlackTransport implements SlackTransport {
   }> {
     this.sent.push(
       input.threadTs
-        ? { channel: input.channel, text: input.text, threadTs: input.threadTs }
-        : { channel: input.channel, text: input.text }
+        ? {
+            channel: input.channel,
+            text: input.text,
+            threadTs: input.threadTs,
+            blocks: input.blocks,
+          }
+        : { channel: input.channel, text: input.text, blocks: input.blocks }
     );
     return (
       this.responses.shift() ?? {
@@ -155,11 +174,13 @@ class FakeSlackTransport implements SlackTransport {
     channel: string;
     ts: string;
     text: string;
+    blocks?: SlackBlock[];
   }) {
     this.updated.push({
       channel: input.channel,
       ts: input.ts,
       text: input.text,
+      blocks: input.blocks,
     });
     return (
       this.responses.shift() ?? { ok: true, ts: input.ts, statusCode: 200 }
@@ -1348,9 +1369,11 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assert.equal(slackMessageJson.delivery.destination, "C123456");
     assert.equal(slackMessageJson.delivery.attemptCount, 1);
     assert.equal(slackMessageJson.result.ts, "1713900000.000100");
-    assert.deepEqual(slackTransport.sent, [
-      { channel: "C123456", text: "hello from codex-phantom" },
-    ]);
+    assert.deepEqual(slackTransport.sent[0], {
+      channel: "C123456",
+      text: "hello from codex-phantom",
+      blocks: undefined,
+    });
 
     const slackEventBody = JSON.stringify({
       type: "event_callback",
@@ -1454,6 +1477,126 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
           message.text === "assistant:hello from slack"
       )
     );
+    const finalSlackReply = slackTransport.sent.find(
+      (message) =>
+        message.channel === "C123456" &&
+        message.threadTs === "1713900001.000000" &&
+        message.text === "assistant:hello from slack"
+    );
+    assert.ok(finalSlackReply?.blocks);
+    assert.ok(
+      finalSlackReply.blocks.some((block) =>
+        JSON.stringify(block).includes(slackEventJson.inboundEventId)
+      )
+    );
+
+    const interactionPayload = {
+      type: "block_actions",
+      user: { id: "U123" },
+      channel: { id: "C123456" },
+      container: { message_ts: "1713900000.000100" },
+      message: {
+        ts: "1713900000.000100",
+        thread_ts: "1713900001.000000",
+      },
+      actions: [
+        {
+          action_id: "codex_feedback_positive",
+          value: slackEventJson.inboundEventId,
+          action_ts: "1713900002.000000",
+        },
+      ],
+    };
+    const interactionBody = new URLSearchParams({
+      payload: JSON.stringify(interactionPayload),
+    }).toString();
+    const interactionResponse = await fetch(
+      `http://127.0.0.1:${port}/channels/slack/interactions`,
+      {
+        method: "POST",
+        headers: signedSlackHeaders(
+          config.slackSigningSecret!,
+          interactionBody
+        ),
+        body: interactionBody,
+      }
+    );
+    const interactionJson = (await interactionResponse.json()) as {
+      status: string;
+      duplicate: boolean;
+      feedback: { rating: string; source: string; inboundEventId: string };
+    };
+    assert.equal(interactionResponse.status, 200);
+    assert.equal(interactionJson.status, "recorded");
+    assert.equal(interactionJson.duplicate, false);
+    assert.equal(interactionJson.feedback.rating, "positive");
+    assert.equal(interactionJson.feedback.source, "button");
+    assert.equal(
+      interactionJson.feedback.inboundEventId,
+      slackEventJson.inboundEventId
+    );
+
+    const duplicateInteractionResponse = await fetch(
+      `http://127.0.0.1:${port}/channels/slack/interactions`,
+      {
+        method: "POST",
+        headers: signedSlackHeaders(
+          config.slackSigningSecret!,
+          interactionBody
+        ),
+        body: interactionBody,
+      }
+    );
+    const duplicateInteractionJson =
+      (await duplicateInteractionResponse.json()) as {
+        status: string;
+        duplicate: boolean;
+      };
+    assert.equal(duplicateInteractionResponse.status, 200);
+    assert.equal(duplicateInteractionJson.status, "duplicate");
+    assert.equal(duplicateInteractionJson.duplicate, true);
+
+    const invalidInteractionResponse = await fetch(
+      `http://127.0.0.1:${port}/channels/slack/interactions`,
+      {
+        method: "POST",
+        headers: signedSlackHeaders("wrong-secret", interactionBody),
+        body: interactionBody,
+      }
+    );
+    assert.equal(invalidInteractionResponse.status, 401);
+
+    const reactionFeedbackBody = JSON.stringify({
+      type: "event_callback",
+      event_id: "EvFeedbackReaction",
+      event: {
+        type: "reaction_added",
+        user: "U456",
+        reaction: "thumbsdown",
+        item: { channel: "C123456", ts: "1713900000.000100" },
+      },
+    });
+    const reactionFeedbackResponse = await fetch(
+      `http://127.0.0.1:${port}/channels/slack/events`,
+      {
+        method: "POST",
+        headers: signedSlackHeaders(
+          config.slackSigningSecret!,
+          reactionFeedbackBody
+        ),
+        body: reactionFeedbackBody,
+      }
+    );
+    const reactionFeedbackJson = (await reactionFeedbackResponse.json()) as {
+      status: string;
+      duplicate: boolean;
+      feedback: { rating: string; source: string; inboundEventId: string };
+    };
+    assert.equal(reactionFeedbackResponse.status, 202);
+    assert.equal(reactionFeedbackJson.status, "feedback");
+    assert.equal(reactionFeedbackJson.duplicate, false);
+    assert.equal(reactionFeedbackJson.feedback.rating, "negative");
+    assert.equal(reactionFeedbackJson.feedback.source, "reaction");
 
     const duplicateSlackEventResponse = await fetch(
       `http://127.0.0.1:${port}/channels/slack/events`,
@@ -1518,6 +1661,11 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
         failed: number;
         recentFailed: unknown[];
       };
+      channelFeedback: {
+        positive: number;
+        negative: number;
+        recent: Array<{ rating: string; source: string }>;
+      };
       settings: { dashboardRefreshSeconds: number };
       channels: Array<{ id: string; enabled: boolean }>;
     };
@@ -1529,10 +1677,43 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assert.deepEqual(adminSummaryJson.channelDeliveries.recentFailed, []);
     assert.ok(adminSummaryJson.channelInbound.completed >= 2);
     assert.deepEqual(adminSummaryJson.channelInbound.recentFailed, []);
+    assert.ok(adminSummaryJson.channelFeedback.positive >= 1);
+    assert.ok(adminSummaryJson.channelFeedback.negative >= 1);
+    assert.ok(
+      adminSummaryJson.channelFeedback.recent.some(
+        (feedback) =>
+          feedback.rating === "positive" && feedback.source === "button"
+      )
+    );
     assert.equal(adminSummaryJson.settings.dashboardRefreshSeconds, 5);
     assert.ok(
       adminSummaryJson.channels.some(
         (channel) => channel.id === "slack" && channel.enabled === true
+      )
+    );
+
+    const feedbackResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/channels/feedback`,
+      {
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
+    const feedbackJson = (await feedbackResponse.json()) as {
+      feedback: Array<{
+        rating: string;
+        source: string;
+        inboundEventId?: string;
+      }>;
+      summary: { positive: number; negative: number };
+    };
+    assert.equal(feedbackResponse.status, 200);
+    assert.ok(feedbackJson.summary.positive >= 1);
+    assert.ok(feedbackJson.summary.negative >= 1);
+    assert.ok(
+      feedbackJson.feedback.some(
+        (feedback) =>
+          feedback.inboundEventId === slackEventJson.inboundEventId &&
+          feedback.source === "button"
       )
     );
 

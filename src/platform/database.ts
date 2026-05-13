@@ -227,6 +227,24 @@ export class AppDatabase {
         FOREIGN KEY (inbound_event_id) REFERENCES inbound_channel_events(id)
       );
 
+      CREATE TABLE IF NOT EXISTS inbound_channel_feedback (
+        id TEXT PRIMARY KEY,
+        inbound_event_id TEXT,
+        channel_id TEXT NOT NULL,
+        provider_event_id TEXT NOT NULL,
+        rating TEXT NOT NULL,
+        source TEXT NOT NULL,
+        user_id TEXT,
+        slack_channel TEXT,
+        message_ts TEXT,
+        thread_ts TEXT,
+        run_id TEXT,
+        raw_payload_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE(channel_id, provider_event_id),
+        FOREIGN KEY (inbound_event_id) REFERENCES inbound_channel_events(id)
+      );
+
       CREATE TABLE IF NOT EXISTS operator_settings (
         id TEXT PRIMARY KEY,
         settings_json TEXT NOT NULL,
@@ -267,6 +285,8 @@ export class AppDatabase {
       CREATE INDEX IF NOT EXISTS idx_inbound_channel_events_channel_id ON inbound_channel_events(channel_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_inbound_channel_events_status ON inbound_channel_events(status, updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_inbound_channel_progress_event ON inbound_channel_progress(inbound_event_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_inbound_channel_feedback_event ON inbound_channel_feedback(inbound_event_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_inbound_channel_feedback_channel ON inbound_channel_feedback(channel_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_operator_settings_updated_at ON operator_settings(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_request_audit_logs_created_at ON request_audit_logs(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_mcp_audit_logs_created_at ON mcp_audit_logs(created_at DESC);
@@ -340,6 +360,12 @@ export class AppDatabase {
       "TEXT"
     );
     ensureColumn(this.db, "inbound_channel_events", "status_reaction", "TEXT");
+    ensureColumn(
+      this.db,
+      "inbound_channel_events",
+      "slack_response_message_ts",
+      "TEXT"
+    );
 
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_memory_entries_summary ON memory_entries(is_summary, category, created_at DESC);

@@ -124,6 +124,22 @@ During execution, Slack runs post a progress message in the target thread, updat
 - `white_check_mark`: completed
 - `x`: failed
 
-Slack progress updates and reactions are delivery side effects. Failures are recorded in channel delivery/progress state for operator visibility, but they do not change an already-sent Slack HTTP ack and do not fail an otherwise successful coordinator run. On completion, `codex-phantom` still posts the final assistant output as a thread reply when `SLACK_BOT_TOKEN` is available.
+Slack progress updates and reactions are delivery side effects. Failures are recorded in channel delivery/progress state for operator visibility, but they do not change an already-sent Slack HTTP ack and do not fail an otherwise successful coordinator run. On completion, `codex-phantom` still posts the final assistant output as a thread reply when `SLACK_BOT_TOKEN` is available and includes feedback buttons on that final reply.
 
-Feedback buttons and reaction feedback handling remain follow-up work.
+### Slack Feedback
+
+`POST /channels/slack/interactions` accepts Slack interactive payloads for feedback buttons when `SLACK_SIGNING_SECRET` is configured. Slack signs this form-encoded request with the same `x-slack-request-timestamp` and `x-slack-signature` contract as Events API requests. The `payload` form field must contain Slack's `block_actions` JSON.
+
+Final Slack replies include two Block Kit buttons:
+
+- `Helpful`: records positive feedback.
+- `Needs work`: records negative feedback.
+
+Feedback is stored in SQLite with channel, provider event, user, Slack channel, message/thread timestamp, inbound event, optional run ID, raw payload, and creation time. Duplicate Slack action IDs for the same inbound event/user/action timestamp are deduped. Operators can inspect feedback through `GET /admin/channels/feedback`; `/admin/summary`, channel exports, and timeline exports include recent feedback.
+
+Selected `reaction_added` events are also treated as feedback when the reaction targets a known Slack response or progress message:
+
+- positive: `thumbsup`, `white_check_mark`, `heavy_plus_sign`
+- negative: `thumbsdown`, `x`, `warning`
+
+If the reaction does not target a known response/progress message, normal Slack reaction routing still applies and can trigger a coordinator run.

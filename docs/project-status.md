@@ -14,6 +14,26 @@ The project is now past its first serious production-hardening pass. It is not y
 
 ## Just Completed
 
+Slack feedback wave completed locally on 2026-05-13:
+
+- Added signed Slack interaction handling for final-reply feedback buttons.
+- Added durable Slack feedback records with inbound event, run, channel, user, message/thread, provider event, and raw payload context.
+- Mapped selected Slack reactions on known response/progress messages into feedback records without stealing unrelated reaction-triggered runs.
+- Added operator visibility through `/admin/channels/feedback`, `/admin/summary`, channel exports, and timeline exports.
+- Kept duplicate Slack feedback events idempotent and invalid Slack signatures rejected before parsing.
+
+Verification from this wave:
+
+```bash
+node --experimental-strip-types --test tests/channels-inbound.test.ts
+node --experimental-strip-types --test tests/server.test.ts
+npm run typecheck
+npm test
+npm run build
+git diff --check
+GitNexus detect_changes(scope="all")
+```
+
 Slack progress/status wave completed locally on 2026-05-13:
 
 - Expanded Slack transport support beyond `chat.postMessage` to include `chat.update`, `reactions.add`, `reactions.remove`, and Block Kit-ready message payloads.
@@ -174,14 +194,20 @@ npm run build
 
 Use `docs/phantom-parity.md` as the canonical production-level parity roadmap. Keep this section limited to immediate handoff notes and proof gaps.
 
-### P1: Slack Feedback And Reaction Feedback
+### P1: Operator First-Run Readiness
 
 Suggested work:
 
-- Implement `docs/superpowers/plans/2026-05-13-slack-production-parity.md` in mergeable slices.
-- Add signed Slack interaction handling for feedback buttons on final replies.
-- Map selected Slack reactions into durable feedback records with provider event dedupe.
-- Keep Telegram out of scope and keep Slack side-effect failures isolated from already-acked inbound events.
+- Add YAML-first roles/config layering and first-run setup readiness.
+- Validate required operator secrets and channel setup before production boot.
+- Keep magic-link auth out of scope unless the user base changes.
+
+### P2: Managed Memory Continuity
+
+Suggested work:
+
+- Add contradiction and supersession handling before retrieval tuning.
+- Add scheduled consolidation, promote/prune behavior, and operator-visible audit trails.
 
 ## Known Constraints
 

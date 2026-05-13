@@ -71,6 +71,7 @@ export type InboundChannelEventRecord = {
   progressState?: string;
   progressMessageTs?: string;
   statusReaction?: string;
+  slackResponseMessageTs?: string;
   createdAt: string;
   updatedAt: string;
   progress?: InboundChannelProgressRecord[];
@@ -94,6 +95,7 @@ type InboundChannelEventRow = {
   progress_state: string | null;
   progress_message_ts: string | null;
   status_reaction: string | null;
+  slack_response_message_ts: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -168,6 +170,45 @@ export class InboundChannelEventStore {
 
   markFailed(id: string, errorMessage: string): InboundChannelEventRecord {
     return this.updateStatus(id, "failed", { errorMessage });
+  }
+
+  recordSlackResponseMessage(
+    id: string,
+    messageTs: string
+  ): InboundChannelEventRecord {
+    const now = new Date().toISOString();
+    this.database.run(
+      `
+        UPDATE inbound_channel_events
+        SET slack_response_message_ts = ?,
+            updated_at = ?
+        WHERE id = ?
+      `,
+      messageTs,
+      now,
+      id
+    );
+    const record = this.get(id);
+    if (!record) {
+      throw new Error(`Inbound channel event not found: ${id}`);
+    }
+    return record;
+  }
+
+  findBySlackMessageTs(messageTs: string): InboundChannelEventRecord | null {
+    const direct = this.database.get<InboundChannelEventRow>(
+      "SELECT * FROM inbound_channel_events WHERE slack_response_message_ts = ? OR progress_message_ts = ? ORDER BY updated_at DESC LIMIT 1",
+      messageTs,
+      messageTs
+    );
+    if (direct) {
+      return this.withProgress(toRecord(direct));
+    }
+    const progress = this.database.get<{ inbound_event_id: string }>(
+      "SELECT inbound_event_id FROM inbound_channel_progress WHERE message_ts = ? ORDER BY created_at DESC LIMIT 1",
+      messageTs
+    );
+    return progress ? this.get(progress.inbound_event_id) : null;
   }
 
   recordProgress(
@@ -538,6 +579,7 @@ function toRecord(row: InboundChannelEventRow): InboundChannelEventRecord {
     progressState: row.progress_state ?? undefined,
     progressMessageTs: row.progress_message_ts ?? undefined,
     statusReaction: row.status_reaction ?? undefined,
+    slackResponseMessageTs: row.slack_response_message_ts ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
