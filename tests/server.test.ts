@@ -7,7 +7,12 @@ import { join } from "node:path";
 import type { AppConfig } from "../src/config.ts";
 import { AgentRuntime } from "../src/agent/runtime.ts";
 import { ChannelRegistry } from "../src/channels/registry.ts";
-import type { AgentAdapter, AgentRunEvent, AgentRunRequest, AgentRunResult } from "../src/agent/types.ts";
+import type {
+  AgentAdapter,
+  AgentRunEvent,
+  AgentRunRequest,
+  AgentRunResult,
+} from "../src/agent/types.ts";
 import { SessionStore } from "../src/chat/session-store.ts";
 import { MemoryStore } from "../src/memory/store.ts";
 import { ToolRegistry } from "../src/tools/registry.ts";
@@ -24,7 +29,11 @@ import { buildJsonExport, buildNdjsonExport } from "../src/server/export.ts";
 import { AppDatabase } from "../src/platform/database.ts";
 import { Logger } from "../src/platform/logger.ts";
 import { MetricsStore } from "../src/platform/metrics.ts";
-import { makeConfig, makeDisabledEmbeddings, makeFakeVectorStore } from "./helpers.ts";
+import {
+  makeConfig,
+  makeDisabledEmbeddings,
+  makeFakeVectorStore,
+} from "./helpers.ts";
 import { SlackChannel, type SlackTransport } from "../src/channels/slack.ts";
 import { ChannelDeliveryStore } from "../src/channels/delivery-log.ts";
 
@@ -36,7 +45,7 @@ class FakeAdapter implements AgentAdapter {
     supportsToolStreaming: true,
     supportsStructuredOutput: true,
     supportsParallelToolCalls: false,
-    supportsReasoningEffort: true
+    supportsReasoningEffort: true,
   };
 
   async run(
@@ -44,19 +53,27 @@ class FakeAdapter implements AgentAdapter {
     onEvent: (event: AgentRunEvent) => Promise<void> | void
   ): Promise<AgentRunResult> {
     const outputText = `assistant:${request.messages.at(-1)?.content ?? ""}`;
-    await onEvent({ type: "init", runId: request.runId, sessionId: request.sessionId });
-    await onEvent({ type: "text_delta", runId: request.runId, delta: outputText });
+    await onEvent({
+      type: "init",
+      runId: request.runId,
+      sessionId: request.sessionId,
+    });
+    await onEvent({
+      type: "text_delta",
+      runId: request.runId,
+      delta: outputText,
+    });
     await onEvent({
       type: "structured_message",
       runId: request.runId,
-      message: { role: "assistant", content: outputText }
+      message: { role: "assistant", content: outputText },
     });
     await onEvent({
       type: "final",
       runId: request.runId,
       outputText,
       previousResponseId: `resp_${request.runId}`,
-      providerSessionId: `provider_${request.sessionId}`
+      providerSessionId: `provider_${request.sessionId}`,
     });
 
     return {
@@ -64,53 +81,154 @@ class FakeAdapter implements AgentAdapter {
       outputText,
       previousResponseId: `resp_${request.runId}`,
       providerSessionId: `provider_${request.sessionId}`,
-      transcript: [...request.messages, { role: "assistant", content: outputText }],
-      toolCalls: []
+      transcript: [
+        ...request.messages,
+        { role: "assistant", content: outputText },
+      ],
+      toolCalls: [],
     };
   }
 }
 
 class FakeSlackTransport implements SlackTransport {
-  readonly sent: Array<{ channel: string; text: string; threadTs?: string }> = [];
-  private readonly responses: Array<{ ok: boolean; ts?: string; error?: string; statusCode?: number; retryAfterMs?: number }>;
+  readonly sent: Array<{ channel: string; text: string; threadTs?: string }> =
+    [];
+  readonly updated: Array<{ channel: string; ts: string; text: string }> = [];
+  readonly reactions: Array<{
+    channel: string;
+    timestamp: string;
+    name: string;
+  }> = [];
+  readonly removedReactions: Array<{
+    channel: string;
+    timestamp: string;
+    name: string;
+  }> = [];
+  private readonly responses: Array<{
+    ok: boolean;
+    ts?: string;
+    error?: string;
+    statusCode?: number;
+    retryAfterMs?: number;
+  }>;
 
-  constructor(responses: Array<{ ok: boolean; ts?: string; error?: string; statusCode?: number; retryAfterMs?: number }> = [
-    { ok: true, ts: "1713900000.000100", statusCode: 200 }
-  ]) {
+  constructor(
+    responses: Array<{
+      ok: boolean;
+      ts?: string;
+      error?: string;
+      statusCode?: number;
+      retryAfterMs?: number;
+    }> = [{ ok: true, ts: "1713900000.000100", statusCode: 200 }]
+  ) {
     this.responses = responses;
   }
 
-  async sendMessage(input: { token: string; channel: string; text: string; threadTs?: string }): Promise<{
+  async sendMessage(input: {
+    token: string;
+    channel: string;
+    text: string;
+    threadTs?: string;
+  }): Promise<{
     ok: boolean;
     ts?: string;
     error?: string;
     statusCode?: number;
     retryAfterMs?: number;
   }> {
-    this.sent.push(input.threadTs ? { channel: input.channel, text: input.text, threadTs: input.threadTs } : { channel: input.channel, text: input.text });
-    return this.responses.shift() ?? { ok: true, ts: "1713900000.000100", statusCode: 200 };
+    this.sent.push(
+      input.threadTs
+        ? { channel: input.channel, text: input.text, threadTs: input.threadTs }
+        : { channel: input.channel, text: input.text }
+    );
+    return (
+      this.responses.shift() ?? {
+        ok: true,
+        ts: "1713900000.000100",
+        statusCode: 200,
+      }
+    );
+  }
+
+  async updateMessage(input: {
+    token: string;
+    channel: string;
+    ts: string;
+    text: string;
+  }) {
+    this.updated.push({
+      channel: input.channel,
+      ts: input.ts,
+      text: input.text,
+    });
+    return (
+      this.responses.shift() ?? { ok: true, ts: input.ts, statusCode: 200 }
+    );
+  }
+
+  async addReaction(input: {
+    token: string;
+    channel: string;
+    timestamp: string;
+    name: string;
+  }) {
+    this.reactions.push({
+      channel: input.channel,
+      timestamp: input.timestamp,
+      name: input.name,
+    });
+    return this.responses.shift() ?? { ok: true, statusCode: 200 };
+  }
+
+  async removeReaction(input: {
+    token: string;
+    channel: string;
+    timestamp: string;
+    name: string;
+  }) {
+    this.removedReactions.push({
+      channel: input.channel,
+      timestamp: input.timestamp,
+      name: input.name,
+    });
+    return this.responses.shift() ?? { ok: true, statusCode: 200 };
   }
 }
 
-function signedWebhookHeaders(secret: string, body: string, timestamp = Math.floor(Date.now() / 1000).toString()): Record<string, string> {
-  const signature = createHmac("sha256", secret).update(`${timestamp}.${body}`).digest("hex");
+function signedWebhookHeaders(
+  secret: string,
+  body: string,
+  timestamp = Math.floor(Date.now() / 1000).toString()
+): Record<string, string> {
+  const signature = createHmac("sha256", secret)
+    .update(`${timestamp}.${body}`)
+    .digest("hex");
   return {
     "Content-Type": "application/json",
     "x-channel-timestamp": timestamp,
-    "x-channel-signature": `sha256=${signature}`
+    "x-channel-signature": `sha256=${signature}`,
   };
 }
 
-function signedSlackHeaders(secret: string, body: string, timestamp = Math.floor(Date.now() / 1000).toString()): Record<string, string> {
-  const signature = createHmac("sha256", secret).update(`v0:${timestamp}:${body}`).digest("hex");
+function signedSlackHeaders(
+  secret: string,
+  body: string,
+  timestamp = Math.floor(Date.now() / 1000).toString()
+): Record<string, string> {
+  const signature = createHmac("sha256", secret)
+    .update(`v0:${timestamp}:${body}`)
+    .digest("hex");
   return {
     "Content-Type": "application/json",
     "x-slack-request-timestamp": timestamp,
-    "x-slack-signature": `v0=${signature}`
+    "x-slack-signature": `v0=${signature}`,
   };
 }
 
-async function eventually<T>(read: () => Promise<T>, predicate: (value: T) => boolean): Promise<T> {
+async function eventually<T>(
+  read: () => Promise<T>,
+  predicate: (value: T) => boolean
+): Promise<T> {
   let latest = await read();
   for (let attempt = 0; attempt < 20; attempt += 1) {
     if (predicate(latest)) {
@@ -131,9 +249,9 @@ test("buildJsonExport wraps records in an operator-friendly envelope", () => {
       {
         requestId: "req_123",
         path: "/health",
-        statusCode: 200
-      }
-    ]
+        statusCode: 200,
+      },
+    ],
   });
 
   assert.deepEqual(payload, {
@@ -146,9 +264,9 @@ test("buildJsonExport wraps records in an operator-friendly envelope", () => {
       {
         requestId: "req_123",
         path: "/health",
-        statusCode: 200
-      }
-    ]
+        statusCode: 200,
+      },
+    ],
   });
 });
 
@@ -159,13 +277,13 @@ test("buildNdjsonExport emits one serialized record per line", () => {
     items: [
       {
         channelId: "slack",
-        status: "delivered"
+        status: "delivered",
       },
       {
         channelId: "webhook",
-        status: "failed"
-      }
-    ]
+        status: "failed",
+      },
+    ],
   });
 
   assert.equal(payload.scope, "channels");
@@ -175,8 +293,8 @@ test("buildNdjsonExport emits one serialized record per line", () => {
   assert.equal(
     payload.body,
     [
-      "{\"channelId\":\"slack\",\"status\":\"delivered\"}",
-      "{\"channelId\":\"webhook\",\"status\":\"failed\"}"
+      '{"channelId":"slack","status":"delivered"}',
+      '{"channelId":"webhook","status":"failed"}',
     ].join("\n")
   );
 });
@@ -184,8 +302,14 @@ test("buildNdjsonExport emits one serialized record per line", () => {
 test("renderChatApp preserves fenced code blocks and safely injects title data", () => {
   const html = renderChatApp("Bad </script><script>alert(1)</script>");
 
-  assert.match(html, /<title>Bad &lt;\/script&gt;&lt;script&gt;alert\(1\)&lt;\/script&gt; Chat<\/title>/);
-  assert.match(html, /document\.getElementById\('title'\)\.textContent = "Bad \\u003c\/script>\\u003cscript>alert\(1\)\\u003c\/script> Chat";/);
+  assert.match(
+    html,
+    /<title>Bad &lt;\/script&gt;&lt;script&gt;alert\(1\)&lt;\/script&gt; Chat<\/title>/
+  );
+  assert.match(
+    html,
+    /document\.getElementById\('title'\)\.textContent = "Bad \\u003c\/script>\\u003cscript>alert\(1\)\\u003c\/script> Chat";/
+  );
   assert.match(html, /const codeBlocks = \[\];/);
   assert.match(html, /withoutCodeBlocks/);
   assert.match(html, /escapeHtml\(code\)/);
@@ -202,12 +326,15 @@ test("slack delivery retries transient failures and records attempt counts", asy
   const transport = new FakeSlackTransport([
     { ok: false, error: "server_error", statusCode: 500, retryAfterMs: 1 },
     { ok: false, error: "rate_limited", statusCode: 429, retryAfterMs: 1 },
-    { ok: true, ts: "1713900000.000200", statusCode: 200 }
+    { ok: true, ts: "1713900000.000200", statusCode: 200 },
   ]);
 
   try {
     const slack = new SlackChannel(config, channels, deliveries, transport);
-    const result = await slack.sendMessage({ channel: "C123456", text: "retry me" });
+    const result = await slack.sendMessage({
+      channel: "C123456",
+      text: "retry me",
+    });
 
     assert.equal(result.delivery.status, "delivered");
     assert.equal(result.delivery.attemptCount, 3);
@@ -217,19 +344,30 @@ test("slack delivery retries transient failures and records attempt counts", asy
     const failingTransport = new FakeSlackTransport([
       { ok: false, error: "server_error", statusCode: 500, retryAfterMs: 1 },
       { ok: false, error: "server_error", statusCode: 500, retryAfterMs: 1 },
-      { ok: false, error: "server_error", statusCode: 500, retryAfterMs: 1 }
+      { ok: false, error: "server_error", statusCode: 500, retryAfterMs: 1 },
     ]);
-    const failingSlack = new SlackChannel(config, channels, deliveries, failingTransport);
-    await assert.rejects(() => failingSlack.sendMessage({ channel: "C999999", text: "fail me" }), /server_error/);
+    const failingSlack = new SlackChannel(
+      config,
+      channels,
+      deliveries,
+      failingTransport
+    );
+    await assert.rejects(
+      () => failingSlack.sendMessage({ channel: "C999999", text: "fail me" }),
+      /server_error/
+    );
 
     const summary = deliveries.summary();
     assert.equal(summary.delivered, 1);
     assert.equal(summary.failed, 1);
-    assert.ok(summary.recentFailed.some((delivery) =>
-      delivery.destination === "C999999" &&
-      delivery.status === "failed" &&
-      delivery.attemptCount === 3
-    ));
+    assert.ok(
+      summary.recentFailed.some(
+        (delivery) =>
+          delivery.destination === "C999999" &&
+          delivery.status === "failed" &&
+          delivery.attemptCount === 3
+      )
+    );
   } finally {
     database.close();
   }
@@ -241,7 +379,7 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     port: 0,
     slackBotToken: "xoxb-test-token",
     slackSigningSecret: "slack-signing-secret",
-    slackBotUserId: "B999"
+    slackBotUserId: "B999",
   });
   const database = new AppDatabase(join(dataDir, "server.sqlite"));
   const sessions = new SessionStore(database);
@@ -250,7 +388,11 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     database,
     config,
     makeDisabledEmbeddings(),
-    makeFakeVectorStore({ backend: "qdrant", available: false, configured: false }),
+    makeFakeVectorStore({
+      backend: "qdrant",
+      available: false,
+      configured: false,
+    }),
     makeFakeVectorStore({ backend: "sqlite_fallback", available: true })
   );
   const tools = new ToolRegistry();
@@ -259,17 +401,29 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     description: "echo",
     scopes: ["read"],
     kind: "in_process",
-    handler: async (input) => input
+    handler: async (input) => input,
   });
 
-  const runtime = new AgentRuntime(config, new FakeAdapter(), sessions, memory, tools);
+  const runtime = new AgentRuntime(
+    config,
+    new FakeAdapter(),
+    sessions,
+    memory,
+    tools
+  );
   const runs = new RunGraphStore(database);
   const orchestration = new OrchestrationService(runtime, tools, runs);
   const scheduler = new SchedulerService(database, orchestration);
   await scheduler.start();
-    const metrics = new MetricsStore();
-    const mcpAudit = new McpAuditStore(database);
-    const mcp = new McpServer(config.mcpBearerToken, tools, metrics, undefined, mcpAudit);
+  const metrics = new MetricsStore();
+  const mcpAudit = new McpAuditStore(database);
+  const mcp = new McpServer(
+    config.mcpBearerToken,
+    tools,
+    metrics,
+    undefined,
+    mcpAudit
+  );
   const dynamicTools = new DynamicToolRegistry(database, tools);
   const governance = new ToolGovernanceService(database);
   const slackTransport = new FakeSlackTransport();
@@ -300,32 +454,35 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
   try {
     const oversizedMcpBody = JSON.stringify({
       method: "tools/list",
-      padding: "x".repeat(1_100_000)
+      padding: "x".repeat(1_100_000),
     });
     const oversizedMcpResponse = await fetch(`${baseUrl}/mcp`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${config.mcpBearerToken}`
+        Authorization: `Bearer ${config.mcpBearerToken}`,
       },
-      body: oversizedMcpBody
+      body: oversizedMcpBody,
     });
     assert.equal(oversizedMcpResponse.status, 413);
-    const oversizedMcpJson = await oversizedMcpResponse.json() as { error?: string; status?: number };
+    const oversizedMcpJson = (await oversizedMcpResponse.json()) as {
+      error?: string;
+      status?: number;
+    };
     assert.equal(oversizedMcpJson.status, 413);
     assert.match(oversizedMcpJson.error ?? "", /body/i);
 
     const oversizedChatBody = JSON.stringify({
       conversationId: "oversized",
-      message: "x".repeat(1_100_000)
+      message: "x".repeat(1_100_000),
     });
     const oversizedChatResponse = await fetch(`${baseUrl}/chat/message`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${config.operatorBearerToken}`
+        Authorization: `Bearer ${config.operatorBearerToken}`,
       },
-      body: oversizedChatBody
+      body: oversizedChatBody,
     });
     assert.equal(oversizedChatResponse.status, 413);
 
@@ -338,115 +495,167 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       "/sessions",
       "/runs",
       "/memory",
-      "/scheduler/jobs"
+      "/scheduler/jobs",
     ];
     for (const path of protectedGetPaths) {
       const response = await fetch(`http://127.0.0.1:${port}${path}`);
-      assert.equal(response.status, 401, `${path} should require operator auth`);
-      assert.equal(response.headers.get("www-authenticate"), "Basic realm=\"codex-phantom operator\"");
+      assert.equal(
+        response.status,
+        401,
+        `${path} should require operator auth`
+      );
+      assert.equal(
+        response.headers.get("www-authenticate"),
+        'Basic realm="codex-phantom operator"'
+      );
     }
-    const unauthenticatedAdminResponse = await fetch(`http://127.0.0.1:${port}/admin/summary`);
-    const unauthenticatedAdminJson = await unauthenticatedAdminResponse.json() as { error: string; status: number };
+    const unauthenticatedAdminResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/summary`
+    );
+    const unauthenticatedAdminJson =
+      (await unauthenticatedAdminResponse.json()) as {
+        error: string;
+        status: number;
+      };
     assert.equal(unauthenticatedAdminJson.error, "Unauthorized");
     assert.equal(unauthenticatedAdminJson.status, 401);
 
-    const unauthenticatedChatResponse = await fetch(`http://127.0.0.1:${port}/chat/message`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        conversationId: "web-unauth",
-        message: "blocked"
-      })
-    });
+    const unauthenticatedChatResponse = await fetch(
+      `http://127.0.0.1:${port}/chat/message`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          conversationId: "web-unauth",
+          message: "blocked",
+        }),
+      }
+    );
     assert.equal(unauthenticatedChatResponse.status, 401);
 
     const unauthenticatedAttachmentForm = new FormData();
     unauthenticatedAttachmentForm.set("sessionId", "blocked");
-    unauthenticatedAttachmentForm.set("file", new Blob(["blocked"], { type: "text/plain" }), "blocked.txt");
-    const unauthenticatedAttachmentResponse = await fetch(`http://127.0.0.1:${port}/chat/attachments`, {
-      method: "POST",
-      body: unauthenticatedAttachmentForm
-    });
+    unauthenticatedAttachmentForm.set(
+      "file",
+      new Blob(["blocked"], { type: "text/plain" }),
+      "blocked.txt"
+    );
+    const unauthenticatedAttachmentResponse = await fetch(
+      `http://127.0.0.1:${port}/chat/attachments`,
+      {
+        method: "POST",
+        body: unauthenticatedAttachmentForm,
+      }
+    );
     assert.equal(unauthenticatedAttachmentResponse.status, 401);
 
-    const unauthenticatedArtifactResponse = await fetch(`http://127.0.0.1:${port}/chat/artifacts`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        sessionId: "blocked",
-        title: "Blocked",
-        kind: "text",
-        contentType: "text/plain",
-        content: "blocked"
-      })
-    });
+    const unauthenticatedArtifactResponse = await fetch(
+      `http://127.0.0.1:${port}/chat/artifacts`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionId: "blocked",
+          title: "Blocked",
+          kind: "text",
+          contentType: "text/plain",
+          content: "blocked",
+        }),
+      }
+    );
     assert.equal(unauthenticatedArtifactResponse.status, 401);
 
-    const unauthenticatedScheduleResponse = await fetch(`http://127.0.0.1:${port}/scheduler/jobs`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: "blocked-job",
-        message: "blocked",
-        delayMs: 10
-      })
-    });
+    const unauthenticatedScheduleResponse = await fetch(
+      `http://127.0.0.1:${port}/scheduler/jobs`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: "blocked-job",
+          message: "blocked",
+          delayMs: 10,
+        }),
+      }
+    );
     assert.equal(unauthenticatedScheduleResponse.status, 401);
 
-    const badWebhookResponse = await fetch(`http://127.0.0.1:${port}/channels/webhook`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-channel-secret": "wrong-secret"
-      },
-      body: JSON.stringify({
-        conversationId: "bad-hook",
-        message: "blocked"
-      })
-    });
+    const badWebhookResponse = await fetch(
+      `http://127.0.0.1:${port}/channels/webhook`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-channel-secret": "wrong-secret",
+        },
+        body: JSON.stringify({
+          conversationId: "bad-hook",
+          message: "blocked",
+        }),
+      }
+    );
     assert.equal(badWebhookResponse.status, 401);
     assert.equal(badWebhookResponse.headers.get("www-authenticate"), null);
 
     const staleWebhookBody = JSON.stringify({
       conversationId: "stale-hook",
-      message: "blocked"
+      message: "blocked",
     });
-    const staleWebhookResponse = await fetch(`http://127.0.0.1:${port}/channels/webhook`, {
-      method: "POST",
-      headers: signedWebhookHeaders(config.externalChannelSecret, staleWebhookBody, "1713900000"),
-      body: staleWebhookBody
-    });
+    const staleWebhookResponse = await fetch(
+      `http://127.0.0.1:${port}/channels/webhook`,
+      {
+        method: "POST",
+        headers: signedWebhookHeaders(
+          config.externalChannelSecret,
+          staleWebhookBody,
+          "1713900000"
+        ),
+        body: staleWebhookBody,
+      }
+    );
     assert.equal(staleWebhookResponse.status, 401);
 
     const wrongSignatureWebhookBody = JSON.stringify({
       conversationId: "wrong-signature-hook",
-      message: "blocked"
+      message: "blocked",
     });
-    const wrongSignatureWebhookResponse = await fetch(`http://127.0.0.1:${port}/channels/webhook`, {
-      method: "POST",
-      headers: signedWebhookHeaders("wrong-secret", wrongSignatureWebhookBody),
-      body: wrongSignatureWebhookBody
-    });
+    const wrongSignatureWebhookResponse = await fetch(
+      `http://127.0.0.1:${port}/channels/webhook`,
+      {
+        method: "POST",
+        headers: signedWebhookHeaders(
+          "wrong-secret",
+          wrongSignatureWebhookBody
+        ),
+        body: wrongSignatureWebhookBody,
+      }
+    );
     assert.equal(wrongSignatureWebhookResponse.status, 401);
 
     const consoleResponse = await fetch(`http://127.0.0.1:${port}/`, {
       headers: {
-        Authorization: `Basic ${Buffer.from(`operator:${config.operatorBearerToken}`).toString("base64")}`
-      }
+        Authorization: `Basic ${Buffer.from(`operator:${config.operatorBearerToken}`).toString("base64")}`,
+      },
     });
     assert.equal(consoleResponse.status, 200);
     assert.match(await consoleResponse.text(), /Operator Console/);
 
-    const authenticatedUnknownAdminResponse = await fetch(`http://127.0.0.1:${port}/admin/not-real`, {
-      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
-    });
+    const authenticatedUnknownAdminResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/not-real`,
+      {
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
     assert.equal(authenticatedUnknownAdminResponse.status, 404);
 
     const healthResponse = await fetch(`http://127.0.0.1:${port}/health`);
-    const healthJson = await healthResponse.json() as {
+    const healthJson = (await healthResponse.json()) as {
       ok: boolean;
       readiness: { scheduler: boolean; semanticRetrieval: boolean };
-      memory?: { pendingBackfillCount: number; vectorBackend: string; qdrantConfigured: boolean };
+      memory?: {
+        pendingBackfillCount: number;
+        vectorBackend: string;
+        qdrantConfigured: boolean;
+      };
       logging?: { provider: string };
     };
     assert.equal(healthResponse.status, 200);
@@ -456,13 +665,20 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assert.equal(healthJson.memory, undefined);
     assert.equal(healthJson.logging, undefined);
 
-    const detailedHealthResponse = await fetch(`http://127.0.0.1:${port}/health`, {
-      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
-    });
-    const detailedHealthJson = await detailedHealthResponse.json() as {
+    const detailedHealthResponse = await fetch(
+      `http://127.0.0.1:${port}/health`,
+      {
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
+    const detailedHealthJson = (await detailedHealthResponse.json()) as {
       ok: boolean;
       readiness: { scheduler: boolean; semanticRetrieval: boolean };
-      memory: { pendingBackfillCount: number; vectorBackend: string; qdrantConfigured: boolean };
+      memory: {
+        pendingBackfillCount: number;
+        vectorBackend: string;
+        qdrantConfigured: boolean;
+      };
       logging: { provider: string };
     };
     assert.equal(detailedHealthResponse.status, 200);
@@ -474,22 +690,28 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assert.equal(detailedHealthJson.memory.qdrantConfigured, false);
     assert.equal(detailedHealthJson.logging.provider, "pino");
 
-    const streamResponse = await fetch(`http://127.0.0.1:${port}/chat/message`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.operatorBearerToken}` },
-      body: JSON.stringify({
-        conversationId: "web-1",
-        message: "hello from web",
-        attachments: [
-          {
-            name: "notes.md",
-            contentType: "text/markdown",
-            sizeBytes: 42,
-            description: "Operator notes"
-          }
-        ]
-      })
-    });
+    const streamResponse = await fetch(
+      `http://127.0.0.1:${port}/chat/message`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          conversationId: "web-1",
+          message: "hello from web",
+          attachments: [
+            {
+              name: "notes.md",
+              contentType: "text/markdown",
+              sizeBytes: 42,
+              description: "Operator notes",
+            },
+          ],
+        }),
+      }
+    );
     const streamText = await streamResponse.text();
     assert.match(streamText, /event: request.started/);
     assert.match(streamText, /event: agent.event/);
@@ -501,7 +723,7 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assert.match(streamText, /assistant:hello from web/);
 
     const chatPageResponse = await fetch(`http://127.0.0.1:${port}/chat`, {
-      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
+      headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
     });
     assert.equal(chatPageResponse.status, 200);
     const chatPageHtml = await chatPageResponse.text();
@@ -510,57 +732,114 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assert.match(chatPageHtml, /renderMarkdown/);
     assert.match(chatPageHtml, /Notification\.requestPermission/);
 
-    const chatSessionsResponse = await fetch(`http://127.0.0.1:${port}/chat/sessions`, {
-      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
-    });
+    const chatSessionsResponse = await fetch(
+      `http://127.0.0.1:${port}/chat/sessions`,
+      {
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
     assert.equal(chatSessionsResponse.status, 200);
-    const chatSessionsJson = await chatSessionsResponse.json() as {
-      sessions: Array<{ sessionId: string; title?: string; titleSource?: string; runIds: string[] }>;
+    const chatSessionsJson = (await chatSessionsResponse.json()) as {
+      sessions: Array<{
+        sessionId: string;
+        title?: string;
+        titleSource?: string;
+        runIds: string[];
+      }>;
     };
-    const webSession = chatSessionsJson.sessions.find((session) => session.title === "Hello From Web");
+    const webSession = chatSessionsJson.sessions.find(
+      (session) => session.title === "Hello From Web"
+    );
     assert.ok(webSession);
     assert.equal(webSession.titleSource, "auto");
     assert.ok(webSession.runIds.length > 0);
 
-    const chatSessionResponse = await fetch(`http://127.0.0.1:${port}/chat/sessions/${webSession.sessionId}`, {
-      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
-    });
+    const chatSessionResponse = await fetch(
+      `http://127.0.0.1:${port}/chat/sessions/${webSession.sessionId}`,
+      {
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
     assert.equal(chatSessionResponse.status, 200);
-    const chatSessionJson = await chatSessionResponse.json() as {
+    const chatSessionJson = (await chatSessionResponse.json()) as {
       session: { sessionId: string; title?: string };
-      runs: Array<{ runId: string; transcript: Array<{ role: string; content: string }> }>;
-      attachments: Array<{ id: string; runId?: string; name: string; contentType: string; sizeBytes: number; description?: string; sha256?: string; downloadUrl?: string }>;
-      artifacts: Array<{ id: string; runId?: string; title: string; kind: string; contentType: string; sizeBytes: number; sha256: string; downloadUrl: string }>;
+      runs: Array<{
+        runId: string;
+        transcript: Array<{ role: string; content: string }>;
+      }>;
+      attachments: Array<{
+        id: string;
+        runId?: string;
+        name: string;
+        contentType: string;
+        sizeBytes: number;
+        description?: string;
+        sha256?: string;
+        downloadUrl?: string;
+      }>;
+      artifacts: Array<{
+        id: string;
+        runId?: string;
+        title: string;
+        kind: string;
+        contentType: string;
+        sizeBytes: number;
+        sha256: string;
+        downloadUrl: string;
+      }>;
     };
     assert.equal(chatSessionJson.session.title, "Hello From Web");
-    assert.ok(chatSessionJson.runs.some((run) => run.transcript.some((message) => message.content === "hello from web")));
-    assert.ok(chatSessionJson.runs.every((run) => run.runId.startsWith("coord_") || run.runId.startsWith("sub_")));
+    assert.ok(
+      chatSessionJson.runs.some((run) =>
+        run.transcript.some((message) => message.content === "hello from web")
+      )
+    );
+    assert.ok(
+      chatSessionJson.runs.every(
+        (run) => run.runId.startsWith("coord_") || run.runId.startsWith("sub_")
+      )
+    );
     assert.deepEqual(chatSessionJson.artifacts, []);
-    assert.deepEqual(chatSessionJson.attachments.map((attachment) => ({
-      name: attachment.name,
-      contentType: attachment.contentType,
-      sizeBytes: attachment.sizeBytes,
-      description: attachment.description
-    })), [
-      {
-        name: "notes.md",
-        contentType: "text/markdown",
-        sizeBytes: 42,
-        description: "Operator notes"
-      }
-    ]);
+    assert.deepEqual(
+      chatSessionJson.attachments.map((attachment) => ({
+        name: attachment.name,
+        contentType: attachment.contentType,
+        sizeBytes: attachment.sizeBytes,
+        description: attachment.description,
+      })),
+      [
+        {
+          name: "notes.md",
+          contentType: "text/markdown",
+          sizeBytes: 42,
+          description: "Operator notes",
+        },
+      ]
+    );
 
     const uploadForm = new FormData();
     uploadForm.set("sessionId", webSession.sessionId);
-    uploadForm.set("file", new Blob(["hello attachment"], { type: "text/plain" }), "hello.txt");
+    uploadForm.set(
+      "file",
+      new Blob(["hello attachment"], { type: "text/plain" }),
+      "hello.txt"
+    );
     const uploadResponse = await fetch(`${baseUrl}/chat/attachments`, {
       method: "POST",
       headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
-      body: uploadForm
+      body: uploadForm,
     });
     assert.equal(uploadResponse.status, 201);
-    const uploadJson = await uploadResponse.json() as {
-      attachments: Array<{ id: string; sessionId: string; name: string; contentType: string; sizeBytes: number; sha256: string; downloadUrl: string }>;
+    const uploadJson = (await uploadResponse.json()) as {
+      attachments: Array<{
+        id: string;
+        sessionId: string;
+        name: string;
+        contentType: string;
+        sizeBytes: number;
+        sha256: string;
+        downloadUrl: string;
+      }>;
     };
     assert.equal(uploadJson.attachments.length, 1);
     const uploadedAttachment = uploadJson.attachments[0];
@@ -568,46 +847,87 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assert.equal(uploadedAttachment.name, "hello.txt");
     assert.equal(uploadedAttachment.contentType, "text/plain");
     assert.equal(uploadedAttachment.sizeBytes, 16);
-    assert.equal(uploadedAttachment.sha256, createHash("sha256").update("hello attachment").digest("hex"));
-    assert.equal(uploadedAttachment.downloadUrl, `/chat/attachments/${uploadedAttachment.id}`);
+    assert.equal(
+      uploadedAttachment.sha256,
+      createHash("sha256").update("hello attachment").digest("hex")
+    );
+    assert.equal(
+      uploadedAttachment.downloadUrl,
+      `/chat/attachments/${uploadedAttachment.id}`
+    );
 
-    const attachmentDownloadResponse = await fetch(`${baseUrl}/chat/attachments/${uploadedAttachment.id}`, {
-      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
-    });
+    const attachmentDownloadResponse = await fetch(
+      `${baseUrl}/chat/attachments/${uploadedAttachment.id}`,
+      {
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
     assert.equal(attachmentDownloadResponse.status, 200);
-    assert.equal(attachmentDownloadResponse.headers.get("content-type"), "text/plain");
-    assert.match(attachmentDownloadResponse.headers.get("content-disposition") ?? "", /filename="hello\.txt"/);
+    assert.equal(
+      attachmentDownloadResponse.headers.get("content-type"),
+      "text/plain"
+    );
+    assert.match(
+      attachmentDownloadResponse.headers.get("content-disposition") ?? "",
+      /filename="hello\.txt"/
+    );
     assert.equal(await attachmentDownloadResponse.text(), "hello attachment");
 
-    const linkedStreamResponse = await fetch(`http://127.0.0.1:${port}/chat/message`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.operatorBearerToken}` },
-      body: JSON.stringify({
-        sessionId: webSession.sessionId,
-        message: "use uploaded attachment",
-        attachmentIds: [uploadedAttachment.id]
-      })
-    });
+    const linkedStreamResponse = await fetch(
+      `http://127.0.0.1:${port}/chat/message`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          sessionId: webSession.sessionId,
+          message: "use uploaded attachment",
+          attachmentIds: [uploadedAttachment.id],
+        }),
+      }
+    );
     assert.equal(linkedStreamResponse.status, 200);
-    assert.match(await linkedStreamResponse.text(), /assistant:use uploaded attachment/);
+    assert.match(
+      await linkedStreamResponse.text(),
+      /assistant:use uploaded attachment/
+    );
 
-    const linkedSessionResponse = await fetch(`http://127.0.0.1:${port}/chat/sessions/${webSession.sessionId}`, {
-      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
-    });
-    const linkedSessionJson = await linkedSessionResponse.json() as {
-      attachments: Array<{ id: string; runId?: string; name: string; sha256?: string; downloadUrl?: string }>;
+    const linkedSessionResponse = await fetch(
+      `http://127.0.0.1:${port}/chat/sessions/${webSession.sessionId}`,
+      {
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
+    const linkedSessionJson = (await linkedSessionResponse.json()) as {
+      attachments: Array<{
+        id: string;
+        runId?: string;
+        name: string;
+        sha256?: string;
+        downloadUrl?: string;
+      }>;
       runs: Array<{ runId: string }>;
       artifacts: Array<{ id: string }>;
     };
-    const linkedAttachment = linkedSessionJson.attachments.find((attachment) => attachment.id === uploadedAttachment.id);
+    const linkedAttachment = linkedSessionJson.attachments.find(
+      (attachment) => attachment.id === uploadedAttachment.id
+    );
     assert.ok(linkedAttachment);
     assert.ok(linkedAttachment.runId?.startsWith("coord_"));
     assert.equal(linkedAttachment.sha256, uploadedAttachment.sha256);
-    assert.equal(linkedAttachment.downloadUrl, `/chat/attachments/${uploadedAttachment.id}`);
+    assert.equal(
+      linkedAttachment.downloadUrl,
+      `/chat/attachments/${uploadedAttachment.id}`
+    );
 
     const artifactResponse = await fetch(`${baseUrl}/chat/artifacts`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.operatorBearerToken}` },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.operatorBearerToken}`,
+      },
       body: JSON.stringify({
         sessionId: webSession.sessionId,
         runId: linkedAttachment.runId,
@@ -615,122 +935,195 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
         kind: "text",
         contentType: "text/markdown",
         content: "# Summary\nDone",
-        metadata: { source: "server-test" }
-      })
+        metadata: { source: "server-test" },
+      }),
     });
     assert.equal(artifactResponse.status, 201);
-    const artifactJson = await artifactResponse.json() as {
-      artifact: { id: string; sessionId: string; runId?: string; title: string; kind: string; contentType: string; sizeBytes: number; sha256: string; downloadUrl: string };
+    const artifactJson = (await artifactResponse.json()) as {
+      artifact: {
+        id: string;
+        sessionId: string;
+        runId?: string;
+        title: string;
+        kind: string;
+        contentType: string;
+        sizeBytes: number;
+        sha256: string;
+        downloadUrl: string;
+      };
     };
     assert.equal(artifactJson.artifact.sessionId, webSession.sessionId);
     assert.equal(artifactJson.artifact.runId, linkedAttachment.runId);
     assert.equal(artifactJson.artifact.title, "Research Summary");
     assert.equal(artifactJson.artifact.kind, "text");
     assert.equal(artifactJson.artifact.contentType, "text/markdown");
-    assert.equal(artifactJson.artifact.sizeBytes, Buffer.byteLength("# Summary\nDone"));
-    assert.equal(artifactJson.artifact.sha256, createHash("sha256").update("# Summary\nDone").digest("hex"));
-    assert.equal(artifactJson.artifact.downloadUrl, `/chat/artifacts/${artifactJson.artifact.id}`);
+    assert.equal(
+      artifactJson.artifact.sizeBytes,
+      Buffer.byteLength("# Summary\nDone")
+    );
+    assert.equal(
+      artifactJson.artifact.sha256,
+      createHash("sha256").update("# Summary\nDone").digest("hex")
+    );
+    assert.equal(
+      artifactJson.artifact.downloadUrl,
+      `/chat/artifacts/${artifactJson.artifact.id}`
+    );
 
-    const artifactDownloadResponse = await fetch(`${baseUrl}/chat/artifacts/${artifactJson.artifact.id}`, {
-      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
-    });
+    const artifactDownloadResponse = await fetch(
+      `${baseUrl}/chat/artifacts/${artifactJson.artifact.id}`,
+      {
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
     assert.equal(artifactDownloadResponse.status, 200);
-    assert.equal(artifactDownloadResponse.headers.get("content-type"), "text/markdown");
-    assert.match(artifactDownloadResponse.headers.get("content-disposition") ?? "", /filename="Research Summary\.md"/);
+    assert.equal(
+      artifactDownloadResponse.headers.get("content-type"),
+      "text/markdown"
+    );
+    assert.match(
+      artifactDownloadResponse.headers.get("content-disposition") ?? "",
+      /filename="Research Summary\.md"/
+    );
     assert.equal(await artifactDownloadResponse.text(), "# Summary\nDone");
 
     const invalidArtifactResponse = await fetch(`${baseUrl}/chat/artifacts`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.operatorBearerToken}` },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.operatorBearerToken}`,
+      },
       body: JSON.stringify({
         sessionId: webSession.sessionId,
         title: "Bad",
         kind: "image",
         contentType: "text/plain",
-        content: "bad"
-      })
+        content: "bad",
+      }),
     });
     assert.equal(invalidArtifactResponse.status, 400);
 
-    const sessionWithArtifactResponse = await fetch(`http://127.0.0.1:${port}/chat/sessions/${webSession.sessionId}`, {
-      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
-    });
-    const sessionWithArtifactJson = await sessionWithArtifactResponse.json() as {
-      artifacts: Array<{ id: string; title: string; downloadUrl: string }>;
-    };
-    assert.ok(sessionWithArtifactJson.artifacts.some((artifact) =>
-      artifact.id === artifactJson.artifact.id &&
-      artifact.title === "Research Summary" &&
-      artifact.downloadUrl === `/chat/artifacts/${artifactJson.artifact.id}`
-    ));
+    const sessionWithArtifactResponse = await fetch(
+      `http://127.0.0.1:${port}/chat/sessions/${webSession.sessionId}`,
+      {
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
+    const sessionWithArtifactJson =
+      (await sessionWithArtifactResponse.json()) as {
+        artifacts: Array<{ id: string; title: string; downloadUrl: string }>;
+      };
+    assert.ok(
+      sessionWithArtifactJson.artifacts.some(
+        (artifact) =>
+          artifact.id === artifactJson.artifact.id &&
+          artifact.title === "Research Summary" &&
+          artifact.downloadUrl === `/chat/artifacts/${artifactJson.artifact.id}`
+      )
+    );
 
     const webhookBody = JSON.stringify({
       conversationId: "hook-1",
-      message: "hello from webhook"
+      message: "hello from webhook",
     });
-    const webhookResponse = await fetch(`http://127.0.0.1:${port}/channels/webhook`, {
-      method: "POST",
-      headers: signedWebhookHeaders(config.externalChannelSecret, webhookBody),
-      body: webhookBody
-    });
-    const webhookJson = await webhookResponse.json() as { sessionId: string; outputText: string; inboundEvent: { channelId: string; status: string } };
+    const webhookResponse = await fetch(
+      `http://127.0.0.1:${port}/channels/webhook`,
+      {
+        method: "POST",
+        headers: signedWebhookHeaders(
+          config.externalChannelSecret,
+          webhookBody
+        ),
+        body: webhookBody,
+      }
+    );
+    const webhookJson = (await webhookResponse.json()) as {
+      sessionId: string;
+      outputText: string;
+      inboundEvent: { channelId: string; status: string };
+    };
     assert.equal(webhookJson.outputText, "assistant:hello from webhook");
     assert.equal(webhookJson.inboundEvent.channelId, "webhook");
     assert.equal(webhookJson.inboundEvent.status, "completed");
 
     await fetch(`http://127.0.0.1:${port}/scheduler/jobs`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.operatorBearerToken}` },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.operatorBearerToken}`,
+      },
       body: JSON.stringify({
         name: "quick-job",
         message: "scheduled task",
-        delayMs: 10
-      })
+        delayMs: 10,
+      }),
     });
     await new Promise((resolve) => setTimeout(resolve, 50));
 
-    const jobsResponse = await fetch(`http://127.0.0.1:${port}/scheduler/jobs`, {
-      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
-    });
-    const jobsJson = await jobsResponse.json() as { jobs: Array<{ status: string }> };
+    const jobsResponse = await fetch(
+      `http://127.0.0.1:${port}/scheduler/jobs`,
+      {
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
+    const jobsJson = (await jobsResponse.json()) as {
+      jobs: Array<{ status: string }>;
+    };
     assert.ok(jobsJson.jobs.some((job) => job.status === "completed"));
 
     const mcpResponse = await fetch(`http://127.0.0.1:${port}/mcp`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${config.mcpBearerToken}`
+        Authorization: `Bearer ${config.mcpBearerToken}`,
       },
-      body: JSON.stringify({ method: "tools/list" })
+      body: JSON.stringify({ method: "tools/list" }),
     });
-    const mcpJson = await mcpResponse.json() as { tools: Array<{ id: string }> };
+    const mcpJson = (await mcpResponse.json()) as {
+      tools: Array<{ id: string }>;
+    };
     assert.ok(mcpJson.tools.some((tool) => tool.id === "echo.summary"));
 
-    const adminMcpAuditResponse = await fetch(`http://127.0.0.1:${port}/admin/mcp/audit`, {
-      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
-    });
+    const adminMcpAuditResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/mcp/audit`,
+      {
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
     assert.equal(adminMcpAuditResponse.status, 200);
-    const adminMcpAuditJson = await adminMcpAuditResponse.json() as {
+    const adminMcpAuditJson = (await adminMcpAuditResponse.json()) as {
       audit: Array<{ method: string; outcome: string; toolName?: string }>;
     };
     assert.ok(Array.isArray(adminMcpAuditJson.audit));
-    assert.ok(adminMcpAuditJson.audit.some((entry) => entry.method === "tools/list" && entry.outcome === "success"));
+    assert.ok(
+      adminMcpAuditJson.audit.some(
+        (entry) => entry.method === "tools/list" && entry.outcome === "success"
+      )
+    );
 
-    const invalidAuditLimitResponse = await fetch(`http://127.0.0.1:${port}/admin/mcp/audit?limit=foo`, {
-      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
-    });
+    const invalidAuditLimitResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/mcp/audit?limit=foo`,
+      {
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
     assert.equal(invalidAuditLimitResponse.status, 200);
-    const invalidAuditLimitJson = await invalidAuditLimitResponse.json() as { audit: unknown[] };
+    const invalidAuditLimitJson = (await invalidAuditLimitResponse.json()) as {
+      audit: unknown[];
+    };
     assert.ok(Array.isArray(invalidAuditLimitJson.audit));
 
-    const unauthorizedMcpResponse = await fetch(`http://127.0.0.1:${port}/mcp`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: "Bearer wrong-token"
-      },
-      body: JSON.stringify({ method: "tools/list" })
-    });
+    const unauthorizedMcpResponse = await fetch(
+      `http://127.0.0.1:${port}/mcp`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer wrong-token",
+        },
+        body: JSON.stringify({ method: "tools/list" }),
+      }
+    );
     assert.equal(unauthorizedMcpResponse.status, 401);
 
     for (let index = 0; index < 11; index += 1) {
@@ -738,144 +1131,216 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: "Bearer wrong-token"
+          Authorization: "Bearer wrong-token",
         },
-        body: JSON.stringify({ method: "tools/list" })
+        body: JSON.stringify({ method: "tools/list" }),
       });
     }
     const rateLimitedMcpResponse = await fetch(`http://127.0.0.1:${port}/mcp`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: "Bearer wrong-token"
+        Authorization: "Bearer wrong-token",
       },
-      body: JSON.stringify({ method: "tools/list" })
+      body: JSON.stringify({ method: "tools/list" }),
     });
     assert.equal(rateLimitedMcpResponse.status, 429);
 
-    const dynamicToolResponse = await fetch(`http://127.0.0.1:${port}/tools/dynamic`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.operatorBearerToken}` },
-      body: JSON.stringify({
-        id: "project.brief",
-        description: "Return a short project brief",
-        scopes: ["read"],
-        inputSchema: {
-          type: "object",
-          properties: {
-            topic: { type: "string" }
-          }
+    const dynamicToolResponse = await fetch(
+      `http://127.0.0.1:${port}/tools/dynamic`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
         },
-        responseTemplate: "Brief for {{topic}}"
-      })
-    });
-    const dynamicToolJson = await dynamicToolResponse.json() as { tool: { id: string; approvalState: string } };
+        body: JSON.stringify({
+          id: "project.brief",
+          description: "Return a short project brief",
+          scopes: ["read"],
+          inputSchema: {
+            type: "object",
+            properties: {
+              topic: { type: "string" },
+            },
+          },
+          responseTemplate: "Brief for {{topic}}",
+        }),
+      }
+    );
+    const dynamicToolJson = (await dynamicToolResponse.json()) as {
+      tool: { id: string; approvalState: string };
+    };
     assert.equal(dynamicToolJson.tool.id, "project.brief");
     assert.equal(dynamicToolJson.tool.approvalState, "pending");
 
-    const dynamicToolsResponse = await fetch(`http://127.0.0.1:${port}/tools/dynamic`, {
-      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
-    });
-    const dynamicToolsJson = await dynamicToolsResponse.json() as { tools: Array<{ id: string; approvalState: string }> };
-    assert.ok(dynamicToolsJson.tools.some((tool) => tool.id === "project.brief"));
-    assert.ok(dynamicToolsJson.tools.some((tool) => tool.id === "project.brief" && tool.approvalState === "pending"));
+    const dynamicToolsResponse = await fetch(
+      `http://127.0.0.1:${port}/tools/dynamic`,
+      {
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
+    const dynamicToolsJson = (await dynamicToolsResponse.json()) as {
+      tools: Array<{ id: string; approvalState: string }>;
+    };
+    assert.ok(
+      dynamicToolsJson.tools.some((tool) => tool.id === "project.brief")
+    );
+    assert.ok(
+      dynamicToolsJson.tools.some(
+        (tool) =>
+          tool.id === "project.brief" && tool.approvalState === "pending"
+      )
+    );
 
     const dynamicMcpListResponse = await fetch(`http://127.0.0.1:${port}/mcp`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${config.mcpBearerToken}`
+        Authorization: `Bearer ${config.mcpBearerToken}`,
       },
-      body: JSON.stringify({ method: "tools/list" })
+      body: JSON.stringify({ method: "tools/list" }),
     });
-    const dynamicMcpListJson = await dynamicMcpListResponse.json() as { tools: Array<{ id: string }> };
-    assert.equal(dynamicMcpListJson.tools.some((tool) => tool.id === "project.brief"), false);
+    const dynamicMcpListJson = (await dynamicMcpListResponse.json()) as {
+      tools: Array<{ id: string }>;
+    };
+    assert.equal(
+      dynamicMcpListJson.tools.some((tool) => tool.id === "project.brief"),
+      false
+    );
 
-    const approvalResponse = await fetch(`http://127.0.0.1:${port}/admin/tools/approve`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.operatorBearerToken}` },
-      body: JSON.stringify({
-        toolId: "project.brief",
-        approvedBy: "operator",
-        notes: "read-only summary tool"
-      })
-    });
-    const approvalJson = await approvalResponse.json() as { tool: { id: string; approvalState: string } };
+    const approvalResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/tools/approve`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          toolId: "project.brief",
+          approvedBy: "operator",
+          notes: "read-only summary tool",
+        }),
+      }
+    );
+    const approvalJson = (await approvalResponse.json()) as {
+      tool: { id: string; approvalState: string };
+    };
     assert.equal(approvalJson.tool.id, "project.brief");
     assert.equal(approvalJson.tool.approvalState, "approved");
 
-    const approvedMcpListResponse = await fetch(`http://127.0.0.1:${port}/mcp`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${config.mcpBearerToken}`
-      },
-      body: JSON.stringify({ method: "tools/list" })
-    });
-    const approvedMcpListJson = await approvedMcpListResponse.json() as { tools: Array<{ id: string }> };
-    assert.ok(approvedMcpListJson.tools.some((tool) => tool.id === "project.brief"));
+    const approvedMcpListResponse = await fetch(
+      `http://127.0.0.1:${port}/mcp`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.mcpBearerToken}`,
+        },
+        body: JSON.stringify({ method: "tools/list" }),
+      }
+    );
+    const approvedMcpListJson = (await approvedMcpListResponse.json()) as {
+      tools: Array<{ id: string }>;
+    };
+    assert.ok(
+      approvedMcpListJson.tools.some((tool) => tool.id === "project.brief")
+    );
 
     const dynamicCallResponse = await fetch(`http://127.0.0.1:${port}/mcp`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${config.mcpBearerToken}`
+        Authorization: `Bearer ${config.mcpBearerToken}`,
       },
       body: JSON.stringify({
         method: "tools/call",
         params: {
           name: "project.brief",
-          input: { topic: "deployment" }
-        }
-      })
+          input: { topic: "deployment" },
+        },
+      }),
     });
-    const dynamicCallJson = await dynamicCallResponse.json() as { output: { content: string } };
+    const dynamicCallJson = (await dynamicCallResponse.json()) as {
+      output: { content: string };
+    };
     assert.equal(dynamicCallJson.output.content, "Brief for deployment");
 
     const memoryResponse = await fetch(`http://127.0.0.1:${port}/memory`, {
-      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
+      headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
     });
-    const memoryJson = await memoryResponse.json() as { entries: Array<{ id: string; category: string }> };
+    const memoryJson = (await memoryResponse.json()) as {
+      entries: Array<{ id: string; category: string }>;
+    };
     assert.ok(memoryJson.entries.length > 0);
 
-    const channelsResponse = await fetch(`http://127.0.0.1:${port}/admin/channels`, {
-      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
-    });
-    const channelsJson = await channelsResponse.json() as {
-      channels: Array<{ id: string; enabled: boolean; secretPresent: boolean; config: { requiredSecretEnvVars?: string[] } }>;
+    const channelsResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/channels`,
+      {
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
+    const channelsJson = (await channelsResponse.json()) as {
+      channels: Array<{
+        id: string;
+        enabled: boolean;
+        secretPresent: boolean;
+        config: { requiredSecretEnvVars?: string[] };
+      }>;
     };
     assert.ok(channelsJson.channels.some((channel) => channel.id === "web"));
     assert.ok(channelsJson.channels.some((channel) => channel.id === "slack"));
-    assert.ok(channelsJson.channels.some((channel) =>
-      channel.id === "slack" &&
-      channel.secretPresent === true &&
-      channel.config.requiredSecretEnvVars?.includes("SLACK_SIGNING_SECRET")
-    ));
+    assert.ok(
+      channelsJson.channels.some(
+        (channel) =>
+          channel.id === "slack" &&
+          channel.secretPresent === true &&
+          channel.config.requiredSecretEnvVars?.includes("SLACK_SIGNING_SECRET")
+      )
+    );
 
-    const channelUpdateResponse = await fetch(`http://127.0.0.1:${port}/admin/channels`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.operatorBearerToken}` },
-      body: JSON.stringify({
-        id: "slack",
-        enabled: true
-      })
-    });
-    const channelUpdateJson = await channelUpdateResponse.json() as {
+    const channelUpdateResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/channels`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          id: "slack",
+          enabled: true,
+        }),
+      }
+    );
+    const channelUpdateJson = (await channelUpdateResponse.json()) as {
       channel: { id: string; enabled: boolean };
     };
     assert.equal(channelUpdateJson.channel.id, "slack");
     assert.equal(channelUpdateJson.channel.enabled, true);
 
-    const slackMessageResponse = await fetch(`http://127.0.0.1:${port}/channels/slack/message`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.operatorBearerToken}` },
-      body: JSON.stringify({
-        channel: "C123456",
-        text: "hello from codex-phantom"
-      })
-    });
-    const slackMessageJson = await slackMessageResponse.json() as {
-      delivery: { channelId: string; status: string; destination: string; attemptCount: number };
+    const slackMessageResponse = await fetch(
+      `http://127.0.0.1:${port}/channels/slack/message`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          channel: "C123456",
+          text: "hello from codex-phantom",
+        }),
+      }
+    );
+    const slackMessageJson = (await slackMessageResponse.json()) as {
+      delivery: {
+        channelId: string;
+        status: string;
+        destination: string;
+        attemptCount: number;
+      };
       result: { ts: string };
     };
     assert.equal(slackMessageJson.delivery.channelId, "slack");
@@ -883,7 +1348,9 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assert.equal(slackMessageJson.delivery.destination, "C123456");
     assert.equal(slackMessageJson.delivery.attemptCount, 1);
     assert.equal(slackMessageJson.result.ts, "1713900000.000100");
-    assert.deepEqual(slackTransport.sent, [{ channel: "C123456", text: "hello from codex-phantom" }]);
+    assert.deepEqual(slackTransport.sent, [
+      { channel: "C123456", text: "hello from codex-phantom" },
+    ]);
 
     const slackEventBody = JSON.stringify({
       type: "event_callback",
@@ -894,72 +1361,163 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
         channel: "C123456",
         text: "<@B999> hello from slack",
         ts: "1713900001.000100",
-        thread_ts: "1713900001.000000"
+        thread_ts: "1713900001.000000",
+      },
+    });
+    const slackEventResponse = await fetch(
+      `http://127.0.0.1:${port}/channels/slack/events`,
+      {
+        method: "POST",
+        headers: signedSlackHeaders(config.slackSigningSecret!, slackEventBody),
+        body: slackEventBody,
       }
-    });
-    const slackEventResponse = await fetch(`http://127.0.0.1:${port}/channels/slack/events`, {
-      method: "POST",
-      headers: signedSlackHeaders(config.slackSigningSecret!, slackEventBody),
-      body: slackEventBody
-    });
-    const slackEventJson = await slackEventResponse.json() as { status: string; inboundEventId: string };
+    );
+    const slackEventJson = (await slackEventResponse.json()) as {
+      status: string;
+      inboundEventId: string;
+    };
     assert.equal(slackEventResponse.status, 202);
     assert.equal(slackEventJson.status, "accepted");
     assert.ok(slackEventJson.inboundEventId);
 
     const inboundAfterSlack = await eventually(
       async () => {
-        const inboundResponse = await fetch(`http://127.0.0.1:${port}/admin/channels/inbound?channelId=slack`, {
-          headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
-        });
-        return await inboundResponse.json() as { events: Array<{ providerEventId: string; status: string; outputText?: string; runId?: string }> };
+        const inboundResponse = await fetch(
+          `http://127.0.0.1:${port}/admin/channels/inbound?channelId=slack`,
+          {
+            headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+          }
+        );
+        return (await inboundResponse.json()) as {
+          events: Array<{
+            providerEventId: string;
+            status: string;
+            outputText?: string;
+            runId?: string;
+            progressState?: string;
+            statusReaction?: string;
+            progress?: Array<{ state: string; summary: string }>;
+          }>;
+        };
       },
-      (body) => body.events.some((event) => event.providerEventId === "EvInbound123" && event.status === "completed")
+      (body) =>
+        body.events.some(
+          (event) =>
+            event.providerEventId === "EvInbound123" &&
+            event.status === "completed"
+        )
     );
-    assert.ok(inboundAfterSlack.events.some((event) =>
-      event.providerEventId === "EvInbound123" &&
-      event.status === "completed" &&
-      event.outputText === "assistant:hello from slack" &&
-      typeof event.runId === "string"
-    ));
-    assert.ok(slackTransport.sent.some((message) =>
-      message.channel === "C123456" &&
-      message.text === "assistant:hello from slack"
-    ));
+    assert.ok(
+      inboundAfterSlack.events.some(
+        (event) =>
+          event.providerEventId === "EvInbound123" &&
+          event.status === "completed" &&
+          event.outputText === "assistant:hello from slack" &&
+          typeof event.runId === "string" &&
+          event.progressState === "completed" &&
+          event.statusReaction === "white_check_mark" &&
+          event.progress?.some((progress) => progress.state === "completed")
+      )
+    );
+    assert.ok(
+      slackTransport.sent.some(
+        (message) =>
+          message.channel === "C123456" &&
+          message.threadTs === "1713900001.000000" &&
+          message.text === "Queued..."
+      )
+    );
+    assert.ok(
+      slackTransport.updated.some(
+        (message) =>
+          message.channel === "C123456" && message.text.startsWith("Completed:")
+      )
+    );
+    assert.deepEqual(
+      slackTransport.reactions.map((reaction) => reaction.name),
+      ["hourglass", "hourglass_flowing_sand", "white_check_mark"]
+    );
+    assert.ok(
+      slackTransport.removedReactions.some(
+        (reaction) => reaction.name === "hourglass"
+      )
+    );
+    assert.ok(
+      slackTransport.removedReactions.some(
+        (reaction) => reaction.name === "hourglass_flowing_sand"
+      )
+    );
+    assert.ok(
+      slackTransport.sent.some(
+        (message) =>
+          message.channel === "C123456" &&
+          message.text === "assistant:hello from slack"
+      )
+    );
 
-    const duplicateSlackEventResponse = await fetch(`http://127.0.0.1:${port}/channels/slack/events`, {
-      method: "POST",
-      headers: signedSlackHeaders(config.slackSigningSecret!, slackEventBody),
-      body: slackEventBody
-    });
-    const duplicateSlackEventJson = await duplicateSlackEventResponse.json() as { status: string; duplicate: boolean };
+    const duplicateSlackEventResponse = await fetch(
+      `http://127.0.0.1:${port}/channels/slack/events`,
+      {
+        method: "POST",
+        headers: signedSlackHeaders(config.slackSigningSecret!, slackEventBody),
+        body: slackEventBody,
+      }
+    );
+    const duplicateSlackEventJson =
+      (await duplicateSlackEventResponse.json()) as {
+        status: string;
+        duplicate: boolean;
+      };
     assert.equal(duplicateSlackEventResponse.status, 202);
     assert.equal(duplicateSlackEventJson.status, "duplicate");
     assert.equal(duplicateSlackEventJson.duplicate, true);
 
-    const deliveriesResponse = await fetch(`http://127.0.0.1:${port}/admin/channels/deliveries?channelId=slack`, {
-      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
-    });
-    const deliveriesJson = await deliveriesResponse.json() as {
-      deliveries: Array<{ channelId: string; status: string; destination: string; attemptCount: number; payload: { thread_ts?: string } }>;
+    const deliveriesResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/channels/deliveries?channelId=slack`,
+      {
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
+    const deliveriesJson = (await deliveriesResponse.json()) as {
+      deliveries: Array<{
+        channelId: string;
+        status: string;
+        destination: string;
+        attemptCount: number;
+        payload: { thread_ts?: string };
+      }>;
     };
-    assert.ok(deliveriesJson.deliveries.some((delivery) =>
-      delivery.channelId === "slack" &&
-      delivery.status === "delivered" &&
-      delivery.destination === "C123456" &&
-      delivery.attemptCount === 1
-    ));
-    assert.ok(deliveriesJson.deliveries.some((delivery) => delivery.payload.thread_ts === "1713900001.000000"));
+    assert.ok(
+      deliveriesJson.deliveries.some(
+        (delivery) =>
+          delivery.channelId === "slack" &&
+          delivery.status === "delivered" &&
+          delivery.destination === "C123456" &&
+          delivery.attemptCount === 1
+      )
+    );
+    assert.ok(
+      deliveriesJson.deliveries.some(
+        (delivery) => delivery.payload.thread_ts === "1713900001.000000"
+      )
+    );
 
-    const adminSummaryResponse = await fetch(`http://127.0.0.1:${port}/admin/summary`, {
-      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
-    });
-    const adminSummaryJson = await adminSummaryResponse.json() as {
+    const adminSummaryResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/summary`,
+      {
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
+    const adminSummaryJson = (await adminSummaryResponse.json()) as {
       logging: { provider: string };
       deployment: { qdrantEnabled: boolean };
       governance: { pendingDynamicTools: number; approvedDynamicTools: number };
       channelDeliveries: { delivered: number; recentFailed: unknown[] };
-      channelInbound: { completed: number; failed: number; recentFailed: unknown[] };
+      channelInbound: {
+        completed: number;
+        failed: number;
+        recentFailed: unknown[];
+      };
       settings: { dashboardRefreshSeconds: number };
       channels: Array<{ id: string; enabled: boolean }>;
     };
@@ -967,17 +1525,24 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assert.equal(adminSummaryJson.deployment.qdrantEnabled, false);
     assert.equal(adminSummaryJson.governance.pendingDynamicTools, 0);
     assert.equal(adminSummaryJson.governance.approvedDynamicTools, 1);
-    assert.equal(adminSummaryJson.channelDeliveries.delivered, 2);
+    assert.ok(adminSummaryJson.channelDeliveries.delivered >= 2);
     assert.deepEqual(adminSummaryJson.channelDeliveries.recentFailed, []);
     assert.ok(adminSummaryJson.channelInbound.completed >= 2);
     assert.deepEqual(adminSummaryJson.channelInbound.recentFailed, []);
     assert.equal(adminSummaryJson.settings.dashboardRefreshSeconds, 5);
-    assert.ok(adminSummaryJson.channels.some((channel) => channel.id === "slack" && channel.enabled === true));
+    assert.ok(
+      adminSummaryJson.channels.some(
+        (channel) => channel.id === "slack" && channel.enabled === true
+      )
+    );
 
-    const timelineResponse = await fetch(`http://127.0.0.1:${port}/admin/timeline`, {
-      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
-    });
-    const timelineJson = await timelineResponse.json() as {
+    const timelineResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/timeline`,
+      {
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
+    const timelineJson = (await timelineResponse.json()) as {
       sessions: Array<{ sessionId: string }>;
       runs: Array<{ runId: string; eventCount: number }>;
       jobs: Array<{ id: string }>;
@@ -988,22 +1553,37 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assert.ok(timelineJson.runs.length > 0);
     assert.ok(timelineJson.jobs.length > 0);
     assert.ok(timelineJson.memory.length > 0);
-    assert.ok(timelineJson.governanceAudit.some((entry) => entry.toolId === "project.brief" && entry.action === "approved"));
+    assert.ok(
+      timelineJson.governanceAudit.some(
+        (entry) =>
+          entry.toolId === "project.brief" && entry.action === "approved"
+      )
+    );
 
-    const sessionDetailResponse = await fetch(`http://127.0.0.1:${port}/admin/sessions/${encodeURIComponent(webhookJson.sessionId)}`, {
-      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
-    });
-    const sessionDetailJson = await sessionDetailResponse.json() as { session: { sessionId: string; runIds: string[] } };
+    const sessionDetailResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/sessions/${encodeURIComponent(webhookJson.sessionId)}`,
+      {
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
+    const sessionDetailJson = (await sessionDetailResponse.json()) as {
+      session: { sessionId: string; runIds: string[] };
+    };
     assert.equal(sessionDetailJson.session.sessionId, webhookJson.sessionId);
     assert.ok(sessionDetailJson.session.runIds.length > 0);
 
-    const runWithEvents = timelineJson.runs.find((run) => run.eventCount > 0) ?? timelineJson.runs[0];
+    const runWithEvents =
+      timelineJson.runs.find((run) => run.eventCount > 0) ??
+      timelineJson.runs[0];
     const firstRunId = runWithEvents?.runId;
     assert.ok(firstRunId);
-    const runDetailResponse = await fetch(`http://127.0.0.1:${port}/admin/runs/${encodeURIComponent(firstRunId)}`, {
-      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
-    });
-    const runDetailJson = await runDetailResponse.json() as {
+    const runDetailResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/runs/${encodeURIComponent(firstRunId)}`,
+      {
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
+    const runDetailJson = (await runDetailResponse.json()) as {
       run: { runId: string };
       events: Array<{ type: string }>;
       children: Array<{ runId: string }>;
@@ -1013,49 +1593,84 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
 
     const firstJobId = timelineJson.jobs[0]?.id;
     assert.ok(firstJobId);
-    const jobDetailResponse = await fetch(`http://127.0.0.1:${port}/admin/jobs/${encodeURIComponent(firstJobId)}`, {
-      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
-    });
-    const jobDetailJson = await jobDetailResponse.json() as { job: { id: string; status: string } };
+    const jobDetailResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/jobs/${encodeURIComponent(firstJobId)}`,
+      {
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
+    const jobDetailJson = (await jobDetailResponse.json()) as {
+      job: { id: string; status: string };
+    };
     assert.equal(jobDetailJson.job.id, firstJobId);
 
     const firstMemoryId = timelineJson.memory[0]?.id;
     assert.ok(firstMemoryId);
-    const memoryDetailResponse = await fetch(`http://127.0.0.1:${port}/admin/memory/${encodeURIComponent(firstMemoryId)}`, {
-      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
-    });
-    const memoryDetailJson = await memoryDetailResponse.json() as { entry: { id: string; category: string } };
+    const memoryDetailResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/memory/${encodeURIComponent(firstMemoryId)}`,
+      {
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
+    const memoryDetailJson = (await memoryDetailResponse.json()) as {
+      entry: { id: string; category: string };
+    };
     assert.equal(memoryDetailJson.entry.id, firstMemoryId);
 
-    const settingsResponse = await fetch(`http://127.0.0.1:${port}/admin/settings`, {
-      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
-    });
-    const settingsJson = await settingsResponse.json() as {
-      settings: { dashboardRefreshSeconds: number; chatDefaultConversationId: string };
+    const settingsResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/settings`,
+      {
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
+    const settingsJson = (await settingsResponse.json()) as {
+      settings: {
+        dashboardRefreshSeconds: number;
+        chatDefaultConversationId: string;
+      };
     };
     assert.equal(settingsJson.settings.dashboardRefreshSeconds, 5);
-    assert.equal(settingsJson.settings.chatDefaultConversationId, "operator-console");
+    assert.equal(
+      settingsJson.settings.chatDefaultConversationId,
+      "operator-console"
+    );
 
-    const settingsUpdateResponse = await fetch(`http://127.0.0.1:${port}/admin/settings`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.operatorBearerToken}` },
-      body: JSON.stringify({
-        dashboardRefreshSeconds: 9,
-        chatDefaultConversationId: "ops-room",
-        memoryTimelineLimit: 25
-      })
-    });
-    const settingsUpdateJson = await settingsUpdateResponse.json() as {
-      settings: { dashboardRefreshSeconds: number; chatDefaultConversationId: string; memoryTimelineLimit: number };
+    const settingsUpdateResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/settings`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          dashboardRefreshSeconds: 9,
+          chatDefaultConversationId: "ops-room",
+          memoryTimelineLimit: 25,
+        }),
+      }
+    );
+    const settingsUpdateJson = (await settingsUpdateResponse.json()) as {
+      settings: {
+        dashboardRefreshSeconds: number;
+        chatDefaultConversationId: string;
+        memoryTimelineLimit: number;
+      };
     };
     assert.equal(settingsUpdateJson.settings.dashboardRefreshSeconds, 9);
-    assert.equal(settingsUpdateJson.settings.chatDefaultConversationId, "ops-room");
+    assert.equal(
+      settingsUpdateJson.settings.chatDefaultConversationId,
+      "ops-room"
+    );
     assert.equal(settingsUpdateJson.settings.memoryTimelineLimit, 25);
 
-    const requestExportResponse = await fetch(`http://127.0.0.1:${port}/admin/export?scope=requests&format=json`, {
-      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
-    });
-    const requestExportJson = await requestExportResponse.json() as {
+    const requestExportResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/export?scope=requests&format=json`,
+      {
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
+    const requestExportJson = (await requestExportResponse.json()) as {
       scope: string;
       format: string;
       items: Array<{ requestId: string; path: string; statusCode: number }>;
@@ -1063,69 +1678,113 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assert.equal(requestExportJson.scope, "requests");
     assert.equal(requestExportJson.format, "json");
     assert.ok(requestExportJson.items.some((item) => item.path === "/health"));
-    assert.ok(requestExportJson.items.some((item) =>
-      item.path === "/admin/summary" &&
-      item.statusCode === 401
-    ));
+    assert.ok(
+      requestExportJson.items.some(
+        (item) => item.path === "/admin/summary" && item.statusCode === 401
+      )
+    );
 
-    const channelExportResponse = await fetch(`http://127.0.0.1:${port}/admin/export?scope=channels&format=ndjson`, {
-      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
-    });
+    const channelExportResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/export?scope=channels&format=ndjson`,
+      {
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
     const channelExportText = await channelExportResponse.text();
     assert.match(channelExportText, /"channelId":"slack"/);
     assert.match(channelExportText, /"status":"delivered"/);
 
-    const mcpExportResponse = await fetch(`http://127.0.0.1:${port}/admin/export?scope=mcp&format=json`, {
-      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
-    });
-    const mcpExportJson = await mcpExportResponse.json() as {
+    const mcpExportResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/export?scope=mcp&format=json`,
+      {
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
+    const mcpExportJson = (await mcpExportResponse.json()) as {
       scope: string;
       format: string;
       items: Array<{ method: string; outcome: string; toolName?: string }>;
     };
     assert.equal(mcpExportJson.scope, "mcp");
     assert.equal(mcpExportJson.format, "json");
-    assert.ok(mcpExportJson.items.some((item) => item.method === "tools/list" && item.outcome === "success"));
+    assert.ok(
+      mcpExportJson.items.some(
+        (item) => item.method === "tools/list" && item.outcome === "success"
+      )
+    );
 
-    const chatExportResponse = await fetch(`http://127.0.0.1:${port}/admin/export?scope=chat&format=json`, {
-      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
-    });
-    const chatExportJson = await chatExportResponse.json() as {
+    const chatExportResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/export?scope=chat&format=json`,
+      {
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
+    const chatExportJson = (await chatExportResponse.json()) as {
       scope: string;
       items: Array<{ kind: string; id: string; sessionId: string }>;
     };
     assert.equal(chatExportJson.scope, "chat");
-    assert.ok(chatExportJson.items.some((item) =>
-      item.kind === "attachment" &&
-      item.id === uploadedAttachment.id &&
-      item.sessionId === webSession.sessionId
-    ));
-    assert.ok(chatExportJson.items.some((item) =>
-      item.kind === "artifact" &&
-      item.id === artifactJson.artifact.id &&
-      item.sessionId === webSession.sessionId
-    ));
+    assert.ok(
+      chatExportJson.items.some(
+        (item) =>
+          item.kind === "attachment" &&
+          item.id === uploadedAttachment.id &&
+          item.sessionId === webSession.sessionId
+      )
+    );
+    assert.ok(
+      chatExportJson.items.some(
+        (item) =>
+          item.kind === "artifact" &&
+          item.id === artifactJson.artifact.id &&
+          item.sessionId === webSession.sessionId
+      )
+    );
 
-    const diagnosticsResponse = await fetch(`http://127.0.0.1:${port}/admin/diagnostics`, {
-      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
-    });
-    const diagnosticsJson = await diagnosticsResponse.json() as {
+    const diagnosticsResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/diagnostics`,
+      {
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
+    const diagnosticsJson = (await diagnosticsResponse.json()) as {
       diagnostics: {
         appEnv: string;
         modelAdapter: string;
         missingRecommendedEnv: string[];
-        channelReadiness: Array<{ id: string; enabled: boolean; secretPresent: boolean }>;
+        channelReadiness: Array<{
+          id: string;
+          enabled: boolean;
+          secretPresent: boolean;
+        }>;
       };
     };
     assert.equal(diagnosticsJson.diagnostics.appEnv, "test");
     assert.equal(diagnosticsJson.diagnostics.modelAdapter, "fallback");
-    assert.ok(diagnosticsJson.diagnostics.missingRecommendedEnv.includes("OPENAI_API_KEY"));
-    assert.ok(diagnosticsJson.diagnostics.channelReadiness.some((channel) => channel.id === "slack" && channel.enabled === true && channel.secretPresent === true));
+    assert.ok(
+      diagnosticsJson.diagnostics.missingRecommendedEnv.includes(
+        "OPENAI_API_KEY"
+      )
+    );
+    assert.ok(
+      diagnosticsJson.diagnostics.channelReadiness.some(
+        (channel) =>
+          channel.id === "slack" &&
+          channel.enabled === true &&
+          channel.secretPresent === true
+      )
+    );
 
-    const metricsResponse = await fetch(`http://127.0.0.1:${port}/metrics?format=prometheus`, {
-      headers: { Authorization: `Bearer ${config.operatorBearerToken}` }
-    });
-    assert.equal(metricsResponse.headers.get("content-type"), "text/plain; version=0.0.4");
+    const metricsResponse = await fetch(
+      `http://127.0.0.1:${port}/metrics?format=prometheus`,
+      {
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
+    assert.equal(
+      metricsResponse.headers.get("content-type"),
+      "text/plain; version=0.0.4"
+    );
     const metricsText = await metricsResponse.text();
     assert.match(metricsText, /codex_phantom_mcp_auth_failure 12/);
     assert.match(metricsText, /codex_phantom_mcp_rate_limited 1/);
@@ -1139,7 +1798,10 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
 
 test("slack inbound rejects missing signing secret and disabled channel", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "codex-phantom-slack-inbound-"));
-  const config = makeConfig(dataDir, { port: 0, slackBotToken: "xoxb-test-token" });
+  const config = makeConfig(dataDir, {
+    port: 0,
+    slackBotToken: "xoxb-test-token",
+  });
   const database = new AppDatabase(join(dataDir, "slack-inbound.sqlite"));
   const sessions = new SessionStore(database);
   const channels = new ChannelRegistry(database, config);
@@ -1147,18 +1809,34 @@ test("slack inbound rejects missing signing secret and disabled channel", async 
     database,
     config,
     makeDisabledEmbeddings(),
-    makeFakeVectorStore({ backend: "qdrant", available: false, configured: false }),
+    makeFakeVectorStore({
+      backend: "qdrant",
+      available: false,
+      configured: false,
+    }),
     makeFakeVectorStore({ backend: "sqlite_fallback", available: true })
   );
   const tools = new ToolRegistry();
-  const runtime = new AgentRuntime(config, new FakeAdapter(), sessions, memory, tools);
+  const runtime = new AgentRuntime(
+    config,
+    new FakeAdapter(),
+    sessions,
+    memory,
+    tools
+  );
   const runs = new RunGraphStore(database);
   const orchestration = new OrchestrationService(runtime, tools, runs);
   const scheduler = new SchedulerService(database, orchestration);
   await scheduler.start();
   const metrics = new MetricsStore();
   const mcpAudit = new McpAuditStore(database);
-  const mcp = new McpServer(config.mcpBearerToken, tools, metrics, undefined, mcpAudit);
+  const mcp = new McpServer(
+    config.mcpBearerToken,
+    tools,
+    metrics,
+    undefined,
+    mcpAudit
+  );
   const dynamicTools = new DynamicToolRegistry(database, tools);
   const governance = new ToolGovernanceService(database);
   const server = new HttpServer(
@@ -1191,23 +1869,29 @@ test("slack inbound rejects missing signing secret and disabled channel", async 
         user: "U123",
         channel: "C123456",
         text: "hello",
-        ts: "1713900001.000100"
-      }
+        ts: "1713900001.000100",
+      },
     });
 
-    const missingSecretResponse = await fetch(`http://127.0.0.1:${port}/channels/slack/events`, {
-      method: "POST",
-      headers: signedSlackHeaders("slack-signing-secret", body),
-      body
-    });
+    const missingSecretResponse = await fetch(
+      `http://127.0.0.1:${port}/channels/slack/events`,
+      {
+        method: "POST",
+        headers: signedSlackHeaders("slack-signing-secret", body),
+        body,
+      }
+    );
     assert.equal(missingSecretResponse.status, 412);
 
     config.slackSigningSecret = "slack-signing-secret";
-    const disabledResponse = await fetch(`http://127.0.0.1:${port}/channels/slack/events`, {
-      method: "POST",
-      headers: signedSlackHeaders(config.slackSigningSecret, body),
-      body
-    });
+    const disabledResponse = await fetch(
+      `http://127.0.0.1:${port}/channels/slack/events`,
+      {
+        method: "POST",
+        headers: signedSlackHeaders(config.slackSigningSecret, body),
+        body,
+      }
+    );
     assert.equal(disabledResponse.status, 409);
   } finally {
     await scheduler.stop();

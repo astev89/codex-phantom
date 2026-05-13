@@ -4,7 +4,7 @@ This is the living status ledger for `codex-phantom`. Update it at the end of ea
 
 Last updated: 2026-05-13
 Branch: `jarvis/transcript-artifact-continuity`
-Latest verified commit: production-proof working tree after `2dd4086`
+Latest verified commit: `7e272d5`
 
 ## Current State
 
@@ -13,6 +13,26 @@ Latest verified commit: production-proof working tree after `2dd4086`
 The project is now past its first serious production-hardening pass. It is not yet equivalent to the original Phantom project, but the core runtime is materially safer to run: request sizes are bounded, secrets are rejected in production when defaults are used, outbound model calls have timeouts, scheduler jobs recover deterministically after restarts, MCP events are durably audited, external webhooks are signed, Slack sends retry transient failures, operator-console workflows have browser coverage, and the Docker image runs compiled JavaScript instead of stripped TypeScript.
 
 ## Just Completed
+
+Slack progress/status wave completed locally on 2026-05-13:
+
+- Expanded Slack transport support beyond `chat.postMessage` to include `chat.update`, `reactions.add`, `reactions.remove`, and Block Kit-ready message payloads.
+- Added durable inbound progress records for queued, running, completed, and failed Slack run states.
+- Added progressive Slack thread updates and status reactions for acked inbound Slack runs.
+- Preserved triggering Slack message timestamps separately from response thread timestamps so reactions attach to the right message while replies stay in the right thread.
+- Kept Slack progress/reaction failures best-effort and operator-visible through delivery/progress records without corrupting inbound completion state.
+
+Verification from this wave:
+
+```bash
+node --experimental-strip-types --test tests/channels-inbound.test.ts
+node --experimental-strip-types --test tests/server.test.ts
+npm run typecheck
+npm test
+npm run build
+git diff --check
+GitNexus detect_changes(scope="all")
+```
 
 Production proof wave completed locally on 2026-05-13:
 
@@ -154,12 +174,13 @@ npm run build
 
 Use `docs/phantom-parity.md` as the canonical production-level parity roadmap. Keep this section limited to immediate handoff notes and proof gaps.
 
-### P1: Slack Production Parity Plan
+### P1: Slack Feedback And Reaction Feedback
 
 Suggested work:
 
 - Implement `docs/superpowers/plans/2026-05-13-slack-production-parity.md` in mergeable slices.
-- Start with Slack transport primitives, then durable progress state and progressive thread updates.
+- Add signed Slack interaction handling for feedback buttons on final replies.
+- Map selected Slack reactions into durable feedback records with provider event dedupe.
 - Keep Telegram out of scope and keep Slack side-effect failures isolated from already-acked inbound events.
 
 ## Known Constraints

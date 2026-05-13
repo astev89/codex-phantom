@@ -216,6 +216,17 @@ export class AppDatabase {
         UNIQUE(channel_id, provider_event_id)
       );
 
+      CREATE TABLE IF NOT EXISTS inbound_channel_progress (
+        id TEXT PRIMARY KEY,
+        inbound_event_id TEXT NOT NULL,
+        state TEXT NOT NULL,
+        message_ts TEXT,
+        status_reaction TEXT,
+        summary TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (inbound_event_id) REFERENCES inbound_channel_events(id)
+      );
+
       CREATE TABLE IF NOT EXISTS operator_settings (
         id TEXT PRIMARY KEY,
         settings_json TEXT NOT NULL,
@@ -255,6 +266,7 @@ export class AppDatabase {
       CREATE INDEX IF NOT EXISTS idx_channel_delivery_logs_channel_id ON channel_delivery_logs(channel_id, delivered_at DESC);
       CREATE INDEX IF NOT EXISTS idx_inbound_channel_events_channel_id ON inbound_channel_events(channel_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_inbound_channel_events_status ON inbound_channel_events(status, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_inbound_channel_progress_event ON inbound_channel_progress(inbound_event_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_operator_settings_updated_at ON operator_settings(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_request_audit_logs_created_at ON request_audit_logs(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_mcp_audit_logs_created_at ON mcp_audit_logs(created_at DESC);
@@ -263,12 +275,37 @@ export class AppDatabase {
 
     ensureColumn(this.db, "memory_entries", "embedding_json", "TEXT");
     ensureColumn(this.db, "memory_entries", "embedding_model", "TEXT");
-    ensureColumn(this.db, "memory_entries", "source_type", "TEXT NOT NULL DEFAULT 'raw_turn'");
-    ensureColumn(this.db, "memory_entries", "importance", "REAL NOT NULL DEFAULT 0.5");
+    ensureColumn(
+      this.db,
+      "memory_entries",
+      "source_type",
+      "TEXT NOT NULL DEFAULT 'raw_turn'"
+    );
+    ensureColumn(
+      this.db,
+      "memory_entries",
+      "importance",
+      "REAL NOT NULL DEFAULT 0.5"
+    );
     ensureColumn(this.db, "memory_entries", "last_accessed_at", "TEXT");
-    ensureColumn(this.db, "memory_entries", "access_count", "INTEGER NOT NULL DEFAULT 0");
-    ensureColumn(this.db, "memory_entries", "is_summary", "INTEGER NOT NULL DEFAULT 0");
-    ensureColumn(this.db, "memory_entries", "is_fact", "INTEGER NOT NULL DEFAULT 0");
+    ensureColumn(
+      this.db,
+      "memory_entries",
+      "access_count",
+      "INTEGER NOT NULL DEFAULT 0"
+    );
+    ensureColumn(
+      this.db,
+      "memory_entries",
+      "is_summary",
+      "INTEGER NOT NULL DEFAULT 0"
+    );
+    ensureColumn(
+      this.db,
+      "memory_entries",
+      "is_fact",
+      "INTEGER NOT NULL DEFAULT 0"
+    );
     ensureColumn(this.db, "memory_entries", "parent_summary_id", "TEXT");
     ensureColumn(this.db, "memory_entries", "source_session_id", "TEXT");
     ensureColumn(this.db, "memory_entries", "source_run_id", "TEXT");
@@ -280,11 +317,29 @@ export class AppDatabase {
     ensureColumn(this.db, "sessions", "title_source", "TEXT");
     ensureColumn(this.db, "chat_attachments", "storage_path", "TEXT");
     ensureColumn(this.db, "chat_attachments", "sha256", "TEXT");
-    ensureColumn(this.db, "dynamic_tools", "approval_state", "TEXT NOT NULL DEFAULT 'pending'");
+    ensureColumn(
+      this.db,
+      "dynamic_tools",
+      "approval_state",
+      "TEXT NOT NULL DEFAULT 'pending'"
+    );
     ensureColumn(this.db, "dynamic_tools", "approved_by", "TEXT");
     ensureColumn(this.db, "dynamic_tools", "approved_at", "TEXT");
     ensureColumn(this.db, "dynamic_tools", "governance_notes", "TEXT");
-    ensureColumn(this.db, "channel_delivery_logs", "attempt_count", "INTEGER NOT NULL DEFAULT 1");
+    ensureColumn(
+      this.db,
+      "channel_delivery_logs",
+      "attempt_count",
+      "INTEGER NOT NULL DEFAULT 1"
+    );
+    ensureColumn(this.db, "inbound_channel_events", "progress_state", "TEXT");
+    ensureColumn(
+      this.db,
+      "inbound_channel_events",
+      "progress_message_ts",
+      "TEXT"
+    );
+    ensureColumn(this.db, "inbound_channel_events", "status_reaction", "TEXT");
 
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_memory_entries_summary ON memory_entries(is_summary, category, created_at DESC);
@@ -303,8 +358,15 @@ function openDatabase(path: string): DatabaseSync {
   return new DatabaseSync(normalized);
 }
 
-function ensureColumn(db: DatabaseSync, table: string, column: string, definition: string): void {
-  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+function ensureColumn(
+  db: DatabaseSync,
+  table: string,
+  column: string,
+  definition: string
+): void {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+    name: string;
+  }>;
   if (!columns.some((item) => item.name === column)) {
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
   }
@@ -314,7 +376,10 @@ export function encodeJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
-export function decodeJson<T>(value: string | null | undefined, fallback: T): T {
+export function decodeJson<T>(
+  value: string | null | undefined,
+  fallback: T
+): T {
   if (!value) {
     return fallback;
   }

@@ -15,7 +15,8 @@ Inbound channels normalize external events into one message envelope before runn
   "responseTarget": {
     "type": "slack_thread",
     "channel": "C123",
-    "threadTs": "1713900000.000000"
+    "threadTs": "1713900000.000000",
+    "messageTs": "1713900000.000100"
   }
 }
 ```
@@ -114,4 +115,15 @@ Supported payloads:
 
 Bot/self/subtype noise is ignored. Duplicate Slack `event_id` values return `202` with `status: "duplicate"` and do not create another coordinator run.
 
-Slack inbound requests use ack-then-run semantics: the HTTP request returns `202` quickly with an `inboundEventId`, then the coordinator runs in-process. On completion, `codex-phantom` posts one basic thread reply when `SLACK_BOT_TOKEN` is available. Progressive updates, status reactions, and richer feedback handling remain follow-up work.
+Slack inbound requests use ack-then-run semantics: the HTTP request returns `202` quickly with an `inboundEventId`, then the coordinator runs in-process.
+
+During execution, Slack runs post a progress message in the target thread, update that message as coordinator events arrive, and record progress rows in SQLite. Status reactions are best-effort on the triggering Slack message:
+
+- `hourglass`: queued
+- `hourglass_flowing_sand`: running
+- `white_check_mark`: completed
+- `x`: failed
+
+Slack progress updates and reactions are delivery side effects. Failures are recorded in channel delivery/progress state for operator visibility, but they do not change an already-sent Slack HTTP ack and do not fail an otherwise successful coordinator run. On completion, `codex-phantom` still posts the final assistant output as a thread reply when `SLACK_BOT_TOKEN` is available.
+
+Feedback buttons and reaction feedback handling remain follow-up work.

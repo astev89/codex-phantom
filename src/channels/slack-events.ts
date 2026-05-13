@@ -11,27 +11,42 @@ export type SlackEventsPayload = {
   event?: Record<string, unknown>;
 };
 
-export function validateSlackRequest(headers: Headers, signingSecret: string, rawBody: string, now = Date.now()): boolean {
+export function validateSlackRequest(
+  headers: Headers,
+  signingSecret: string,
+  rawBody: string,
+  now = Date.now()
+): boolean {
   const timestamp = headers.get("x-slack-request-timestamp");
   const signature = headers.get("x-slack-signature");
   if (!timestamp || !signature?.startsWith("v0=")) {
     return false;
   }
   const timestampMs = Number(timestamp) * 1000;
-  if (!Number.isFinite(timestampMs) || Math.abs(now - timestampMs) > MAX_SLACK_CLOCK_SKEW_MS) {
+  if (
+    !Number.isFinite(timestampMs) ||
+    Math.abs(now - timestampMs) > MAX_SLACK_CLOCK_SKEW_MS
+  ) {
     return false;
   }
   const expectedSignature = `v0=${createHmac("sha256", signingSecret).update(`v0:${timestamp}:${rawBody}`).digest("hex")}`;
   const expectedBuffer = Buffer.from(expectedSignature);
   const actualBuffer = Buffer.from(signature);
-  return expectedBuffer.length === actualBuffer.length && timingSafeEqual(expectedBuffer, actualBuffer);
+  return (
+    expectedBuffer.length === actualBuffer.length &&
+    timingSafeEqual(expectedBuffer, actualBuffer)
+  );
 }
 
 export function mapSlackEventToInboundMessage(
   payload: SlackEventsPayload,
   options: { botUserId?: string } = {}
 ): InboundChannelMessage | null {
-  if (payload.type !== "event_callback" || !payload.event_id || !payload.event) {
+  if (
+    payload.type !== "event_callback" ||
+    !payload.event_id ||
+    !payload.event
+  ) {
     return null;
   }
   const event = payload.event;
@@ -69,12 +84,15 @@ export function mapSlackEventToInboundMessage(
     senderId: user,
     message: cleanedText.trim(),
     threadId: threadTs,
-    responseTarget: { type: "slack_thread", channel, threadTs },
-    rawPayload: payload as JsonValue
+    responseTarget: { type: "slack_thread", channel, threadTs, messageTs: ts },
+    rawPayload: payload as JsonValue,
   };
 }
 
-function mapReaction(providerEventId: string, event: Record<string, unknown>): InboundChannelMessage | null {
+function mapReaction(
+  providerEventId: string,
+  event: Record<string, unknown>
+): InboundChannelMessage | null {
   const user = stringValue(event.user);
   const reaction = stringValue(event.reaction);
   const item = recordValue(event.item);
@@ -90,8 +108,13 @@ function mapReaction(providerEventId: string, event: Record<string, unknown>): I
     senderId: user,
     message: `Slack reaction :${reaction}: from ${user ?? "unknown"}`,
     threadId: ts,
-    responseTarget: { type: "slack_thread", channel, threadTs: ts },
-    rawPayload: { type: "reaction_added", event } as JsonValue
+    responseTarget: {
+      type: "slack_thread",
+      channel,
+      threadTs: ts,
+      messageTs: ts,
+    },
+    rawPayload: { type: "reaction_added", event } as JsonValue,
   };
 }
 
@@ -99,7 +122,10 @@ function stripBotMention(text: string, botUserId?: string): string {
   if (!botUserId) {
     return text;
   }
-  return text.replace(new RegExp(`<@${escapeRegExp(botUserId)}>`, "g"), "").replace(/\s+/g, " ").trim();
+  return text
+    .replace(new RegExp(`<@${escapeRegExp(botUserId)}>`, "g"), "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function stringValue(value: unknown): string | undefined {
@@ -107,7 +133,9 @@ function stringValue(value: unknown): string | undefined {
 }
 
 function recordValue(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
 }
 
 function escapeRegExp(value: string): string {
