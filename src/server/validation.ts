@@ -86,6 +86,20 @@ export type OperatorSettingsInput = {
   memoryTimelineLimit?: number;
 };
 
+export type SelfEvolutionReviewInput = {
+  reviewedBy: string;
+  notes?: string;
+};
+
+export type SelfEvolutionApplyInput = {
+  appliedBy: string;
+  confirmHighRisk?: boolean;
+};
+
+export type SelfEvolutionRollbackInput = {
+  rolledBackBy: string;
+};
+
 export function parseJsonBody(text: string): unknown {
   if (!text) {
     throw new HttpError(400, "Request body is required");
@@ -279,6 +293,38 @@ export function validateSelfEvolutionProposalBody(
         ? undefined
         : toJsonValue(value.metadata, "metadata"),
     proposedBy: optionalString(value.proposedBy),
+  };
+}
+
+export function validateSelfEvolutionReviewBody(
+  input: unknown
+): SelfEvolutionReviewInput {
+  const value = asRecord(input);
+  return {
+    reviewedBy: nonEmptyString(value.reviewedBy, "reviewedBy"),
+    notes: optionalString(value.notes),
+  };
+}
+
+export function validateSelfEvolutionApplyBody(
+  input: unknown
+): SelfEvolutionApplyInput {
+  const value = asRecord(input);
+  return {
+    appliedBy: nonEmptyString(value.appliedBy, "appliedBy"),
+    confirmHighRisk:
+      value.confirmHighRisk === undefined
+        ? undefined
+        : requireBoolean(value.confirmHighRisk, "confirmHighRisk"),
+  };
+}
+
+export function validateSelfEvolutionRollbackBody(
+  input: unknown
+): SelfEvolutionRollbackInput {
+  const value = asRecord(input);
+  return {
+    rolledBackBy: nonEmptyString(value.rolledBackBy, "rolledBackBy"),
   };
 }
 

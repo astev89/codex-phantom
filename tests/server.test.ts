@@ -1864,6 +1864,130 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     );
     assert.equal(proposalListJson.summary.proposed, 1);
 
+    const applyProposalResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/self-evolution/proposals`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          target: "configuration",
+          title: "Tune operator refresh",
+          rationale: "Exercise approved self-evolution apply and rollback.",
+          riskClass: "high",
+          proposedChange: {
+            summary: "Change only operator settings.",
+            operatorSettings: { dashboardRefreshSeconds: 9 },
+          },
+        }),
+      }
+    );
+    const applyProposalJson = (await applyProposalResponse.json()) as {
+      proposal: { id: string; status: string };
+    };
+    assert.equal(applyProposalResponse.status, 201);
+
+    const approveProposalResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/self-evolution/proposals/${encodeURIComponent(applyProposalJson.proposal.id)}/approve`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          reviewedBy: "operator",
+          notes: "High risk confirmed for route behavior test.",
+        }),
+      }
+    );
+    const approveProposalJson = (await approveProposalResponse.json()) as {
+      proposal: { status: string; reviewedBy: string };
+    };
+    assert.equal(approveProposalResponse.status, 200);
+    assert.equal(approveProposalJson.proposal.status, "approved");
+    assert.equal(approveProposalJson.proposal.reviewedBy, "operator");
+
+    const blockedApplyResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/self-evolution/proposals/${encodeURIComponent(applyProposalJson.proposal.id)}/apply`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ appliedBy: "operator" }),
+      }
+    );
+    assert.equal(blockedApplyResponse.status, 409);
+
+    const confirmedApplyResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/self-evolution/proposals/${encodeURIComponent(applyProposalJson.proposal.id)}/apply`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          appliedBy: "operator",
+          confirmHighRisk: true,
+        }),
+      }
+    );
+    const confirmedApplyJson = (await confirmedApplyResponse.json()) as {
+      proposal: { status: string; appliedBy: string };
+      mutation: { status: string; mutationType: string };
+    };
+    assert.equal(confirmedApplyResponse.status, 200);
+    assert.equal(confirmedApplyJson.proposal.status, "applied");
+    assert.equal(confirmedApplyJson.proposal.appliedBy, "operator");
+    assert.equal(confirmedApplyJson.mutation.status, "applied");
+    assert.equal(confirmedApplyJson.mutation.mutationType, "operator_settings");
+
+    const appliedSettingsResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/settings`,
+      {
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
+    const appliedSettingsJson = (await appliedSettingsResponse.json()) as {
+      settings: { dashboardRefreshSeconds: number };
+    };
+    assert.equal(appliedSettingsJson.settings.dashboardRefreshSeconds, 9);
+
+    const rollbackResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/self-evolution/proposals/${encodeURIComponent(applyProposalJson.proposal.id)}/rollback`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ rolledBackBy: "operator" }),
+      }
+    );
+    const rollbackJson = (await rollbackResponse.json()) as {
+      proposal: { status: string; rolledBackBy: string };
+    };
+    assert.equal(rollbackResponse.status, 200);
+    assert.equal(rollbackJson.proposal.status, "rolled_back");
+    assert.equal(rollbackJson.proposal.rolledBackBy, "operator");
+
+    const rolledBackSettingsResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/settings`,
+      {
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
+    const rolledBackSettingsJson =
+      (await rolledBackSettingsResponse.json()) as {
+        settings: { dashboardRefreshSeconds: number };
+      };
+    assert.equal(rolledBackSettingsJson.settings.dashboardRefreshSeconds, 5);
+
     const updatedSummaryResponse = await fetch(
       `http://127.0.0.1:${port}/admin/summary`,
       {
@@ -1871,10 +1995,21 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       }
     );
     const updatedSummaryJson = (await updatedSummaryResponse.json()) as {
-      selfEvolution: { proposed: number; highRisk: number };
+      selfEvolution: {
+        proposed: number;
+        highRisk: number;
+        rolledBack: number;
+        recentMutations: Array<{ status: string }>;
+      };
     };
     assert.equal(updatedSummaryJson.selfEvolution.proposed, 1);
     assert.equal(updatedSummaryJson.selfEvolution.highRisk, 0);
+    assert.equal(updatedSummaryJson.selfEvolution.rolledBack, 1);
+    assert.ok(
+      updatedSummaryJson.selfEvolution.recentMutations.some(
+        (mutation) => mutation.status === "rolled_back"
+      )
+    );
 
     const feedbackResponse = await fetch(
       `http://127.0.0.1:${port}/admin/channels/feedback`,
@@ -1915,6 +2050,7 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       memoryMaintenance: Array<{ id: string; status: string }>;
       governanceAudit: Array<{ toolId: string; action: string }>;
       selfEvolutionProposals: Array<{ id: string; status: string }>;
+      selfEvolutionMutations: Array<{ status: string }>;
     };
     assert.ok(timelineJson.sessions.length > 0);
     assert.ok(timelineJson.runs.length > 0);
@@ -1934,6 +2070,11 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assert.ok(
       timelineJson.selfEvolutionProposals.some(
         (proposal) => proposal.id === proposalJson.proposal.id
+      )
+    );
+    assert.ok(
+      timelineJson.selfEvolutionMutations.some(
+        (mutation) => mutation.status === "rolled_back"
       )
     );
 

@@ -28,7 +28,7 @@ Completed or intentionally covered:
 | Channel parity             | Partial         | Slack, Web Chat, signed webhook, and future discovered non-Telegram Phantom channels are in scope. Telegram is excluded.                                                                                                                                                                                        |
 | Operator onboarding parity | Mostly complete | Bundled YAML role/operator config files, first-run readiness checks, startup YAML role-policy loading, and admin source/status visibility exist. Magic-link auth is not required for this internal project. Remaining gaps are polish-level unless new Phantom setup behavior is discovered.                    |
 | Managed memory parity      | Mostly complete | Contradiction/supersession lifecycle links, restart-safe scheduled maintenance, deterministic summarization/promotion, bounded active-row pruning, decay/reinforcement scoring, and hybrid retrieval ranking are implemented. Remaining gaps are polish-level unless new Phantom memory behavior is discovered. |
-| Governed self-evolution    | Partial         | Durable proposal records, operator APIs, agent proposal tool, audit visibility, and malformed/direct-apply rejection are implemented. Remaining gaps: approval/apply policy gates, rollback metadata, and safe execution of approved changes.                                                                   |
+| Governed self-evolution    | Mostly complete | Durable proposal records, operator APIs, agent proposal tool, approval/rejection, high-risk confirmation, operator-settings apply, rollback metadata, mutation audit, and malformed/direct-apply rejection are implemented. Remaining gaps: safe mutation classes for prompts, memory policy, tools, and roles. |
 | Internal tool parity       | Partial         | Replace Phantom marketplace expectations with governed internal tool bundles, manifests, import/enable/disable lifecycle, approval state, and audit. No public marketplace required.                                                                                                                            |
 | Artifact intelligence      | Partial         | Uploaded attachments and explicit artifacts exist. Remaining gaps: automatic artifact extraction from selected tool events or structured outputs and searchable attachment contents for safe text-like files.                                                                                                   |
 
@@ -42,7 +42,6 @@ Completed or intentionally covered:
 
 ## Priority Order
 
-1. Governed self-evolution approval/apply and rollback.
-2. Internal tool parity.
-3. Artifact intelligence.
-4. Newly discovered non-Telegram channel gaps.
+1. Internal tool parity.
+2. Artifact intelligence.
+3. Newly discovered non-Telegram channel gaps.

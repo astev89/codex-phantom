@@ -56,10 +56,14 @@ import { MemoryStore } from "../memory/store.ts";
 import type { MemoryMaintenanceService } from "../memory/maintenance.ts";
 import { DynamicToolRegistry } from "../tools/dynamic-registry.ts";
 import { ToolGovernanceService } from "../tools/governance.ts";
-import { SelfEvolutionProposalStore } from "../self-evolution/proposals.ts";
+import {
+  SelfEvolutionProposalStore,
+  type SelfEvolutionMutationRecord,
+  type SelfEvolutionProposalRecord,
+} from "../self-evolution/proposals.ts";
 import { renderOperatorConsole } from "./ui.ts";
 import { renderChatApp } from "./chat-ui.ts";
-import { OperatorSettingsStore } from "./settings.ts";
+import { OperatorSettingsStore, type OperatorSettings } from "./settings.ts";
 import { RequestAuditStore } from "./request-audit.ts";
 import { buildStartupDiagnostics } from "./diagnostics.ts";
 import { buildSetupReadiness } from "./readiness.ts";
@@ -75,7 +79,10 @@ import {
   validateChatBody,
   validateMcpBody,
   validateScheduleBody,
+  validateSelfEvolutionApplyBody,
   validateSelfEvolutionProposalBody,
+  validateSelfEvolutionReviewBody,
+  validateSelfEvolutionRollbackBody,
   validateToolApprovalBody,
   validateWebhookBody,
 } from "./validation.ts";
@@ -416,6 +423,10 @@ export class HttpServer {
           selfEvolutionProposals: this.selfEvolution.list(
             settings.memoryTimelineLimit
           ),
+          selfEvolutionMutations: this.selfEvolution.listMutations(
+            undefined,
+            settings.memoryTimelineLimit
+          ),
         });
         return;
       }
@@ -488,6 +499,10 @@ export class HttpServer {
         const limit = url.searchParams.get("limit");
         this.json(res, 200, {
           proposals: this.selfEvolution.list(limit ? Number(limit) : 50),
+          mutations: this.selfEvolution.listMutations(
+            undefined,
+            limit ? Number(limit) : 50
+          ),
           summary: this.selfEvolution.summary(),
         });
         return;
@@ -507,6 +522,55 @@ export class HttpServer {
         });
         this.json(res, 201, { requestId, proposal });
         return;
+      }
+
+      if (
+        req.method === "POST" &&
+        url.pathname.startsWith("/admin/self-evolution/proposals/")
+      ) {
+        this.requireOperatorAuth(req);
+        const { proposalId, action } = parseSelfEvolutionActionPath(
+          url.pathname
+        );
+        if (action === "approve") {
+          const body = validateSelfEvolutionReviewBody(
+            parseJsonBody(await readTextBody(req))
+          );
+          const proposal = this.selfEvolution.approve(proposalId, body);
+          this.json(res, 200, { requestId, proposal });
+          return;
+        }
+        if (action === "reject") {
+          const body = validateSelfEvolutionReviewBody(
+            parseJsonBody(await readTextBody(req))
+          );
+          const proposal = this.selfEvolution.reject(proposalId, body);
+          this.json(res, 200, { requestId, proposal });
+          return;
+        }
+        if (action === "apply") {
+          const body = validateSelfEvolutionApplyBody(
+            parseJsonBody(await readTextBody(req))
+          );
+          const { proposal, mutation } = this.applySelfEvolutionProposal(
+            proposalId,
+            body
+          );
+          this.json(res, 200, { requestId, proposal, mutation });
+          return;
+        }
+        if (action === "rollback") {
+          const body = validateSelfEvolutionRollbackBody(
+            parseJsonBody(await readTextBody(req))
+          );
+          const { proposal, mutation } = this.rollbackSelfEvolutionProposal(
+            proposalId,
+            body.rolledBackBy
+          );
+          this.json(res, 200, { requestId, proposal, mutation });
+          return;
+        }
+        throw new HttpError(404, "Not found");
       }
 
       if (req.method === "GET" && url.pathname === "/admin/settings") {
@@ -1295,6 +1359,12 @@ export class HttpServer {
               ...proposal,
               kind: "self_evolution_proposal",
             })),
+            ...this.selfEvolution
+              .listMutations(undefined, 250)
+              .map((mutation) => ({
+                ...mutation,
+                kind: "self_evolution_mutation",
+              })),
           ],
         };
       case "mcp":
@@ -1334,9 +1404,109 @@ export class HttpServer {
               ...proposal,
               kind: "self_evolution_proposal",
             })),
+            ...this.selfEvolution
+              .listMutations(undefined, 50)
+              .map((mutation) => ({
+                ...mutation,
+                kind: "self_evolution_mutation",
+              })),
           ],
         };
     }
+  }
+
+  private applySelfEvolutionProposal(
+    proposalId: string,
+    input: { appliedBy: string; confirmHighRisk?: boolean }
+  ): {
+    proposal: SelfEvolutionProposalRecord;
+    mutation: SelfEvolutionMutationRecord;
+  } {
+    const proposal = this.selfEvolution.get(proposalId);
+    if (!proposal) {
+      throw new HttpError(404, "Self-evolution proposal not found");
+    }
+    if (proposal.status !== "approved") {
+      throw new HttpError(
+        409,
+        "Self-evolution proposal must be approved first"
+      );
+    }
+    if (
+      (proposal.riskClass === "high" || proposal.riskClass === "critical") &&
+      input.confirmHighRisk !== true
+    ) {
+      throw new HttpError(
+        409,
+        "High-risk self-evolution proposal requires explicit confirmation"
+      );
+    }
+
+    try {
+      const patch = extractOperatorSettingsPatch(proposal);
+      const before = this.settings.get();
+      const after = this.settings.update(patch);
+      const mutation = this.selfEvolution.recordApplySuccess({
+        proposalId: proposal.id,
+        target: proposal.target,
+        mutationType: "operator_settings",
+        before: before as unknown as JsonValue,
+        after: after as unknown as JsonValue,
+        rollback: { operatorSettings: before },
+        actor: input.appliedBy,
+      });
+      return {
+        proposal: this.selfEvolution.get(proposal.id) ?? proposal,
+        mutation,
+      };
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Failed to apply self-evolution proposal";
+      const mutation = this.selfEvolution.recordApplyFailure({
+        proposalId: proposal.id,
+        target: proposal.target,
+        mutationType: "operator_settings",
+        actor: input.appliedBy,
+        errorMessage: message,
+      });
+      throw new HttpError(400, message, mutation as unknown as JsonValue);
+    }
+  }
+
+  private rollbackSelfEvolutionProposal(
+    proposalId: string,
+    rolledBackBy: string
+  ): {
+    proposal: SelfEvolutionProposalRecord;
+    mutation: SelfEvolutionMutationRecord;
+  } {
+    const proposal = this.selfEvolution.get(proposalId);
+    if (!proposal) {
+      throw new HttpError(404, "Self-evolution proposal not found");
+    }
+    if (proposal.status !== "applied") {
+      throw new HttpError(409, "Only applied proposals can be rolled back");
+    }
+    const mutation = this.selfEvolution
+      .listMutations(proposalId, 1)
+      .find((item) => item.status === "applied");
+    if (!mutation) {
+      throw new HttpError(409, "No applied mutation is available to roll back");
+    }
+    const rollback = asJsonObject(mutation.rollback, "rollback");
+    const operatorSettings = asJsonObject(
+      rollback.operatorSettings,
+      "rollback.operatorSettings"
+    );
+    this.settings.update(toOperatorSettingsPatch(operatorSettings));
+    const updatedProposal = this.selfEvolution.recordRollback({
+      proposalId,
+      mutationId: mutation.id,
+      actor: rolledBackBy,
+    });
+    return { proposal: updatedProposal, mutation };
   }
 
   private async deliverInboundResponse(record: {
@@ -1708,6 +1878,97 @@ function artifactContentBuffer(
     throw new HttpError(400, "content must be a string");
   }
   return Buffer.from(content, "utf8");
+}
+
+function parseSelfEvolutionActionPath(pathname: string): {
+  proposalId: string;
+  action: string;
+} {
+  const suffix = pathname.replace("/admin/self-evolution/proposals/", "");
+  const [encodedProposalId, action] = suffix.split("/");
+  if (!encodedProposalId || !action) {
+    throw new HttpError(404, "Not found");
+  }
+  return {
+    proposalId: decodeURIComponent(encodedProposalId),
+    action,
+  };
+}
+
+function extractOperatorSettingsPatch(
+  proposal: SelfEvolutionProposalRecord
+): Partial<OperatorSettings> {
+  if (proposal.target !== "configuration") {
+    throw new Error(
+      "Only configuration proposals can be applied in this slice"
+    );
+  }
+  const proposedChange = asJsonObject(
+    proposal.proposedChange,
+    "proposedChange"
+  );
+  const operatorSettings = asJsonObject(
+    proposedChange.operatorSettings,
+    "proposedChange.operatorSettings"
+  );
+  return toOperatorSettingsPatch(operatorSettings);
+}
+
+function toOperatorSettingsPatch(
+  value: Record<string, JsonValue>
+): Partial<OperatorSettings> {
+  const patch: Partial<OperatorSettings> = {};
+  if (value.dashboardRefreshSeconds !== undefined) {
+    if (
+      typeof value.dashboardRefreshSeconds !== "number" ||
+      !Number.isInteger(value.dashboardRefreshSeconds) ||
+      value.dashboardRefreshSeconds <= 0
+    ) {
+      throw new Error(
+        "operatorSettings.dashboardRefreshSeconds must be a positive integer"
+      );
+    }
+    patch.dashboardRefreshSeconds = value.dashboardRefreshSeconds;
+  }
+  if (value.chatDefaultConversationId !== undefined) {
+    if (
+      typeof value.chatDefaultConversationId !== "string" ||
+      value.chatDefaultConversationId.trim() === ""
+    ) {
+      throw new Error(
+        "operatorSettings.chatDefaultConversationId must be a non-empty string"
+      );
+    }
+    patch.chatDefaultConversationId = value.chatDefaultConversationId.trim();
+  }
+  if (value.memoryTimelineLimit !== undefined) {
+    if (
+      typeof value.memoryTimelineLimit !== "number" ||
+      !Number.isInteger(value.memoryTimelineLimit) ||
+      value.memoryTimelineLimit <= 0
+    ) {
+      throw new Error(
+        "operatorSettings.memoryTimelineLimit must be a positive integer"
+      );
+    }
+    patch.memoryTimelineLimit = value.memoryTimelineLimit;
+  }
+  if (Object.keys(patch).length === 0) {
+    throw new Error(
+      "operatorSettings must contain at least one supported field"
+    );
+  }
+  return patch;
+}
+
+function asJsonObject(
+  value: JsonValue | undefined,
+  field: string
+): Record<string, JsonValue> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${field} must be a JSON object`);
+  }
+  return value;
 }
 
 function artifactFileName(artifact: ChatArtifactRecord): string {

@@ -8,11 +8,31 @@ Latest verified commit: `6cf438d`
 
 ## Current State
 
-`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, a Codex-native `/chat` product surface with durable attachment/artifact continuity, hybrid long-term memory with Qdrant-backed vector recall, SQLite fallback, lifecycle controls, restart-safe maintenance, decay/reinforcement-aware ranking, and governed self-evolution proposal records.
+`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, a Codex-native `/chat` product surface with durable attachment/artifact continuity, hybrid long-term memory with Qdrant-backed vector recall, SQLite fallback, lifecycle controls, restart-safe maintenance, decay/reinforcement-aware ranking, and governed self-evolution proposals with operator-approved apply/rollback for settings changes.
 
 The project is now past its first serious production-hardening pass. It is not yet equivalent to the original Phantom project, but the core runtime is materially safer to run: request sizes are bounded, secrets are rejected in production when defaults are used, outbound model calls have timeouts, scheduler jobs recover deterministically after restarts, MCP events are durably audited, external webhooks are signed, Slack sends retry transient failures, operator-console workflows have browser coverage, and the Docker image runs compiled JavaScript instead of stripped TypeScript.
 
 ## Just Completed
+
+Governed self-evolution apply/rollback wave completed locally on 2026-05-13:
+
+- Added review states for governed self-evolution proposals: approved, rejected, applied, failed, and rolled back.
+- Added durable mutation records with before/after/rollback metadata and operator attribution.
+- Added operator-only approve, reject, apply, and rollback endpoints.
+- Implemented the first safe apply class: `configuration` proposals that update operator settings.
+- Required explicit `confirmHighRisk: true` before high- or critical-risk approved proposals can apply.
+- Kept prompt, memory policy, tool, role, auth, filesystem, and runtime policy mutation out of the apply path until each has a safe mutation class.
+
+Verification from this wave:
+
+```bash
+node --experimental-strip-types --test tests/self-evolution.test.ts tests/server.test.ts
+npm run typecheck
+npm test
+npm run build
+git diff --check
+GitNexus detect_changes(scope="all")
+```
 
 Governed self-evolution proposal wave completed locally on 2026-05-13:
 
@@ -325,14 +345,14 @@ npm run build
 
 Use `docs/phantom-parity.md` as the canonical production-level parity roadmap. Keep this section limited to immediate handoff notes and proof gaps.
 
-### P1: Governed Self-Evolution Approval And Rollback
+### P1: Internal Tool Bundle Manifests
 
 Suggested work:
 
-- Add explicit proposal approval/rejection transitions with operator identity and notes.
-- Require policy gates before any proposal can become an applyable change.
-- Store rollback metadata for approved prompt, memory policy, tool, role, and configuration changes.
-- Keep unrestricted self-mutation out of scope.
+- Add internal governed tool bundle manifests for tool metadata, scopes, inputs, and installation requirements.
+- Add import preview that validates manifests and reports governance impact without activating tools.
+- Record import attempts in durable audit surfaces.
+- Keep public marketplace behavior out of scope for this internal project.
 
 ## Known Constraints
 

@@ -29,9 +29,14 @@ test("self-evolution proposals persist as auditable proposed records", () => {
   assert.equal(store.list()[0]?.id, proposal.id);
   assert.deepEqual(store.summary(), {
     proposed: 1,
+    approved: 0,
+    applied: 0,
+    failed: 0,
+    rolledBack: 0,
     highRisk: 0,
     criticalRisk: 0,
     recent: [proposal],
+    recentMutations: [],
   });
 
   database.close();
@@ -78,5 +83,71 @@ test("self-evolution proposals reject malformed or direct-apply requests", () =>
   );
 
   assert.equal(store.list().length, 0);
+  database.close();
+});
+
+test("self-evolution approvals, apply records, failures, and rollback are audited", () => {
+  const database = new AppDatabase(":memory:");
+  const store = new SelfEvolutionProposalStore(database);
+  const proposal = store.create({
+    target: "configuration",
+    title: "Tune operator refresh",
+    rationale: "Operators need a slower console refresh during incidents.",
+    riskClass: "low",
+    proposedChange: {
+      summary: "Increase refresh interval.",
+      operatorSettings: { dashboardRefreshSeconds: 10 },
+    },
+  });
+
+  const approved = store.approve(proposal.id, {
+    reviewedBy: "operator",
+    notes: "Safe operator-console-only change.",
+  });
+  assert.equal(approved.status, "approved");
+  assert.equal(approved.reviewedBy, "operator");
+
+  const mutation = store.recordApplySuccess({
+    proposalId: proposal.id,
+    target: "configuration",
+    mutationType: "operator_settings",
+    before: { dashboardRefreshSeconds: 5 },
+    after: { dashboardRefreshSeconds: 10 },
+    rollback: { operatorSettings: { dashboardRefreshSeconds: 5 } },
+    actor: "operator",
+  });
+  assert.equal(mutation.status, "applied");
+  assert.equal(store.get(proposal.id)?.status, "applied");
+  assert.equal(store.summary().applied, 1);
+
+  const rolledBack = store.recordRollback({
+    proposalId: proposal.id,
+    mutationId: mutation.id,
+    actor: "operator",
+  });
+  assert.equal(rolledBack.status, "rolled_back");
+  assert.equal(store.listMutations(proposal.id)[0]?.status, "rolled_back");
+
+  const failedProposal = store.create({
+    target: "tool",
+    title: "Unsupported apply",
+    rationale: "Tool application is deferred.",
+    riskClass: "medium",
+    proposedChange: { summary: "Install tool bundle later" },
+  });
+  store.approve(failedProposal.id, { reviewedBy: "operator" });
+  const failure = store.recordApplyFailure({
+    proposalId: failedProposal.id,
+    target: "tool",
+    mutationType: "operator_settings",
+    actor: "operator",
+    errorMessage: "Unsupported mutation class",
+  });
+  assert.equal(failure.status, "failed");
+  assert.equal(
+    store.get(failedProposal.id)?.applyError,
+    "Unsupported mutation class"
+  );
+
   database.close();
 });

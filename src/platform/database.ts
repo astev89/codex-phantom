@@ -216,6 +216,21 @@ export class AppDatabase {
         updated_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS self_evolution_mutations (
+        id TEXT PRIMARY KEY,
+        proposal_id TEXT NOT NULL,
+        target TEXT NOT NULL,
+        mutation_type TEXT NOT NULL,
+        status TEXT NOT NULL,
+        before_json TEXT NOT NULL,
+        after_json TEXT NOT NULL,
+        rollback_json TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        error_message TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (proposal_id) REFERENCES self_evolution_proposals(id)
+      );
+
       CREATE TABLE IF NOT EXISTS channels (
         id TEXT PRIMARY KEY,
         kind TEXT NOT NULL,
@@ -338,6 +353,7 @@ export class AppDatabase {
       CREATE INDEX IF NOT EXISTS idx_dynamic_tools_updated_at ON dynamic_tools(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_self_evolution_proposals_status ON self_evolution_proposals(status, updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_self_evolution_proposals_target ON self_evolution_proposals(target, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_self_evolution_mutations_proposal ON self_evolution_mutations(proposal_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_channels_updated_at ON channels(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_tool_governance_audit_tool_id ON tool_governance_audit(tool_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_channel_delivery_logs_channel_id ON channel_delivery_logs(channel_id, delivered_at DESC);
@@ -427,6 +443,14 @@ export class AppDatabase {
       "approval_state",
       "TEXT NOT NULL DEFAULT 'pending'"
     );
+    ensureColumn(this.db, "self_evolution_proposals", "reviewed_by", "TEXT");
+    ensureColumn(this.db, "self_evolution_proposals", "reviewed_at", "TEXT");
+    ensureColumn(this.db, "self_evolution_proposals", "review_notes", "TEXT");
+    ensureColumn(this.db, "self_evolution_proposals", "applied_by", "TEXT");
+    ensureColumn(this.db, "self_evolution_proposals", "applied_at", "TEXT");
+    ensureColumn(this.db, "self_evolution_proposals", "rolled_back_by", "TEXT");
+    ensureColumn(this.db, "self_evolution_proposals", "rolled_back_at", "TEXT");
+    ensureColumn(this.db, "self_evolution_proposals", "apply_error", "TEXT");
     ensureColumn(this.db, "dynamic_tools", "approved_by", "TEXT");
     ensureColumn(this.db, "dynamic_tools", "approved_at", "TEXT");
     ensureColumn(this.db, "dynamic_tools", "governance_notes", "TEXT");
