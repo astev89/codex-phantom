@@ -4,7 +4,7 @@ This is the living status ledger for `codex-phantom`. Update it at the end of ea
 
 Last updated: 2026-05-13
 Branch: `jarvis/transcript-artifact-continuity`
-Latest verified commit: `6cf438d`
+Latest verified commit: `14dd46c`
 
 ## Current State
 
