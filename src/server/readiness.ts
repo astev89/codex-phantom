@@ -1,4 +1,4 @@
-import { accessSync, constants } from "node:fs";
+import { accessSync, constants, readFileSync } from "node:fs";
 import type { AppConfig } from "../config.ts";
 import { defaultSecrets, modelAdapterMode } from "../config.ts";
 import type { ChannelRecord } from "../channels/registry.ts";
@@ -32,17 +32,27 @@ export type SetupReadiness = {
   checks: ReadinessCheck[];
 };
 
+type OperatorReadinessConfig = {
+  requiredChannels: string[];
+  optionalChannels: string[];
+};
+
 export function buildSetupReadiness(input: {
   config: AppConfig;
   memory: MemoryStatus;
   channels: ChannelRecord[];
   databaseReady: boolean;
 }): SetupReadiness {
+  const configChecks = roleConfigChecks(input.config);
+  const operatorConfig = configChecks.operatorConfig ?? {
+    requiredChannels: ["web", "scheduler", "webhook"],
+    optionalChannels: ["slack"],
+  };
   const checks = [
     ...secretChecks(input.config),
     ...storageChecks(input.config, input.databaseReady),
-    ...roleConfigChecks(input.config),
-    ...channelChecks(input.channels),
+    ...configChecks.checks,
+    ...channelChecks(input.channels, operatorConfig),
     ...modelChecks(input.config),
     ...memoryChecks(input.config, input.memory),
   ];
@@ -150,25 +160,36 @@ function storageChecks(
   ];
 }
 
-function roleConfigChecks(config: AppConfig): ReadinessCheck[] {
-  return [
-    readableFileCheck(
-      "role-config",
-      "Role policy config",
-      "ROLE_CONFIG_PATH",
-      config.roleConfigPath
-    ),
-    readableFileCheck(
-      "operator-config",
-      "Operator setup config",
-      "OPERATOR_CONFIG_PATH",
-      config.operatorConfigPath
-    ),
-  ];
+function roleConfigChecks(config: AppConfig): {
+  checks: ReadinessCheck[];
+  operatorConfig?: OperatorReadinessConfig;
+} {
+  const roleCheck = readableYamlFileCheck(
+    "role-config",
+    "Role policy config",
+    "ROLE_CONFIG_PATH",
+    config.roleConfigPath,
+    validateRoleConfig
+  );
+  const operatorCheck = readableYamlFileCheck(
+    "operator-config",
+    "Operator setup config",
+    "OPERATOR_CONFIG_PATH",
+    config.operatorConfigPath,
+    parseOperatorConfig
+  );
+  return {
+    checks: [roleCheck.check, operatorCheck.check],
+    operatorConfig: operatorCheck.value,
+  };
 }
 
-function channelChecks(channels: ChannelRecord[]): ReadinessCheck[] {
-  const requiredCore = new Set(["web", "scheduler", "webhook"]);
+function channelChecks(
+  channels: ChannelRecord[],
+  operatorConfig: OperatorReadinessConfig
+): ReadinessCheck[] {
+  const requiredCore = new Set(operatorConfig.requiredChannels);
+  const optionalChannels = new Set(operatorConfig.optionalChannels);
   const checks: ReadinessCheck[] = [];
   for (const channel of channels) {
     if (requiredCore.has(channel.id) && !channel.enabled) {
@@ -203,7 +224,8 @@ function channelChecks(channels: ChannelRecord[]): ReadinessCheck[] {
     checks.push({
       id: `channel-${channel.id}`,
       category: "channels",
-      status: channel.enabled ? "pass" : "warn",
+      status:
+        channel.enabled || !optionalChannels.has(channel.id) ? "pass" : "warn",
       label: `${channel.displayName} channel`,
       message: channel.enabled
         ? `${channel.id} is enabled and configured.`
@@ -311,39 +333,96 @@ function pathCheck(
   };
 }
 
-function readableFileCheck(
+function readableYamlFileCheck<T>(
   id: string,
   label: string,
   envVar: string,
-  path: string
-): ReadinessCheck {
+  path: string,
+  validate: (content: string) => T
+): { check: ReadinessCheck; value?: T } {
   if (!path.trim()) {
     return {
-      id,
-      category: "roles_config",
-      status: "fail",
-      label,
-      message: `${envVar} is empty.`,
-      action: `Set ${envVar} to a readable YAML file.`,
+      check: {
+        id,
+        category: "roles_config",
+        status: "fail",
+        label,
+        message: `${envVar} is empty.`,
+        action: `Set ${envVar} to a readable YAML file.`,
+      },
     };
   }
   try {
     accessSync(path, constants.R_OK);
+    const value = validate(readFileSync(path, "utf8"));
     return {
-      id,
-      category: "roles_config",
-      status: "pass",
-      label,
-      message: `${envVar} is readable.`,
+      check: {
+        id,
+        category: "roles_config",
+        status: "pass",
+        label,
+        message: `${envVar} is readable and valid.`,
+      },
+      value,
     };
-  } catch {
+  } catch (error) {
     return {
-      id,
-      category: "roles_config",
-      status: "fail",
-      label,
-      message: `${envVar} is not readable at ${path}.`,
-      action: `Create the YAML file or set ${envVar} to the correct path.`,
+      check: {
+        id,
+        category: "roles_config",
+        status: "fail",
+        label,
+        message: `${envVar} is not readable or valid at ${path}.`,
+        action: `Create a valid YAML file or set ${envVar} to the correct path. ${
+          error instanceof Error ? error.message : "Invalid YAML"
+        }`,
+      },
     };
   }
+}
+
+function validateRoleConfig(content: string): true {
+  const requiredRoles = ["explorer", "builder", "verifier", "researcher"];
+  if (!/^\s*roles\s*:/m.test(content)) {
+    throw new Error("Expected top-level roles.");
+  }
+  for (const role of requiredRoles) {
+    if (!new RegExp(`^\\s{2}${role}\\s*:`, "m").test(content)) {
+      throw new Error(`Expected role ${role}.`);
+    }
+  }
+  return true;
+}
+
+function parseOperatorConfig(content: string): OperatorReadinessConfig {
+  const requiredChannels = readStringList(content, "requiredChannels");
+  if (requiredChannels.length === 0) {
+    throw new Error("Expected non-empty requiredChannels.");
+  }
+  return {
+    requiredChannels,
+    optionalChannels: readStringList(content, "optionalChannels"),
+  };
+}
+
+function readStringList(content: string, key: string): string[] {
+  const lines = content.split(/\r?\n/);
+  const values: string[] = [];
+  let collecting = false;
+  for (const line of lines) {
+    if (new RegExp(`^${key}:\\s*$`).test(line)) {
+      collecting = true;
+      continue;
+    }
+    if (collecting && /^\S/.test(line)) {
+      break;
+    }
+    if (collecting) {
+      const match = line.match(/^\s*-\s*([A-Za-z0-9_-]+)\s*$/);
+      if (match) {
+        values.push(match[1]);
+      }
+    }
+  }
+  return values;
 }

@@ -14,12 +14,12 @@ Readiness checks cover:
 
 - secrets: operator, MCP, and external webhook secrets must be non-default;
 - storage: SQLite must be open and data/database paths must be configured;
-- roles/config: `ROLE_CONFIG_PATH` and `OPERATOR_CONFIG_PATH` must point to readable YAML files;
-- channels: core `web`, `scheduler`, and `webhook` channels must be enabled, and enabled channels must have required secrets;
+- roles/config: `ROLE_CONFIG_PATH` and `OPERATOR_CONFIG_PATH` must point to readable, valid YAML files;
+- channels: required channels come from `OPERATOR_CONFIG_PATH`; enabled channels must have required secrets;
 - model: missing `OPENAI_API_KEY` is a production blocker and a development warning;
 - memory: enabled Qdrant memory must be configured and reachable.
 
-Bundled defaults live in `config/roles.yaml` and `config/operator.yaml`. Treat them as the first-run baseline; override the paths only when an operator wants environment-specific policy files.
+Bundled defaults live in `config/roles.yaml` and `config/operator.yaml` and are copied into the production Docker image. Treat them as the first-run baseline; override the paths only when an operator wants environment-specific policy files.
 
 ## Example
 

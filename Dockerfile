@@ -23,6 +23,7 @@ RUN npm ci --omit=dev --ignore-scripts
 COPY --from=build /app/dist ./dist
 COPY README.md ./
 COPY .env.example ./
+COPY config ./config
 
 RUN mkdir -p /app/data && chown -R node:node /app
 

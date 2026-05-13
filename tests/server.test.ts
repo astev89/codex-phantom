@@ -1631,13 +1631,19 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     const reactionFeedbackJson = (await reactionFeedbackResponse.json()) as {
       status: string;
       duplicate: boolean;
-      feedback: { rating: string; source: string; inboundEventId: string };
+      feedback: {
+        rating: string;
+        source: string;
+        inboundEventId: string;
+        threadTs?: string;
+      };
     };
     assert.equal(reactionFeedbackResponse.status, 202);
     assert.equal(reactionFeedbackJson.status, "feedback");
     assert.equal(reactionFeedbackJson.duplicate, false);
     assert.equal(reactionFeedbackJson.feedback.rating, "negative");
     assert.equal(reactionFeedbackJson.feedback.source, "reaction");
+    assert.equal(reactionFeedbackJson.feedback.threadTs, "1713900001.000000");
 
     const duplicateSlackEventResponse = await fetch(
       `http://127.0.0.1:${port}/channels/slack/events`,

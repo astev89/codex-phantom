@@ -18,7 +18,7 @@ Operator first-run readiness wave completed locally on 2026-05-13:
 
 - Added bundled `config/roles.yaml` and `config/operator.yaml` first-run setup inventories.
 - Added `ROLE_CONFIG_PATH` and `OPERATOR_CONFIG_PATH` runtime configuration with docs and `.env.example` entries.
-- Added setup readiness checks for non-default secrets, storage, readable role/config files, required channels, OpenAI model access, and memory backend status.
+- Added setup readiness checks for non-default secrets, storage, valid role/config YAML files, operator-configured required channels, OpenAI model access, and memory backend status.
 - Exposed readiness through authenticated `GET /admin/readiness`, `/admin/summary`, detailed `/health`, and the operator console.
 - Documented how setup readiness differs from generic process health.
 

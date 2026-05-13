@@ -918,7 +918,7 @@ export class HttpServer {
               userId: reactionFeedback.userId,
               slackChannel: reactionFeedback.slackChannel,
               messageTs: reactionFeedback.messageTs,
-              threadTs: reactionFeedback.threadTs,
+              threadTs: reactionFeedback.threadTs ?? inboundEvent.threadId,
               rawPayload: reactionFeedback.rawPayload,
             });
             this.json(res, 202, {

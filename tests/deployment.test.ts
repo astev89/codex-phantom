@@ -23,6 +23,7 @@ test("Dockerfile runs as a non-root service with a healthcheck and writable data
   assert.match(dockerfile, /^FROM node:24-slim$/m);
   assert.match(dockerfile, /npm ci --omit=dev --ignore-scripts/);
   assert.match(dockerfile, /COPY --from=build \/app\/dist \.\/dist/);
+  assert.match(dockerfile, /COPY config \.\/config/);
   assert.match(dockerfile, /mkdir -p \/app\/data/);
   assert.match(dockerfile, /chown -R node:node \/app/);
   assert.match(dockerfile, /^USER node$/m);
