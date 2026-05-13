@@ -1267,6 +1267,96 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       )
     );
 
+    const bundlePreviewResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/tools/bundles/preview`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          importedBy: "operator",
+          manifest: {
+            id: "internal.research",
+            name: "Internal Research Tools",
+            version: "1.0.0",
+            tools: [
+              {
+                id: "internal.research.lookup",
+                description: "Lookup research notes.",
+                scopes: ["read"],
+                inputSchema: { type: "object" },
+                responseTemplate: "lookup:{{query}}",
+              },
+            ],
+          },
+        }),
+      }
+    );
+    const bundlePreviewJson = (await bundlePreviewResponse.json()) as {
+      preview: { id: string; status: string; bundleId: string };
+    };
+    assert.equal(bundlePreviewResponse.status, 200);
+    assert.equal(bundlePreviewJson.preview.status, "valid");
+    assert.equal(bundlePreviewJson.preview.bundleId, "internal.research");
+
+    const invalidBundlePreviewResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/tools/bundles/preview`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          manifest: {
+            id: "unsafe.bundle",
+            name: "Unsafe Bundle",
+            version: "1.0.0",
+            tools: [
+              {
+                id: "unsafe.bundle.write",
+                description: "Write something.",
+                scopes: ["write"],
+                responseTemplate: "unsafe",
+              },
+            ],
+          },
+        }),
+      }
+    );
+    const invalidBundlePreviewJson =
+      (await invalidBundlePreviewResponse.json()) as {
+        preview: { status: string; diagnostics: Array<{ level: string }> };
+      };
+    assert.equal(invalidBundlePreviewResponse.status, 400);
+    assert.equal(invalidBundlePreviewJson.preview.status, "invalid");
+    assert.ok(
+      invalidBundlePreviewJson.preview.diagnostics.some(
+        (item) => item.level === "error"
+      )
+    );
+
+    const bundleImportsResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/tools/bundles`,
+      {
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
+    const bundleImportsJson = (await bundleImportsResponse.json()) as {
+      imports: Array<{ id: string; status: string }>;
+      summary: { valid: number; invalid: number };
+    };
+    assert.equal(bundleImportsResponse.status, 200);
+    assert.ok(
+      bundleImportsJson.imports.some(
+        (entry) => entry.id === bundlePreviewJson.preview.id
+      )
+    );
+    assert.equal(bundleImportsJson.summary.valid, 1);
+    assert.equal(bundleImportsJson.summary.invalid, 1);
+
     const dynamicMcpListResponse = await fetch(`http://127.0.0.1:${port}/mcp`, {
       method: "POST",
       headers: {
@@ -1742,6 +1832,7 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       logging: { provider: string };
       deployment: { qdrantEnabled: boolean };
       governance: { pendingDynamicTools: number; approvedDynamicTools: number };
+      toolBundles: { valid: number; invalid: number };
       selfEvolution: { proposed: number };
       channelDeliveries: { delivered: number; recentFailed: unknown[] };
       channelInbound: {
@@ -1763,6 +1854,8 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assert.equal(adminSummaryJson.deployment.qdrantEnabled, false);
     assert.equal(adminSummaryJson.governance.pendingDynamicTools, 0);
     assert.equal(adminSummaryJson.governance.approvedDynamicTools, 1);
+    assert.equal(adminSummaryJson.toolBundles.valid, 1);
+    assert.equal(adminSummaryJson.toolBundles.invalid, 1);
     assert.equal(adminSummaryJson.selfEvolution.proposed, 0);
     assert.ok(adminSummaryJson.channelDeliveries.delivered >= 2);
     assert.deepEqual(adminSummaryJson.channelDeliveries.recentFailed, []);
@@ -2051,6 +2144,7 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       governanceAudit: Array<{ toolId: string; action: string }>;
       selfEvolutionProposals: Array<{ id: string; status: string }>;
       selfEvolutionMutations: Array<{ status: string }>;
+      toolBundleImports: Array<{ id: string; status: string }>;
     };
     assert.ok(timelineJson.sessions.length > 0);
     assert.ok(timelineJson.runs.length > 0);
@@ -2075,6 +2169,11 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assert.ok(
       timelineJson.selfEvolutionMutations.some(
         (mutation) => mutation.status === "rolled_back"
+      )
+    );
+    assert.ok(
+      timelineJson.toolBundleImports.some(
+        (entry) => entry.id === bundlePreviewJson.preview.id
       )
     );
 

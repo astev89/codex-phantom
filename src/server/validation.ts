@@ -100,6 +100,11 @@ export type SelfEvolutionRollbackInput = {
   rolledBackBy: string;
 };
 
+export type ToolBundlePreviewInput = {
+  manifest: JsonValue;
+  importedBy?: string;
+};
+
 export function parseJsonBody(text: string): unknown {
   if (!text) {
     throw new HttpError(400, "Request body is required");
@@ -325,6 +330,20 @@ export function validateSelfEvolutionRollbackBody(
   const value = asRecord(input);
   return {
     rolledBackBy: nonEmptyString(value.rolledBackBy, "rolledBackBy"),
+  };
+}
+
+export function validateToolBundlePreviewBody(
+  input: unknown
+): ToolBundlePreviewInput {
+  const value = asRecord(input);
+  const manifest =
+    value.manifest === undefined
+      ? toJsonValue(value, "manifest")
+      : toJsonValue(value.manifest, "manifest");
+  return {
+    manifest,
+    importedBy: optionalString(value.importedBy),
   };
 }
 

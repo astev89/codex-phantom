@@ -231,6 +231,18 @@ export class AppDatabase {
         FOREIGN KEY (proposal_id) REFERENCES self_evolution_proposals(id)
       );
 
+      CREATE TABLE IF NOT EXISTS tool_bundle_imports (
+        id TEXT PRIMARY KEY,
+        bundle_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        version TEXT NOT NULL,
+        manifest_json TEXT NOT NULL,
+        status TEXT NOT NULL,
+        diagnostics_json TEXT NOT NULL,
+        imported_by TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS channels (
         id TEXT PRIMARY KEY,
         kind TEXT NOT NULL,
@@ -354,6 +366,8 @@ export class AppDatabase {
       CREATE INDEX IF NOT EXISTS idx_self_evolution_proposals_status ON self_evolution_proposals(status, updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_self_evolution_proposals_target ON self_evolution_proposals(target, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_self_evolution_mutations_proposal ON self_evolution_mutations(proposal_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_tool_bundle_imports_bundle ON tool_bundle_imports(bundle_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_tool_bundle_imports_status ON tool_bundle_imports(status, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_channels_updated_at ON channels(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_tool_governance_audit_tool_id ON tool_governance_audit(tool_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_channel_delivery_logs_channel_id ON channel_delivery_logs(channel_id, delivered_at DESC);

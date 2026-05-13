@@ -8,11 +8,30 @@ Latest verified commit: `14dd46c`
 
 ## Current State
 
-`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, a Codex-native `/chat` product surface with durable attachment/artifact continuity, hybrid long-term memory with Qdrant-backed vector recall, SQLite fallback, lifecycle controls, restart-safe maintenance, decay/reinforcement-aware ranking, and governed self-evolution proposals with operator-approved apply/rollback for settings changes.
+`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, a Codex-native `/chat` product surface with durable attachment/artifact continuity, hybrid long-term memory with Qdrant-backed vector recall, SQLite fallback, lifecycle controls, restart-safe maintenance, decay/reinforcement-aware ranking, governed self-evolution proposals with operator-approved apply/rollback for settings changes, and preview-only internal tool bundle manifests.
 
 The project is now past its first serious production-hardening pass. It is not yet equivalent to the original Phantom project, but the core runtime is materially safer to run: request sizes are bounded, secrets are rejected in production when defaults are used, outbound model calls have timeouts, scheduler jobs recover deterministically after restarts, MCP events are durably audited, external webhooks are signed, Slack sends retry transient failures, operator-console workflows have browser coverage, and the Docker image runs compiled JavaScript instead of stripped TypeScript.
 
 ## Just Completed
+
+Internal tool bundle manifest wave completed locally on 2026-05-13:
+
+- Added durable `tool_bundle_imports` records for valid and invalid internal bundle previews.
+- Added manifest validation for bundle metadata, tool metadata, read-only scopes, duplicate ids, and bounded tool counts.
+- Added operator-only preview/list APIs under `/admin/tools/bundles`.
+- Surfaced bundle import summaries through governance, summary, timeline, and export views.
+- Kept previews non-activating: no tools are registered and installation requirements are recorded only.
+
+Verification from this wave:
+
+```bash
+node --experimental-strip-types --test tests/tool-bundles.test.ts tests/server.test.ts
+npm run typecheck
+npm test
+npm run build
+git diff --check
+GitNexus detect_changes(scope="all")
+```
 
 Governed self-evolution apply/rollback wave completed locally on 2026-05-13:
 
@@ -345,13 +364,13 @@ npm run build
 
 Use `docs/phantom-parity.md` as the canonical production-level parity roadmap. Keep this section limited to immediate handoff notes and proof gaps.
 
-### P1: Internal Tool Bundle Manifests
+### P1: Internal Tool Bundle Lifecycle
 
 Suggested work:
 
-- Add internal governed tool bundle manifests for tool metadata, scopes, inputs, and installation requirements.
-- Add import preview that validates manifests and reports governance impact without activating tools.
-- Record import attempts in durable audit surfaces.
+- Add lifecycle operations for approved internal tool bundles: enable, disable, and uninstall.
+- Preserve governance approval boundaries before any bundle tool can execute.
+- Record lifecycle transitions in durable audit surfaces and expose recent failures.
 - Keep public marketplace behavior out of scope for this internal project.
 
 ## Known Constraints

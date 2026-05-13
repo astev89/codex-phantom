@@ -56,6 +56,7 @@ import { MemoryStore } from "../memory/store.ts";
 import type { MemoryMaintenanceService } from "../memory/maintenance.ts";
 import { DynamicToolRegistry } from "../tools/dynamic-registry.ts";
 import { ToolGovernanceService } from "../tools/governance.ts";
+import { ToolBundleImportStore } from "../tools/bundles.ts";
 import {
   SelfEvolutionProposalStore,
   type SelfEvolutionMutationRecord,
@@ -84,6 +85,7 @@ import {
   validateSelfEvolutionReviewBody,
   validateSelfEvolutionRollbackBody,
   validateToolApprovalBody,
+  validateToolBundlePreviewBody,
   validateWebhookBody,
 } from "./validation.ts";
 
@@ -103,6 +105,7 @@ export class HttpServer {
   private readonly memory: MemoryStore;
   private readonly memoryMaintenance?: MemoryMaintenanceService;
   private readonly dynamicTools: DynamicToolRegistry;
+  private readonly toolBundles: ToolBundleImportStore;
   private readonly channels: ChannelRegistry;
   private readonly channelDeliveries: ChannelDeliveryStore;
   private readonly channelInbound: InboundChannelEventStore;
@@ -149,6 +152,7 @@ export class HttpServer {
     this.memory = memory;
     this.memoryMaintenance = memoryMaintenance;
     this.dynamicTools = dynamicTools;
+    this.toolBundles = new ToolBundleImportStore(database);
     this.channels = channels;
     this.channelDeliveries = new ChannelDeliveryStore(database);
     this.channelInbound = new InboundChannelEventStore(database);
@@ -264,6 +268,7 @@ export class HttpServer {
           channelInbound: this.channelInbound.summary(),
           channelFeedback: this.slackFeedback.summary(),
           governance: this.governance.summary(),
+          toolBundles: this.toolBundles.summary(),
           selfEvolution: this.selfEvolution.summary(),
           settings: this.settings.get(),
           metrics: this.metrics.snapshot(),
@@ -308,6 +313,7 @@ export class HttpServer {
           channelInbound: this.channelInbound.summary(),
           channelFeedback: this.slackFeedback.summary(),
           governance: this.governance.summary(),
+          toolBundles: this.toolBundles.summary(),
           selfEvolution: this.selfEvolution.summary(),
           settings: this.settings.get(),
           setupReadiness,
@@ -427,6 +433,9 @@ export class HttpServer {
             undefined,
             settings.memoryTimelineLimit
           ),
+          toolBundleImports: this.toolBundles.list(
+            settings.memoryTimelineLimit
+          ),
         });
         return;
       }
@@ -486,7 +495,38 @@ export class HttpServer {
         this.requireOperatorAuth(req);
         this.json(res, 200, {
           tools: this.governance.list(),
+          bundleImports: this.toolBundles.list(50),
           summary: this.governance.summary(),
+          bundleSummary: this.toolBundles.summary(),
+        });
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/admin/tools/bundles") {
+        this.requireOperatorAuth(req);
+        const limit = url.searchParams.get("limit");
+        this.json(res, 200, {
+          imports: this.toolBundles.list(limit ? Number(limit) : 50),
+          summary: this.toolBundles.summary(),
+        });
+        return;
+      }
+
+      if (
+        req.method === "POST" &&
+        url.pathname === "/admin/tools/bundles/preview"
+      ) {
+        this.requireOperatorAuth(req);
+        const body = validateToolBundlePreviewBody(
+          parseJsonBody(await readTextBody(req))
+        );
+        const preview = this.toolBundles.preview({
+          manifest: body.manifest,
+          importedBy: body.importedBy ?? "operator",
+        });
+        this.json(res, preview.status === "valid" ? 200 : 400, {
+          requestId,
+          preview,
         });
         return;
       }
@@ -1365,6 +1405,10 @@ export class HttpServer {
                 ...mutation,
                 kind: "self_evolution_mutation",
               })),
+            ...this.toolBundles.list(250).map((importRecord) => ({
+              ...importRecord,
+              kind: "tool_bundle_import",
+            })),
           ],
         };
       case "mcp":
@@ -1410,6 +1454,10 @@ export class HttpServer {
                 ...mutation,
                 kind: "self_evolution_mutation",
               })),
+            ...this.toolBundles.list(50).map((importRecord) => ({
+              ...importRecord,
+              kind: "tool_bundle_import",
+            })),
           ],
         };
     }
