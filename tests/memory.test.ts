@@ -437,3 +437,109 @@ test("memory supersession and contradiction lifecycle is persisted and excluded 
   assert.ok(!returnedIds.includes(contradicted.id));
   database.close();
 });
+
+test("memory reinforcement and decay tune fallback retrieval without bypassing lifecycle exclusions", async () => {
+  const database = new AppDatabase(":memory:");
+  const memory = new MemoryStore(
+    database,
+    makeConfig(".", { semanticRetrievalEnabled: false }),
+    makeDisabledEmbeddings(),
+    makeFakeVectorStore({
+      backend: "qdrant",
+      available: false,
+      configured: false,
+    }),
+    makeFakeVectorStore({ backend: "sqlite_fallback", available: true })
+  );
+
+  const older = await memory.storeEntry({
+    category: "semantic",
+    content: "Release checklist mentions smoke tests",
+    sourceType: "semantic_fact",
+    importance: 0.7,
+    isFact: true,
+  });
+  const reinforced = await memory.storeEntry({
+    category: "semantic",
+    content: "Release checklist mentions database restore",
+    sourceType: "semantic_fact",
+    importance: 0.7,
+    isFact: true,
+  });
+  const superseded = await memory.storeEntry({
+    category: "semantic",
+    content: "Release checklist says skip restore",
+    sourceType: "semantic_fact",
+    importance: 0.99,
+    isFact: true,
+  });
+  await memory.storeEntry({
+    category: "semantic",
+    content: "Release checklist requires restore validation",
+    sourceType: "semantic_fact",
+    importance: 0.5,
+    isFact: true,
+    supersedesMemoryIds: [superseded.id],
+    lifecycleReason: "Restore validation is required",
+  });
+
+  const oldDate = new Date(Date.now() - 45 * 86_400_000).toISOString();
+  database.run(
+    "UPDATE memory_entries SET created_at = ? WHERE id IN (?, ?, ?)",
+    oldDate,
+    older.id,
+    reinforced.id,
+    superseded.id
+  );
+  memory.reinforceEntry(reinforced.id, {
+    weight: 1,
+    signal: "operator",
+    reason: "Restore checklist was useful",
+  });
+  memory.reinforceEntry(reinforced.id, {
+    weight: 1,
+    signal: "operator",
+    reason: "Restore checklist was useful again",
+  });
+  memory.reinforceEntry(superseded.id, {
+    weight: 1,
+    signal: "operator",
+    reason: "Inactive memories should not re-enter retrieval",
+  });
+
+  const result = await memory.query("release checklist restore");
+  const semanticIds = result.semantic.map((entry) => entry.id);
+  assert.ok(
+    semanticIds.indexOf(reinforced.id) > -1 &&
+      semanticIds.indexOf(older.id) > -1 &&
+      semanticIds.indexOf(reinforced.id) < semanticIds.indexOf(older.id)
+  );
+  assert.ok(!result.semantic.some((entry) => entry.id === superseded.id));
+  const reinforcedResult = result.semantic.find(
+    (entry) => entry.id === reinforced.id
+  );
+  assert.ok((reinforcedResult?.reinforcementScore ?? 0) >= 2);
+  assert.ok((reinforcedResult?.decayScore ?? 0) > 0);
+  assert.ok((reinforcedResult?.rankingScore ?? 0) > 0);
+
+  const events = database.all<{
+    memory_id: string;
+    signal: string;
+    weight: number;
+  }>(
+    "SELECT memory_id, signal, weight FROM memory_reinforcement_events WHERE memory_id = ? ORDER BY created_at ASC",
+    reinforced.id
+  );
+  assert.ok(
+    events.some((event) => event.signal === "operator" && event.weight === 1)
+  );
+  assert.ok(
+    events.some(
+      (event) => event.signal === "retrieval" && event.weight === 0.05
+    )
+  );
+
+  const persisted = await memory.getEntry(reinforced.id);
+  assert.ok((persisted?.decayScore ?? 0) > 0);
+  database.close();
+});

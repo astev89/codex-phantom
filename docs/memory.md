@@ -26,4 +26,14 @@ V1 maintenance is deterministic and bounded:
 - Promote: that summary becomes the promoted durable memory for the clustered raw turns.
 - Prune: active semantic, procedural, and episodic rows are trimmed to existing caps; inactive superseded or contradicted audit rows are not pruned by this pass.
 
-Remaining memory parity work is decay/reinforcement scoring and retrieval tuning.
+## Decay, Reinforcement, And Hybrid Ranking
+
+Retrieval first excludes inactive lifecycle states, then ranks active memories with a bounded hybrid score:
+
+- Semantic score from Qdrant or SQLite vector fallback when embeddings are available.
+- Keyword score from query token matches.
+- Importance, category, summary, and recency boosts.
+- Reinforcement score from retrieval and operator/usefulness signals, capped between `-1` and `3`.
+- Age decay capped at `3`, roughly reaching the cap after 90 days.
+
+Every returned memory records a small durable retrieval reinforcement event. Explicit reinforcement writes a `memory_reinforcement_events` row and updates the entry's bounded `reinforcement_score`. Query-time decay is persisted back to `memory_entries.decay_score` for operator visibility.

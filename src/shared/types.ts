@@ -55,6 +55,9 @@ export type MemoryEntry = {
   score: number;
   sourceType: MemorySourceType;
   importance: number;
+  reinforcementScore?: number;
+  decayScore?: number;
+  rankingScore?: number;
   lastAccessedAt?: string;
   accessCount: number;
   isSummary: boolean;

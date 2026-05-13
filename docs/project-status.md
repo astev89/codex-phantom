@@ -8,11 +8,30 @@ Latest verified commit: `f52f63f`
 
 ## Current State
 
-`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, a Codex-native `/chat` product surface with durable attachment/artifact continuity, and hybrid long-term memory with Qdrant-backed vector recall, SQLite fallback, explicit supersession/contradiction lifecycle records, and restart-safe maintenance runs.
+`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, a Codex-native `/chat` product surface with durable attachment/artifact continuity, and hybrid long-term memory with Qdrant-backed vector recall, SQLite fallback, lifecycle controls, restart-safe maintenance, and decay/reinforcement-aware ranking.
 
 The project is now past its first serious production-hardening pass. It is not yet equivalent to the original Phantom project, but the core runtime is materially safer to run: request sizes are bounded, secrets are rejected in production when defaults are used, outbound model calls have timeouts, scheduler jobs recover deterministically after restarts, MCP events are durably audited, external webhooks are signed, Slack sends retry transient failures, operator-console workflows have browser coverage, and the Docker image runs compiled JavaScript instead of stripped TypeScript.
 
 ## Just Completed
+
+Managed memory retrieval tuning wave completed locally on 2026-05-13:
+
+- Added durable memory reinforcement events and bounded `reinforcement_score` / `decay_score` fields.
+- Tuned retrieval ranking to combine lifecycle filtering, semantic/vector score, keyword matches, importance, category, summaries, recency, reinforcement, access count, and bounded age decay.
+- Persisted retrieval reinforcement and query-time decay for operator visibility.
+- Kept superseded and contradicted memories excluded before any ranking signal is applied.
+- Documented scoring behavior in `docs/memory.md`.
+
+Verification from this wave:
+
+```bash
+node --experimental-strip-types --test tests/memory.test.ts tests/server.test.ts
+npm run typecheck
+npm test
+npm run build
+git diff --check
+GitNexus detect_changes(scope="all")
+```
 
 Managed memory maintenance wave completed locally on 2026-05-13:
 
@@ -287,13 +306,13 @@ npm run build
 
 Use `docs/phantom-parity.md` as the canonical production-level parity roadmap. Keep this section limited to immediate handoff notes and proof gaps.
 
-### P1: Memory Decay And Retrieval Tuning
+### P1: Governed Self-Evolution Proposals
 
 Suggested work:
 
-- Add decay/reinforcement scoring to reward useful memories and age out stale active context.
-- Tune hybrid retrieval after lifecycle and scheduled maintenance behavior is stable.
-- Add operator controls only where a real intervention workflow appears.
+- Add proposal records for governed self-evolution of prompts, memory policy, tools, roles, and configuration.
+- Require policy gates and audit trails before any proposal can become an applyable change.
+- Keep unrestricted self-mutation out of scope.
 
 ## Known Constraints
 

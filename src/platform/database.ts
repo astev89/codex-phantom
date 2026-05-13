@@ -166,6 +166,16 @@ export class AppDatabase {
         FOREIGN KEY (target_memory_id) REFERENCES memory_entries(id)
       );
 
+      CREATE TABLE IF NOT EXISTS memory_reinforcement_events (
+        id TEXT PRIMARY KEY,
+        memory_id TEXT NOT NULL,
+        signal TEXT NOT NULL,
+        weight REAL NOT NULL,
+        reason TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (memory_id) REFERENCES memory_entries(id)
+      );
+
       CREATE TABLE IF NOT EXISTS memory_maintenance_runs (
         id TEXT PRIMARY KEY,
         status TEXT NOT NULL,
@@ -309,6 +319,7 @@ export class AppDatabase {
       CREATE INDEX IF NOT EXISTS idx_memory_entries_category_created_at ON memory_entries(category, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_memory_lifecycle_links_target ON memory_lifecycle_links(target_memory_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_memory_lifecycle_links_source ON memory_lifecycle_links(source_memory_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_memory_reinforcement_events_memory ON memory_reinforcement_events(memory_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_memory_maintenance_runs_status_scheduled_at ON memory_maintenance_runs(status, scheduled_at);
       CREATE INDEX IF NOT EXISTS idx_dynamic_tools_updated_at ON dynamic_tools(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_channels_updated_at ON channels(updated_at DESC);
@@ -377,6 +388,18 @@ export class AppDatabase {
       "memory_entries",
       "contradicted_by_memory_id",
       "TEXT"
+    );
+    ensureColumn(
+      this.db,
+      "memory_entries",
+      "reinforcement_score",
+      "REAL NOT NULL DEFAULT 0"
+    );
+    ensureColumn(
+      this.db,
+      "memory_entries",
+      "decay_score",
+      "REAL NOT NULL DEFAULT 0"
     );
     ensureColumn(this.db, "sessions", "title", "TEXT");
     ensureColumn(this.db, "sessions", "title_source", "TEXT");

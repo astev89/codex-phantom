@@ -27,6 +27,8 @@ type MemoryRow = {
   created_at: string;
   source_type: MemoryEntry["sourceType"];
   importance: number;
+  reinforcement_score?: number | null;
+  decay_score?: number | null;
   last_accessed_at: string | null;
   access_count: number;
   is_summary: number;
@@ -98,7 +100,8 @@ export class MemoryStore {
             `
             SELECT
               id, category, content, created_at, source_type, importance, last_accessed_at,
-              access_count, is_summary, is_fact, parent_summary_id, embedding_model, embedding_json,
+              reinforcement_score, decay_score, access_count, is_summary, is_fact,
+              parent_summary_id, embedding_model, embedding_json,
               source_session_id, source_run_id, lifecycle_state, superseded_by_memory_id,
               contradicted_by_memory_id, vector_backend, vector_synced_at, vector_sync_error,
               vector_point_id
@@ -111,7 +114,8 @@ export class MemoryStore {
             `
             SELECT
               id, category, content, created_at, source_type, importance, last_accessed_at,
-              access_count, is_summary, is_fact, parent_summary_id, embedding_model, embedding_json,
+              reinforcement_score, decay_score, access_count, is_summary, is_fact,
+              parent_summary_id, embedding_model, embedding_json,
               source_session_id, source_run_id, lifecycle_state, superseded_by_memory_id,
               contradicted_by_memory_id, vector_backend, vector_synced_at, vector_sync_error,
               vector_point_id
@@ -126,12 +130,16 @@ export class MemoryStore {
       .filter((row) => isActive(row))
       .map((row) => ({
         row,
-        score:
-          scoreById.get(row.id) ??
-          scoreMemoryRowFallback(row, tokens, queryEmbedding),
+        score: scoreMemoryRowHybrid(
+          row,
+          tokens,
+          queryEmbedding,
+          scoreById.get(row.id)
+        ),
       }))
       .filter((entry) => entry.score > 0)
       .sort((left, right) => right.score - left.score);
+    this.persistDecayScores(scored.map((entry) => entry.row));
 
     const summaries = scored
       .filter((entry) => entry.row.is_summary === 1)
@@ -307,7 +315,8 @@ export class MemoryStore {
       `
         SELECT
           id, category, content, created_at, source_type, importance, last_accessed_at,
-          access_count, is_summary, is_fact, parent_summary_id, embedding_model, embedding_json,
+          reinforcement_score, decay_score, access_count, is_summary, is_fact,
+          parent_summary_id, embedding_model, embedding_json,
           source_session_id, source_run_id, vector_backend, vector_synced_at, vector_sync_error, vector_point_id
         FROM memory_entries
         WHERE embedding_json IS NOT NULL
@@ -371,7 +380,8 @@ export class MemoryStore {
         `
           SELECT
             id, category, content, created_at, source_type, importance, last_accessed_at,
-            access_count, is_summary, is_fact, parent_summary_id, embedding_model, embedding_json,
+            reinforcement_score, decay_score, access_count, is_summary, is_fact,
+            parent_summary_id, embedding_model, embedding_json,
             source_session_id, source_run_id, lifecycle_state, superseded_by_memory_id,
             contradicted_by_memory_id, vector_backend, vector_synced_at, vector_sync_error,
             vector_point_id
@@ -389,7 +399,8 @@ export class MemoryStore {
       `
         SELECT
           id, category, content, created_at, source_type, importance, last_accessed_at,
-          access_count, is_summary, is_fact, parent_summary_id, embedding_model, embedding_json,
+          reinforcement_score, decay_score, access_count, is_summary, is_fact,
+          parent_summary_id, embedding_model, embedding_json,
           source_session_id, source_run_id, lifecycle_state, superseded_by_memory_id,
           contradicted_by_memory_id, vector_backend, vector_synced_at, vector_sync_error,
           vector_point_id
@@ -415,6 +426,49 @@ export class MemoryStore {
     return entry;
   }
 
+  reinforceEntry(
+    memoryId: string,
+    options: { weight?: number; signal?: string; reason?: string } = {}
+  ): void {
+    const existing = this.database.get<{ id: string }>(
+      `
+        SELECT id
+        FROM memory_entries
+        WHERE id = ?
+          AND COALESCE(lifecycle_state, 'active') = 'active'
+      `,
+      memoryId
+    );
+    if (!existing) {
+      return;
+    }
+    const weight = clamp(options.weight ?? 0.25, -1, 1);
+    const now = new Date().toISOString();
+    this.database.run(
+      `
+        UPDATE memory_entries
+        SET reinforcement_score = MIN(3, MAX(-1, COALESCE(reinforcement_score, 0) + ?))
+        WHERE id = ?
+          AND COALESCE(lifecycle_state, 'active') = 'active'
+      `,
+      weight,
+      memoryId
+    );
+    this.database.run(
+      `
+        INSERT INTO memory_reinforcement_events (
+          id, memory_id, signal, weight, reason, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+      `,
+      createId("memsig"),
+      memoryId,
+      options.signal ?? "operator",
+      weight,
+      options.reason ?? null,
+      now
+    );
+  }
+
   private async compactEpisodicMemories(
     record?: MemoryTurnRecord,
     summaryHint?: string
@@ -423,7 +477,8 @@ export class MemoryStore {
       `
         SELECT
           id, category, content, created_at, source_type, importance, last_accessed_at,
-          access_count, is_summary, is_fact, parent_summary_id, embedding_model, embedding_json,
+          reinforcement_score, decay_score, access_count, is_summary, is_fact,
+          parent_summary_id, embedding_model, embedding_json,
           source_session_id, source_run_id, vector_backend, vector_synced_at, vector_sync_error, vector_point_id
         FROM memory_entries
         WHERE category = 'episodic' AND is_summary = 0 AND parent_summary_id IS NULL
@@ -459,8 +514,9 @@ export class MemoryStore {
             id, category, content, created_at, source_user_input, source_assistant_output, score,
             embedding_json, embedding_model, source_type, importance, last_accessed_at, access_count,
             is_summary, is_fact, parent_summary_id, source_session_id, source_run_id,
-            vector_backend, vector_synced_at, vector_sync_error, vector_point_id
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            vector_backend, vector_synced_at, vector_sync_error, vector_point_id,
+            reinforcement_score, decay_score
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
         summaryId,
         "episodic",
@@ -485,7 +541,9 @@ export class MemoryStore {
           : "sqlite_fallback",
         vector && this.primaryVectorStore.isAvailable() ? now : null,
         null,
-        summaryId
+        summaryId,
+        0,
+        0
       );
 
       for (const row of cluster) {
@@ -545,6 +603,8 @@ export class MemoryStore {
           created_at: now,
           source_type: entry.sourceType,
           importance: entry.importance,
+          reinforcement_score: 0,
+          decay_score: 0,
           last_accessed_at: null,
           access_count: 0,
           is_summary: entry.isSummary ? 1 : 0,
@@ -573,8 +633,9 @@ export class MemoryStore {
               embedding_json, embedding_model, source_type, importance, last_accessed_at, access_count,
               is_summary, is_fact, parent_summary_id, source_session_id, source_run_id,
               vector_backend, vector_synced_at, vector_sync_error, vector_point_id,
-              lifecycle_state, superseded_by_memory_id, contradicted_by_memory_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              lifecycle_state, superseded_by_memory_id, contradicted_by_memory_id,
+              reinforcement_score, decay_score
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `,
           row.id,
           row.category,
@@ -600,7 +661,9 @@ export class MemoryStore {
           row.vector_point_id,
           row.lifecycle_state ?? "active",
           row.superseded_by_memory_id ?? null,
-          row.contradicted_by_memory_id ?? null
+          row.contradicted_by_memory_id ?? null,
+          row.reinforcement_score ?? 0,
+          row.decay_score ?? 0
         );
         this.recordLifecycleLinks(row, entry, now);
       });
@@ -808,9 +871,43 @@ export class MemoryStore {
     this.database.transaction(() => {
       for (const entry of entries) {
         this.database.run(
-          "UPDATE memory_entries SET last_accessed_at = ?, access_count = access_count + 1 WHERE id = ?",
+          `
+            UPDATE memory_entries
+            SET last_accessed_at = ?,
+                access_count = access_count + 1,
+                reinforcement_score = MIN(3, COALESCE(reinforcement_score, 0) + 0.05)
+            WHERE id = ?
+          `,
           now,
           entry.id
+        );
+        this.database.run(
+          `
+            INSERT INTO memory_reinforcement_events (
+              id, memory_id, signal, weight, reason, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+          `,
+          createId("memsig"),
+          entry.id,
+          "retrieval",
+          0.05,
+          "Returned in memory context",
+          now
+        );
+      }
+    });
+  }
+
+  private persistDecayScores(rows: MemoryRow[]): void {
+    if (rows.length === 0) {
+      return;
+    }
+    this.database.transaction(() => {
+      for (const row of rows) {
+        this.database.run(
+          "UPDATE memory_entries SET decay_score = ? WHERE id = ?",
+          row.decay_score ?? 0,
+          row.id
         );
       }
     });
@@ -856,15 +953,27 @@ function scoreMemoryRowFallback(
   tokens: string[],
   queryEmbedding: number[] | null
 ): number {
+  return scoreMemoryRowHybrid(row, tokens, queryEmbedding);
+}
+
+function scoreMemoryRowHybrid(
+  row: MemoryRow,
+  tokens: string[],
+  queryEmbedding: number[] | null,
+  vectorScore?: number
+): number {
   const lowered = row.content.toLowerCase();
   const keywordBoost = tokens.reduce(
     (sum, token) => sum + (lowered.includes(token) ? 1.5 : 0),
     0
   );
-  const recencyBoost = Math.max(
+  const ageDays = Math.max(
     0,
-    4 - Math.floor((Date.now() - Date.parse(row.created_at)) / 86_400_000)
+    (Date.now() - Date.parse(row.created_at)) / 86_400_000
   );
+  const recencyBoost = Math.max(0, 4 - Math.floor(ageDays));
+  const decayPenalty = Math.min(3, ageDays / 30);
+  row.decay_score = decayPenalty;
   const categoryBoost =
     row.category === "procedural"
       ? 2.2
@@ -872,16 +981,25 @@ function scoreMemoryRowFallback(
         ? 1.8
         : 1.2;
   const summaryBoost = row.is_summary === 1 ? 1.6 : 0;
-  const embeddingSimilarity = queryEmbedding
-    ? cosineSimilarity(queryEmbedding, decodeJson(row.embedding_json, [])) * 8
-    : 0;
+  const semanticSimilarity =
+    vectorScore !== undefined
+      ? vectorScore * 8
+      : queryEmbedding
+        ? cosineSimilarity(queryEmbedding, decodeJson(row.embedding_json, [])) *
+          8
+        : 0;
+  const accessBoost = Math.min(1.5, Math.log1p(row.access_count) * 0.35);
+  const reinforcementBoost = clamp(row.reinforcement_score ?? 0, -1, 3);
   return (
     keywordBoost +
     recencyBoost +
     categoryBoost +
     summaryBoost +
     row.importance * 3 +
-    embeddingSimilarity
+    semanticSimilarity +
+    accessBoost +
+    reinforcementBoost -
+    decayPenalty
   );
 }
 
@@ -912,6 +1030,9 @@ function toMemoryEntry(entry: { row: MemoryRow; score: number }): MemoryEntry {
     score: entry.score,
     sourceType: entry.row.source_type,
     importance: entry.row.importance,
+    reinforcementScore: entry.row.reinforcement_score ?? 0,
+    decayScore: entry.row.decay_score ?? 0,
+    rankingScore: entry.score,
     lastAccessedAt: entry.row.last_accessed_at ?? undefined,
     accessCount: entry.row.access_count,
     isSummary: entry.row.is_summary === 1,
@@ -932,6 +1053,10 @@ function toMemoryEntry(entry: { row: MemoryRow; score: number }): MemoryEntry {
 
 function isActive(row: MemoryRow): boolean {
   return !row.lifecycle_state || row.lifecycle_state === "active";
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }
 
 function tokenize(input: string): string[] {
