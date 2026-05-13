@@ -4,15 +4,33 @@ This is the living status ledger for `codex-phantom`. Update it at the end of ea
 
 Last updated: 2026-05-13
 Branch: `jarvis/transcript-artifact-continuity`
-Latest verified commit: `c1c3458290b0e0124d82ccdffc6df6636b7695a6`
+Latest verified commit: `c81c113c5a5b9eeab337e2ecec9c004c961684cc`
 
 ## Current State
 
-`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, a Codex-native `/chat` product surface with durable attachment/artifact continuity, hybrid long-term memory with Qdrant-backed vector recall, SQLite fallback, lifecycle controls, restart-safe maintenance, decay/reinforcement-aware ranking, governed self-evolution proposals with operator-approved apply/rollback for settings changes, and governed internal tool bundles with preview, approval, enable, disable, and uninstall lifecycle.
+`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, a Codex-native `/chat` product surface with durable attachment/artifact continuity and bounded automatic artifact extraction, hybrid long-term memory with Qdrant-backed vector recall, SQLite fallback, lifecycle controls, restart-safe maintenance, decay/reinforcement-aware ranking, governed self-evolution proposals with operator-approved apply/rollback for settings changes, and governed internal tool bundles with preview, approval, enable, disable, and uninstall lifecycle.
 
 The project is now past its first serious production-hardening pass. It is not yet equivalent to the original Phantom project, but the core runtime is materially safer to run: request sizes are bounded, secrets are rejected in production when defaults are used, outbound model calls have timeouts, scheduler jobs recover deterministically after restarts, MCP events are durably audited, external webhooks are signed, Slack sends retry transient failures, operator-console workflows have browser coverage, and the Docker image runs compiled JavaScript instead of stripped TypeScript.
 
 ## Just Completed
+
+Automatic artifact extraction wave completed locally on 2026-05-13:
+
+- Added extraction for explicit `artifact` / `artifacts` JSON envelopes from successful tool output events and final structured output text.
+- Persisted extracted artifacts through the existing chat artifact/blob system with source session, run, tool, and tool-call metadata.
+- Bounded automatic extraction to five artifacts per run, 1 MB per artifact, and safe text-like or JSON content types.
+- Preserved explicit artifact APIs and session detail visibility.
+
+Verification from this wave:
+
+```bash
+node --experimental-strip-types --test tests/artifact-extraction.test.ts tests/server.test.ts
+npm run typecheck
+npm test
+npm run build
+git diff --check
+GitNexus detect_changes(scope="all")
+```
 
 Internal tool bundle lifecycle wave completed locally on 2026-05-13:
 
@@ -383,14 +401,14 @@ npm run build
 
 Use `docs/phantom-parity.md` as the canonical production-level parity roadmap. Keep this section limited to immediate handoff notes and proof gaps.
 
-### P1: Artifact Intelligence
+### P1: Searchable Safe Text Attachments
 
 Suggested work:
 
-- Add automatic artifact extraction from selected tool events or structured run outputs.
-- Keep extracted artifacts linked to the source session and run.
-- Bound extraction size and ignore unsafe/non-artifact payloads.
-- Preserve the existing explicit artifact APIs.
+- Extract searchable text from safe text-like uploaded attachments.
+- Keep extracted text linked to the attachment, source session, and optional run.
+- Bound indexed bytes and skip binary or unsafe MIME types.
+- Expose search results in chat/session detail and operator export surfaces.
 
 ## Known Constraints
 
