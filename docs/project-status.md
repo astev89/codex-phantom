@@ -4,15 +4,33 @@ This is the living status ledger for `codex-phantom`. Update it at the end of ea
 
 Last updated: 2026-05-13
 Branch: `jarvis/transcript-artifact-continuity`
-Latest verified commit: `c81c113c5a5b9eeab337e2ecec9c004c961684cc`
+Latest verified commit: `de7eff0eb51e8c6400638d5eaea79834f2ba83ea`
 
 ## Current State
 
-`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, a Codex-native `/chat` product surface with durable attachment/artifact continuity and bounded automatic artifact extraction, hybrid long-term memory with Qdrant-backed vector recall, SQLite fallback, lifecycle controls, restart-safe maintenance, decay/reinforcement-aware ranking, governed self-evolution proposals with operator-approved apply/rollback for settings changes, and governed internal tool bundles with preview, approval, enable, disable, and uninstall lifecycle.
+`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, a Codex-native `/chat` product surface with durable/searchable attachment continuity, explicit artifacts, and bounded automatic artifact extraction, hybrid long-term memory with Qdrant-backed vector recall, SQLite fallback, lifecycle controls, restart-safe maintenance, decay/reinforcement-aware ranking, governed self-evolution proposals with operator-approved apply/rollback for settings changes, and governed internal tool bundles with preview, approval, enable, disable, and uninstall lifecycle.
 
 The project is now past its first serious production-hardening pass. It is not yet equivalent to the original Phantom project, but the core runtime is materially safer to run: request sizes are bounded, secrets are rejected in production when defaults are used, outbound model calls have timeouts, scheduler jobs recover deterministically after restarts, MCP events are durably audited, external webhooks are signed, Slack sends retry transient failures, operator-console workflows have browser coverage, and the Docker image runs compiled JavaScript instead of stripped TypeScript.
 
 ## Just Completed
+
+Searchable safe text attachment wave completed locally on 2026-05-13:
+
+- Added bounded safe text indexing for uploaded chat attachments.
+- Added authenticated `/chat/attachments/search?q=...` with session/run context, excerpts, and download links.
+- Recorded skipped index reasons for unsafe binary attachments while preserving downloads.
+- Surfaced attachment text index status in chat session detail and chat exports.
+
+Verification from this wave:
+
+```bash
+node --experimental-strip-types --test tests/server.test.ts
+npm run typecheck
+npm test
+npm run build
+git diff --check
+GitNexus detect_changes(scope="all")
+```
 
 Automatic artifact extraction wave completed locally on 2026-05-13:
 
@@ -401,14 +419,15 @@ npm run build
 
 Use `docs/phantom-parity.md` as the canonical production-level parity roadmap. Keep this section limited to immediate handoff notes and proof gaps.
 
-### P1: Searchable Safe Text Attachments
+### P1: Recompare Phantom Non-Telegram Channels
 
 Suggested work:
 
-- Extract searchable text from safe text-like uploaded attachments.
-- Keep extracted text linked to the attachment, source session, and optional run.
-- Bound indexed bytes and skip binary or unsafe MIME types.
-- Expose search results in chat/session detail and operator export surfaces.
+- Recompare Phantom channel surfaces with current code/docs.
+- Identify any non-Telegram channel capabilities not represented in `codex-phantom`.
+- Update `CONTEXT.md` for resolved terms or explicit channel carve-outs.
+- Add an ADR for any durable exclusion that would be surprising later.
+- Update `docs/phantom-parity.md` with either newly discovered channel gaps or confirmed no-op evidence.
 
 ## Known Constraints
 
