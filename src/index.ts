@@ -2,6 +2,7 @@ import { loadConfig } from "./config.ts";
 import { SessionStore } from "./chat/session-store.ts";
 import { ChannelRegistry } from "./channels/registry.ts";
 import { MemoryStore } from "./memory/store.ts";
+import { MemoryMaintenanceService } from "./memory/maintenance.ts";
 import { OpenAiEmbeddingService } from "./memory/embedding.ts";
 import { ToolRegistry } from "./tools/registry.ts";
 import { DynamicToolRegistry } from "./tools/dynamic-registry.ts";
@@ -27,6 +28,7 @@ const sessions = new SessionStore(database);
 const channels = new ChannelRegistry(database, config);
 const embeddings = new OpenAiEmbeddingService(config);
 const memory = new MemoryStore(database, config, embeddings);
+const memoryMaintenance = new MemoryMaintenanceService(database, memory);
 const tools = new ToolRegistry();
 const dynamicTools = new DynamicToolRegistry(database, tools);
 const governance = new ToolGovernanceService(database);
@@ -90,12 +92,15 @@ const server = new HttpServer(
   memory,
   dynamicTools,
   channels,
-  governance
+  governance,
+  undefined,
+  memoryMaintenance
 );
 
 await memory.backfillEmbeddings();
 await memory.initializeVectorStore();
 await memory.backfillVectors();
+await memoryMaintenance.start();
 await scheduler.start();
 await server.listen();
 logger.info("server_listening", {
@@ -106,6 +111,7 @@ logger.info("server_listening", {
 
 const shutdown = async (signal: string): Promise<void> => {
   logger.info("shutdown_requested", { signal });
+  await memoryMaintenance.stop();
   await scheduler.stop();
   await server.close();
   database.close();

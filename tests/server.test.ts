@@ -14,6 +14,7 @@ import type {
   AgentRunResult,
 } from "../src/agent/types.ts";
 import { SessionStore } from "../src/chat/session-store.ts";
+import { MemoryMaintenanceService } from "../src/memory/maintenance.ts";
 import { MemoryStore } from "../src/memory/store.ts";
 import { ToolRegistry } from "../src/tools/registry.ts";
 import { DynamicToolRegistry } from "../src/tools/dynamic-registry.ts";
@@ -435,6 +436,7 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
   const runs = new RunGraphStore(database);
   const orchestration = new OrchestrationService(runtime, tools, runs);
   const scheduler = new SchedulerService(database, orchestration);
+  const memoryMaintenance = new MemoryMaintenanceService(database, memory);
   await scheduler.start();
   const metrics = new MetricsStore();
   const mcpAudit = new McpAuditStore(database);
@@ -462,7 +464,8 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     dynamicTools,
     channels,
     governance,
-    slackTransport
+    slackTransport,
+    memoryMaintenance
   );
   const instance = await server.listen();
   const address = instance.address();
@@ -516,6 +519,7 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       "/sessions",
       "/runs",
       "/memory",
+      "/admin/memory/maintenance",
       "/scheduler/jobs",
     ];
     for (const path of protectedGetPaths) {
@@ -599,6 +603,14 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       }
     );
     assert.equal(unauthenticatedScheduleResponse.status, 401);
+
+    const unauthenticatedMaintenanceRunResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/memory/maintenance/run`,
+      {
+        method: "POST",
+      }
+    );
+    assert.equal(unauthenticatedMaintenanceRunResponse.status, 401);
 
     const badWebhookResponse = await fetch(
       `http://127.0.0.1:${port}/channels/webhook`,
@@ -1337,6 +1349,34 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     };
     assert.ok(memoryJson.entries.length > 0);
 
+    const maintenanceRunResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/memory/maintenance/run`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
+    assert.equal(maintenanceRunResponse.status, 202);
+    const maintenanceRunJson = (await maintenanceRunResponse.json()) as {
+      maintenance: { id: string; status: string };
+    };
+    assert.equal(maintenanceRunJson.maintenance.status, "completed");
+
+    const maintenanceResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/memory/maintenance`,
+      {
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
+    const maintenanceJson = (await maintenanceResponse.json()) as {
+      maintenance: Array<{ id: string; status: string }>;
+    };
+    assert.ok(
+      maintenanceJson.maintenance.some(
+        (run) => run.id === maintenanceRunJson.maintenance.id
+      )
+    );
+
     const channelsResponse = await fetch(
       `http://127.0.0.1:${port}/admin/channels`,
       {
@@ -1782,12 +1822,18 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       runs: Array<{ runId: string; eventCount: number }>;
       jobs: Array<{ id: string }>;
       memory: Array<{ id: string }>;
+      memoryMaintenance: Array<{ id: string; status: string }>;
       governanceAudit: Array<{ toolId: string; action: string }>;
     };
     assert.ok(timelineJson.sessions.length > 0);
     assert.ok(timelineJson.runs.length > 0);
     assert.ok(timelineJson.jobs.length > 0);
     assert.ok(timelineJson.memory.length > 0);
+    assert.ok(
+      timelineJson.memoryMaintenance.some(
+        (run) => run.id === maintenanceRunJson.maintenance.id
+      )
+    );
     assert.ok(
       timelineJson.governanceAudit.some(
         (entry) =>

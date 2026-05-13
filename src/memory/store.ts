@@ -11,6 +11,7 @@ import type {
 import type { EmbeddingService } from "./embedding.ts";
 import type {
   MemoryInsightSet,
+  MemoryMaintenanceOutcome,
   MemoryStatus,
   MemoryTurnRecord,
   StoreMemoryEntryInput,
@@ -245,6 +246,24 @@ export class MemoryStore {
     await this.pruneByCategory("episodic", 120);
   }
 
+  async runMaintenance(): Promise<MemoryMaintenanceOutcome> {
+    const summary = await this.compactEpisodicMemories();
+    const prunedIds = [
+      ...(await this.pruneByCategory("semantic", 80)),
+      ...(await this.pruneByCategory("procedural", 60)),
+      ...(await this.pruneByCategory("episodic", 120)),
+    ];
+
+    return {
+      summarizedCount: summary?.sourceMemoryIds.length ?? 0,
+      promotedCount: summary ? 1 : 0,
+      prunedCount: prunedIds.length,
+      summaryMemoryIds: summary ? [summary.summaryMemoryId] : [],
+      promotedMemoryIds: summary ? [summary.summaryMemoryId] : [],
+      prunedMemoryIds: prunedIds,
+    };
+  }
+
   async backfillEmbeddings(): Promise<void> {
     const rows = this.database.all<Pick<MemoryRow, "id" | "content">>(
       `
@@ -397,9 +416,9 @@ export class MemoryStore {
   }
 
   private async compactEpisodicMemories(
-    record: MemoryTurnRecord,
+    record?: MemoryTurnRecord,
     summaryHint?: string
-  ): Promise<void> {
+  ): Promise<{ summaryMemoryId: string; sourceMemoryIds: string[] } | null> {
     const recentRaw = this.database.all<MemoryRow>(
       `
         SELECT
@@ -415,7 +434,7 @@ export class MemoryStore {
     );
 
     if (recentRaw.length < this.config.memorySummaryTriggerCount) {
-      return;
+      return null;
     }
 
     const cluster = [...recentRaw]
@@ -447,8 +466,8 @@ export class MemoryStore {
         "episodic",
         summaryContent,
         now,
-        record.userInput,
-        record.assistantOutput,
+        record?.userInput ?? null,
+        record?.assistantOutput ?? null,
         0,
         vector ? encodeJson(vector) : null,
         vector ? this.embeddings.model : null,
@@ -459,8 +478,8 @@ export class MemoryStore {
         1,
         0,
         null,
-        record.sessionId,
-        record.runId,
+        record?.sessionId ?? null,
+        record?.runId ?? null,
         vector && this.primaryVectorStore.isAvailable()
           ? "qdrant"
           : "sqlite_fallback",
@@ -490,12 +509,16 @@ export class MemoryStore {
             importance: 0.88,
             is_summary: 1,
             is_fact: 0,
-            source_session_id: record.sessionId,
-            source_run_id: record.runId,
+            source_session_id: record?.sessionId ?? null,
+            source_run_id: record?.runId ?? null,
           }),
         },
       ]);
     }
+    return {
+      summaryMemoryId: summaryId,
+      sourceMemoryIds: cluster.map((row) => row.id),
+    };
   }
 
   private async storeEntries(
@@ -751,7 +774,7 @@ export class MemoryStore {
   private async pruneByCategory(
     category: MemoryCategory,
     keepCount: number
-  ): Promise<void> {
+  ): Promise<string[]> {
     const surplus = this.database.all<{ id: string }>(
       `
         SELECT id
@@ -765,7 +788,7 @@ export class MemoryStore {
       keepCount
     );
     if (surplus.length === 0) {
-      return;
+      return [];
     }
     const ids = surplus.map((row) => row.id);
     this.database.transaction(() => {
@@ -774,6 +797,7 @@ export class MemoryStore {
       }
     });
     await this.primaryVectorStore.delete(ids);
+    return ids;
   }
 
   private async markAccessed(entries: MemoryEntry[]): Promise<void> {

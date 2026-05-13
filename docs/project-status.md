@@ -8,11 +8,30 @@ Latest verified commit: `fea7605`
 
 ## Current State
 
-`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, a Codex-native `/chat` product surface with durable attachment/artifact continuity, and hybrid long-term memory with Qdrant-backed vector recall, SQLite fallback, and explicit supersession/contradiction lifecycle records.
+`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, a Codex-native `/chat` product surface with durable attachment/artifact continuity, and hybrid long-term memory with Qdrant-backed vector recall, SQLite fallback, explicit supersession/contradiction lifecycle records, and restart-safe maintenance runs.
 
 The project is now past its first serious production-hardening pass. It is not yet equivalent to the original Phantom project, but the core runtime is materially safer to run: request sizes are bounded, secrets are rejected in production when defaults are used, outbound model calls have timeouts, scheduler jobs recover deterministically after restarts, MCP events are durably audited, external webhooks are signed, Slack sends retry transient failures, operator-console workflows have browser coverage, and the Docker image runs compiled JavaScript instead of stripped TypeScript.
 
 ## Just Completed
+
+Managed memory maintenance wave completed locally on 2026-05-13:
+
+- Added a persisted memory-maintenance scheduler with startup recovery for interrupted runs.
+- Added deterministic maintenance that summarizes raw episodic clusters, treats the summary as the promoted durable memory, and prunes active memory rows within bounded caps.
+- Kept superseded and contradicted audit rows out of active pruning so lifecycle evidence remains inspectable.
+- Exposed maintenance runs through `/admin/memory/maintenance`, manual trigger through `/admin/memory/maintenance/run`, timeline/export surfaces, and `docs/memory.md`.
+- Covered scheduled outcomes, persistence, bounded pruning, failure recovery, and admin route visibility in tests.
+
+Verification from this wave:
+
+```bash
+node --experimental-strip-types --test tests/memory-maintenance.test.ts tests/memory.test.ts tests/server.test.ts
+npm run typecheck
+npm test
+npm run build
+git diff --check
+GitNexus detect_changes(scope="all")
+```
 
 Managed memory lifecycle wave completed locally on 2026-05-13:
 
@@ -268,13 +287,13 @@ npm run build
 
 Use `docs/phantom-parity.md` as the canonical production-level parity roadmap. Keep this section limited to immediate handoff notes and proof gaps.
 
-### P1: Managed Memory Continuity
+### P1: Memory Decay And Retrieval Tuning
 
 Suggested work:
 
-- Add scheduled consolidation beyond per-turn compaction.
-- Add explicit promote/prune behavior, decay/reinforcement scoring, and operator-visible lifecycle controls.
-- Tune hybrid retrieval after lifecycle and consolidation behavior is stable.
+- Add decay/reinforcement scoring to reward useful memories and age out stale active context.
+- Tune hybrid retrieval after lifecycle and scheduled maintenance behavior is stable.
+- Add operator controls only where a real intervention workflow appears.
 
 ## Known Constraints
 

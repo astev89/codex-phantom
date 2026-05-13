@@ -42,6 +42,15 @@ export type MemoryStatus = {
   qdrantReachable: boolean;
 };
 
+export type MemoryMaintenanceOutcome = {
+  summarizedCount: number;
+  promotedCount: number;
+  prunedCount: number;
+  summaryMemoryIds: string[];
+  promotedMemoryIds: string[];
+  prunedMemoryIds: string[];
+};
+
 export type VectorSearchResult = {
   id: string;
   score: number;

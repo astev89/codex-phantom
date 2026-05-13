@@ -166,6 +166,22 @@ export class AppDatabase {
         FOREIGN KEY (target_memory_id) REFERENCES memory_entries(id)
       );
 
+      CREATE TABLE IF NOT EXISTS memory_maintenance_runs (
+        id TEXT PRIMARY KEY,
+        status TEXT NOT NULL,
+        scheduled_at TEXT NOT NULL,
+        started_at TEXT,
+        finished_at TEXT,
+        summarized_count INTEGER NOT NULL DEFAULT 0,
+        promoted_count INTEGER NOT NULL DEFAULT 0,
+        pruned_count INTEGER NOT NULL DEFAULT 0,
+        summary_memory_ids_json TEXT NOT NULL,
+        promoted_memory_ids_json TEXT NOT NULL,
+        pruned_memory_ids_json TEXT NOT NULL,
+        failure_reason TEXT,
+        created_at TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS dynamic_tools (
         id TEXT PRIMARY KEY,
         description TEXT NOT NULL,
@@ -293,6 +309,7 @@ export class AppDatabase {
       CREATE INDEX IF NOT EXISTS idx_memory_entries_category_created_at ON memory_entries(category, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_memory_lifecycle_links_target ON memory_lifecycle_links(target_memory_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_memory_lifecycle_links_source ON memory_lifecycle_links(source_memory_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_memory_maintenance_runs_status_scheduled_at ON memory_maintenance_runs(status, scheduled_at);
       CREATE INDEX IF NOT EXISTS idx_dynamic_tools_updated_at ON dynamic_tools(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_channels_updated_at ON channels(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_tool_governance_audit_tool_id ON tool_governance_audit(tool_id, created_at DESC);

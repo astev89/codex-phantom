@@ -53,6 +53,7 @@ import { AppDatabase } from "../platform/database.ts";
 import { Logger } from "../platform/logger.ts";
 import { MetricsStore } from "../platform/metrics.ts";
 import { MemoryStore } from "../memory/store.ts";
+import type { MemoryMaintenanceService } from "../memory/maintenance.ts";
 import { DynamicToolRegistry } from "../tools/dynamic-registry.ts";
 import { ToolGovernanceService } from "../tools/governance.ts";
 import { renderOperatorConsole } from "./ui.ts";
@@ -91,6 +92,7 @@ export class HttpServer {
   private readonly logger: Logger;
   private readonly metrics: MetricsStore;
   private readonly memory: MemoryStore;
+  private readonly memoryMaintenance?: MemoryMaintenanceService;
   private readonly dynamicTools: DynamicToolRegistry;
   private readonly channels: ChannelRegistry;
   private readonly channelDeliveries: ChannelDeliveryStore;
@@ -122,7 +124,8 @@ export class HttpServer {
     dynamicTools: DynamicToolRegistry,
     channels: ChannelRegistry,
     governance: ToolGovernanceService,
-    slackTransport?: SlackTransport
+    slackTransport?: SlackTransport,
+    memoryMaintenance?: MemoryMaintenanceService
   ) {
     this.config = config;
     this.orchestration = orchestration;
@@ -134,6 +137,7 @@ export class HttpServer {
     this.logger = logger;
     this.metrics = metrics;
     this.memory = memory;
+    this.memoryMaintenance = memoryMaintenance;
     this.dynamicTools = dynamicTools;
     this.channels = channels;
     this.channelDeliveries = new ChannelDeliveryStore(database);
@@ -395,6 +399,8 @@ export class HttpServer {
             settings.memoryTimelineLimit
           ),
           memory: await this.memory.listEntries(settings.memoryTimelineLimit),
+          memoryMaintenance:
+            this.memoryMaintenance?.list(settings.memoryTimelineLimit) ?? [],
           channelInbound: this.channelInbound.list({
             limit: settings.memoryTimelineLimit,
           }),
@@ -538,6 +544,32 @@ export class HttpServer {
           throw new HttpError(404, "Job not found");
         }
         this.json(res, 200, { job });
+        return;
+      }
+
+      if (
+        req.method === "GET" &&
+        url.pathname === "/admin/memory/maintenance"
+      ) {
+        this.requireOperatorAuth(req);
+        const limit = url.searchParams.get("limit");
+        this.json(res, 200, {
+          maintenance:
+            this.memoryMaintenance?.list(limit ? Number(limit) : 20) ?? [],
+        });
+        return;
+      }
+
+      if (
+        req.method === "POST" &&
+        url.pathname === "/admin/memory/maintenance/run"
+      ) {
+        this.requireOperatorAuth(req);
+        if (!this.memoryMaintenance) {
+          throw new HttpError(409, "Memory maintenance is not configured");
+        }
+        const maintenance = await this.memoryMaintenance.runNow();
+        this.json(res, 202, { requestId, maintenance });
         return;
       }
 
@@ -1250,6 +1282,7 @@ export class HttpServer {
             ...this.channelDeliveries.list(undefined, 50),
             ...this.channelInbound.list({ limit: 50 }),
             ...this.slackFeedback.list(50),
+            ...(this.memoryMaintenance?.list(50) ?? []),
             ...this.governance.listAudit(50),
           ],
         };
