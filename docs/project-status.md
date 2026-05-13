@@ -8,11 +8,30 @@ Latest verified commit: `48bf235`
 
 ## Current State
 
-`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, a Codex-native `/chat` product surface with durable attachment/artifact continuity, and hybrid long-term memory with Qdrant-backed vector recall plus SQLite fallback.
+`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, a Codex-native `/chat` product surface with durable attachment/artifact continuity, and hybrid long-term memory with Qdrant-backed vector recall, SQLite fallback, and explicit supersession/contradiction lifecycle records.
 
 The project is now past its first serious production-hardening pass. It is not yet equivalent to the original Phantom project, but the core runtime is materially safer to run: request sizes are bounded, secrets are rejected in production when defaults are used, outbound model calls have timeouts, scheduler jobs recover deterministically after restarts, MCP events are durably audited, external webhooks are signed, Slack sends retry transient failures, operator-console workflows have browser coverage, and the Docker image runs compiled JavaScript instead of stripped TypeScript.
 
 ## Just Completed
+
+Managed memory lifecycle wave completed locally on 2026-05-13:
+
+- Added durable memory lifecycle links for supersession and contradiction relationships.
+- Marked superseded and contradicted memories on the target memory rows while preserving the correcting memory as active.
+- Excluded superseded and contradicted rows from retrieval and duplicate checks so stale memory does not re-enter prompts.
+- Exposed lifecycle state and relationship detail through memory list/detail surfaces for operator auditability.
+- Covered persistence across a store reload, link reasons, lifecycle state, and retrieval exclusion in `tests/memory.test.ts`.
+
+Verification from this wave:
+
+```bash
+node --experimental-strip-types --test tests/memory.test.ts tests/server.test.ts
+npm run typecheck
+npm test
+npm run build
+git diff --check
+GitNexus detect_changes(scope="all")
+```
 
 Operator YAML policy loading wave completed locally on 2026-05-13:
 
@@ -249,19 +268,13 @@ npm run build
 
 Use `docs/phantom-parity.md` as the canonical production-level parity roadmap. Keep this section limited to immediate handoff notes and proof gaps.
 
-### P1: Managed Memory Contradiction And Supersession
+### P1: Managed Memory Continuity
 
 Suggested work:
 
-- Add explicit memory supersession/contradiction links before retrieval tuning.
-- Keep operator-visible audit details for why a memory was superseded.
-
-### P2: Managed Memory Continuity
-
-Suggested work:
-
-- Add contradiction and supersession handling before retrieval tuning.
-- Add scheduled consolidation, promote/prune behavior, and operator-visible audit trails.
+- Add scheduled consolidation beyond per-turn compaction.
+- Add explicit promote/prune behavior, decay/reinforcement scoring, and operator-visible lifecycle controls.
+- Tune hybrid retrieval after lifecycle and consolidation behavior is stable.
 
 ## Known Constraints
 

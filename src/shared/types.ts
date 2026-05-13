@@ -1,6 +1,9 @@
 export type JsonPrimitive = string | number | boolean | null;
 
-export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
+export type JsonValue =
+  | JsonPrimitive
+  | JsonValue[]
+  | { [key: string]: JsonValue };
 
 export type ChatMessage = {
   role: "system" | "user" | "assistant" | "tool";
@@ -26,7 +29,23 @@ export type SessionRecord = {
 };
 
 export type MemoryCategory = "episodic" | "semantic" | "procedural";
-export type MemorySourceType = "raw_turn" | "semantic_fact" | "procedural_note" | "summary";
+export type MemorySourceType =
+  | "raw_turn"
+  | "semantic_fact"
+  | "procedural_note"
+  | "summary";
+export type MemoryLifecycleRelationship = "supersedes" | "contradicts";
+
+export type MemoryLifecycleLink = {
+  id: string;
+  sourceMemoryId: string;
+  targetMemoryId: string;
+  relationship: MemoryLifecycleRelationship;
+  reason?: string;
+  sourceSessionId?: string;
+  sourceRunId?: string;
+  createdAt: string;
+};
 
 export type MemoryEntry = {
   id: string;
@@ -41,6 +60,10 @@ export type MemoryEntry = {
   isSummary: boolean;
   isFact: boolean;
   parentSummaryId?: string;
+  lifecycleState?: "active" | "superseded" | "contradicted";
+  supersededByMemoryId?: string;
+  contradictedByMemoryId?: string;
+  lifecycleLinks?: MemoryLifecycleLink[];
   embeddingModel?: string;
   vectorBackend?: "qdrant" | "sqlite_fallback";
   vectorPointId?: string;
@@ -73,9 +96,19 @@ export type PermissionPolicy = {
   allowedMcpServers: string[];
 };
 
-export type SubagentRole = "coordinator" | "explorer" | "builder" | "verifier" | "researcher";
+export type SubagentRole =
+  | "coordinator"
+  | "explorer"
+  | "builder"
+  | "verifier"
+  | "researcher";
 
-export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+export type RunStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled";
 
 export type StoredRunEvent = {
   sequence: number;

@@ -23,6 +23,9 @@ export type StoreMemoryEntryInput = {
   isSummary?: boolean;
   isFact?: boolean;
   parentSummaryId?: string;
+  supersedesMemoryIds?: string[];
+  contradictsMemoryIds?: string[];
+  lifecycleReason?: string;
   sourceSessionId?: string;
   sourceRunId?: string;
   sourceUserInput?: string;
@@ -56,7 +59,11 @@ export type VectorStore = {
   isAvailable(): boolean;
   initialize(dimension: number): Promise<void>;
   upsert(points: VectorPoint[]): Promise<void>;
-  search(vector: number[], limit: number, filter?: Record<string, unknown>): Promise<VectorSearchResult[]>;
+  search(
+    vector: number[],
+    limit: number,
+    filter?: Record<string, unknown>
+  ): Promise<VectorSearchResult[]>;
   delete(ids: string[]): Promise<void>;
   hasPoint(id: string): Promise<boolean>;
 };

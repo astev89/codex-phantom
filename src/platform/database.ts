@@ -153,6 +153,19 @@ export class AppDatabase {
         score REAL NOT NULL DEFAULT 0
       );
 
+      CREATE TABLE IF NOT EXISTS memory_lifecycle_links (
+        id TEXT PRIMARY KEY,
+        source_memory_id TEXT NOT NULL,
+        target_memory_id TEXT NOT NULL,
+        relationship TEXT NOT NULL,
+        reason TEXT,
+        source_session_id TEXT,
+        source_run_id TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (source_memory_id) REFERENCES memory_entries(id),
+        FOREIGN KEY (target_memory_id) REFERENCES memory_entries(id)
+      );
+
       CREATE TABLE IF NOT EXISTS dynamic_tools (
         id TEXT PRIMARY KEY,
         description TEXT NOT NULL,
@@ -278,6 +291,8 @@ export class AppDatabase {
       CREATE INDEX IF NOT EXISTS idx_chat_artifacts_session_id ON chat_artifacts(session_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_jobs_status_scheduled_at ON jobs(status, scheduled_at);
       CREATE INDEX IF NOT EXISTS idx_memory_entries_category_created_at ON memory_entries(category, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_memory_lifecycle_links_target ON memory_lifecycle_links(target_memory_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_memory_lifecycle_links_source ON memory_lifecycle_links(source_memory_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_dynamic_tools_updated_at ON dynamic_tools(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_channels_updated_at ON channels(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_tool_governance_audit_tool_id ON tool_governance_audit(tool_id, created_at DESC);
@@ -333,6 +348,19 @@ export class AppDatabase {
     ensureColumn(this.db, "memory_entries", "vector_synced_at", "TEXT");
     ensureColumn(this.db, "memory_entries", "vector_sync_error", "TEXT");
     ensureColumn(this.db, "memory_entries", "vector_point_id", "TEXT");
+    ensureColumn(
+      this.db,
+      "memory_entries",
+      "lifecycle_state",
+      "TEXT NOT NULL DEFAULT 'active'"
+    );
+    ensureColumn(this.db, "memory_entries", "superseded_by_memory_id", "TEXT");
+    ensureColumn(
+      this.db,
+      "memory_entries",
+      "contradicted_by_memory_id",
+      "TEXT"
+    );
     ensureColumn(this.db, "sessions", "title", "TEXT");
     ensureColumn(this.db, "sessions", "title_source", "TEXT");
     ensureColumn(this.db, "chat_attachments", "storage_path", "TEXT");
