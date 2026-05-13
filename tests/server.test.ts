@@ -1742,6 +1742,7 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       logging: { provider: string };
       deployment: { qdrantEnabled: boolean };
       governance: { pendingDynamicTools: number; approvedDynamicTools: number };
+      selfEvolution: { proposed: number };
       channelDeliveries: { delivered: number; recentFailed: unknown[] };
       channelInbound: {
         completed: number;
@@ -1762,6 +1763,7 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assert.equal(adminSummaryJson.deployment.qdrantEnabled, false);
     assert.equal(adminSummaryJson.governance.pendingDynamicTools, 0);
     assert.equal(adminSummaryJson.governance.approvedDynamicTools, 1);
+    assert.equal(adminSummaryJson.selfEvolution.proposed, 0);
     assert.ok(adminSummaryJson.channelDeliveries.delivered >= 2);
     assert.deepEqual(adminSummaryJson.channelDeliveries.recentFailed, []);
     assert.ok(adminSummaryJson.channelInbound.completed >= 2);
@@ -1785,6 +1787,94 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
         (channel) => channel.id === "slack" && channel.enabled === true
       )
     );
+
+    const unauthenticatedProposalResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/self-evolution/proposals`
+    );
+    assert.equal(unauthenticatedProposalResponse.status, 401);
+
+    const proposalResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/self-evolution/proposals`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          target: "role",
+          title: "Allow verifier docs reads",
+          rationale: "Verifier agents need docs context for parity checks.",
+          riskClass: "medium",
+          proposedChange: {
+            summary: "Add docs/**/* to verifier file globs.",
+            fileGlobs: ["src/**/*", "tests/**/*", "docs/**/*"],
+          },
+          metadata: { issue: 13 },
+        }),
+      }
+    );
+    const proposalJson = (await proposalResponse.json()) as {
+      proposal: {
+        id: string;
+        target: string;
+        status: string;
+        proposedBy: string;
+      };
+    };
+    assert.equal(proposalResponse.status, 201);
+    assert.equal(proposalJson.proposal.target, "role");
+    assert.equal(proposalJson.proposal.status, "proposed");
+    assert.equal(proposalJson.proposal.proposedBy, "operator");
+
+    const directApplyProposalResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/self-evolution/proposals`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          target: "configuration",
+          title: "Apply immediately",
+          rationale: "Should be rejected.",
+          riskClass: "high",
+          proposedChange: { summary: "unsafe", applyNow: true },
+        }),
+      }
+    );
+    assert.equal(directApplyProposalResponse.status, 400);
+
+    const proposalListResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/self-evolution/proposals`,
+      {
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
+    const proposalListJson = (await proposalListResponse.json()) as {
+      proposals: Array<{ id: string; title: string }>;
+      summary: { proposed: number };
+    };
+    assert.equal(proposalListResponse.status, 200);
+    assert.ok(
+      proposalListJson.proposals.some(
+        (proposal) => proposal.id === proposalJson.proposal.id
+      )
+    );
+    assert.equal(proposalListJson.summary.proposed, 1);
+
+    const updatedSummaryResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/summary`,
+      {
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
+    const updatedSummaryJson = (await updatedSummaryResponse.json()) as {
+      selfEvolution: { proposed: number; highRisk: number };
+    };
+    assert.equal(updatedSummaryJson.selfEvolution.proposed, 1);
+    assert.equal(updatedSummaryJson.selfEvolution.highRisk, 0);
 
     const feedbackResponse = await fetch(
       `http://127.0.0.1:${port}/admin/channels/feedback`,
@@ -1824,6 +1914,7 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       memory: Array<{ id: string }>;
       memoryMaintenance: Array<{ id: string; status: string }>;
       governanceAudit: Array<{ toolId: string; action: string }>;
+      selfEvolutionProposals: Array<{ id: string; status: string }>;
     };
     assert.ok(timelineJson.sessions.length > 0);
     assert.ok(timelineJson.runs.length > 0);
@@ -1838,6 +1929,11 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       timelineJson.governanceAudit.some(
         (entry) =>
           entry.toolId === "project.brief" && entry.action === "approved"
+      )
+    );
+    assert.ok(
+      timelineJson.selfEvolutionProposals.some(
+        (proposal) => proposal.id === proposalJson.proposal.id
       )
     );
 

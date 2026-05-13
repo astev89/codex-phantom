@@ -202,6 +202,20 @@ export class AppDatabase {
         updated_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS self_evolution_proposals (
+        id TEXT PRIMARY KEY,
+        target TEXT NOT NULL,
+        title TEXT NOT NULL,
+        rationale TEXT NOT NULL,
+        risk_class TEXT NOT NULL,
+        proposed_change_json TEXT NOT NULL,
+        metadata_json TEXT NOT NULL,
+        status TEXT NOT NULL,
+        proposed_by TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS channels (
         id TEXT PRIMARY KEY,
         kind TEXT NOT NULL,
@@ -322,6 +336,8 @@ export class AppDatabase {
       CREATE INDEX IF NOT EXISTS idx_memory_reinforcement_events_memory ON memory_reinforcement_events(memory_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_memory_maintenance_runs_status_scheduled_at ON memory_maintenance_runs(status, scheduled_at);
       CREATE INDEX IF NOT EXISTS idx_dynamic_tools_updated_at ON dynamic_tools(updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_self_evolution_proposals_status ON self_evolution_proposals(status, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_self_evolution_proposals_target ON self_evolution_proposals(target, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_channels_updated_at ON channels(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_tool_governance_audit_tool_id ON tool_governance_audit(tool_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_channel_delivery_logs_channel_id ON channel_delivery_logs(channel_id, delivered_at DESC);

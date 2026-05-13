@@ -8,11 +8,30 @@ Latest verified commit: `b063c28`
 
 ## Current State
 
-`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, a Codex-native `/chat` product surface with durable attachment/artifact continuity, and hybrid long-term memory with Qdrant-backed vector recall, SQLite fallback, lifecycle controls, restart-safe maintenance, and decay/reinforcement-aware ranking.
+`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, a Codex-native `/chat` product surface with durable attachment/artifact continuity, hybrid long-term memory with Qdrant-backed vector recall, SQLite fallback, lifecycle controls, restart-safe maintenance, decay/reinforcement-aware ranking, and governed self-evolution proposal records.
 
 The project is now past its first serious production-hardening pass. It is not yet equivalent to the original Phantom project, but the core runtime is materially safer to run: request sizes are bounded, secrets are rejected in production when defaults are used, outbound model calls have timeouts, scheduler jobs recover deterministically after restarts, MCP events are durably audited, external webhooks are signed, Slack sends retry transient failures, operator-console workflows have browser coverage, and the Docker image runs compiled JavaScript instead of stripped TypeScript.
 
 ## Just Completed
+
+Governed self-evolution proposal wave completed locally on 2026-05-13:
+
+- Added durable `self_evolution_proposals` records for prompts, memory policy, tools, roles, and configuration.
+- Added operator APIs for proposal creation/listing and surfaced proposal summaries in admin summary, timeline, and governance export.
+- Added the `self_evolution.propose` in-process tool so agents can create auditable proposals without applying mutations.
+- Rejected malformed proposals and direct-apply requests such as `applyNow: true` and `mutationMode: "direct"`.
+- Documented the proposal-only contract in `docs/self-evolution.md` and `docs/superpowers/plans/2026-05-13-governed-self-evolution-proposals.md`.
+
+Verification from this wave:
+
+```bash
+node --experimental-strip-types --test tests/self-evolution.test.ts tests/server.test.ts
+npm run typecheck
+npm test
+npm run build
+git diff --check
+GitNexus detect_changes(scope="all")
+```
 
 Managed memory retrieval tuning wave completed locally on 2026-05-13:
 
@@ -306,12 +325,13 @@ npm run build
 
 Use `docs/phantom-parity.md` as the canonical production-level parity roadmap. Keep this section limited to immediate handoff notes and proof gaps.
 
-### P1: Governed Self-Evolution Proposals
+### P1: Governed Self-Evolution Approval And Rollback
 
 Suggested work:
 
-- Add proposal records for governed self-evolution of prompts, memory policy, tools, roles, and configuration.
-- Require policy gates and audit trails before any proposal can become an applyable change.
+- Add explicit proposal approval/rejection transitions with operator identity and notes.
+- Require policy gates before any proposal can become an applyable change.
+- Store rollback metadata for approved prompt, memory policy, tool, role, and configuration changes.
 - Keep unrestricted self-mutation out of scope.
 
 ## Known Constraints

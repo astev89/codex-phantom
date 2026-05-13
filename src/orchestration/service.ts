@@ -14,7 +14,13 @@ import type { RunNode, SubagentRequest } from "./types.ts";
 const COORDINATOR_POLICY = {
   mode: "scoped_write" as const,
   fileGlobs: ["src/**/*", "tests/**/*", "docs/**/*"],
-  allowedToolIds: ["memory.query", "echo.summary", "dynamic.note", "dynamic:*"],
+  allowedToolIds: [
+    "memory.query",
+    "echo.summary",
+    "dynamic.note",
+    "self_evolution.propose",
+    "dynamic:*",
+  ],
   allowedMcpServers: ["repo", "docs", "github", "web"],
 };
 

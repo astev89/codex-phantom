@@ -7,6 +7,10 @@ import { OpenAiEmbeddingService } from "./memory/embedding.ts";
 import { ToolRegistry } from "./tools/registry.ts";
 import { DynamicToolRegistry } from "./tools/dynamic-registry.ts";
 import { ToolGovernanceService } from "./tools/governance.ts";
+import {
+  SelfEvolutionProposalStore,
+  type CreateSelfEvolutionProposalInput,
+} from "./self-evolution/proposals.ts";
 import { CodexAdapter } from "./agent/codex-adapter.ts";
 import { AgentRuntime } from "./agent/runtime.ts";
 import { RunGraphStore } from "./orchestration/run-graph-store.ts";
@@ -19,6 +23,7 @@ import { HttpServer } from "./server/http-server.ts";
 import { AppDatabase } from "./platform/database.ts";
 import { Logger } from "./platform/logger.ts";
 import { MetricsStore } from "./platform/metrics.ts";
+import type { JsonValue } from "./shared/types.ts";
 
 const config = loadConfig();
 const logger = new Logger(config.logLevel);
@@ -32,6 +37,7 @@ const memoryMaintenance = new MemoryMaintenanceService(database, memory);
 const tools = new ToolRegistry();
 const dynamicTools = new DynamicToolRegistry(database, tools);
 const governance = new ToolGovernanceService(database);
+const selfEvolution = new SelfEvolutionProposalStore(database);
 const runs = new RunGraphStore(database);
 const mcpAudit = new McpAuditStore(database);
 const rolePolicy = loadRolePolicyConfig(config.roleConfigPath);
@@ -61,6 +67,18 @@ tools.register({
     input,
     createdAt: new Date().toISOString(),
   }),
+});
+tools.register({
+  id: "self_evolution.propose",
+  description:
+    "Create an auditable self-evolution proposal without applying the change.",
+  scopes: ["write"],
+  kind: "in_process",
+  handler: async (input) =>
+    selfEvolution.create({
+      ...parseSelfEvolutionToolInput(input),
+      proposedBy: "agent",
+    }) as unknown as JsonValue,
 });
 
 const adapter = new CodexAdapter(config);
@@ -122,4 +140,37 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.on(signal, () => {
     void shutdown(signal);
   });
+}
+
+function parseSelfEvolutionToolInput(
+  input: JsonValue
+): CreateSelfEvolutionProposalInput {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error("self_evolution.propose input must be a JSON object");
+  }
+  const value = input as Record<string, JsonValue>;
+  return {
+    target: requireToolString(
+      value.target,
+      "target"
+    ) as CreateSelfEvolutionProposalInput["target"],
+    title: requireToolString(value.title, "title"),
+    rationale: requireToolString(value.rationale, "rationale"),
+    riskClass: requireToolString(
+      value.riskClass,
+      "riskClass"
+    ) as CreateSelfEvolutionProposalInput["riskClass"],
+    proposedChange: value.proposedChange,
+    metadata: value.metadata,
+  };
+}
+
+function requireToolString(
+  value: JsonValue | undefined,
+  field: string
+): string {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new Error(`${field} must be a non-empty string`);
+  }
+  return value.trim();
 }

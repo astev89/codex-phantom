@@ -56,6 +56,7 @@ import { MemoryStore } from "../memory/store.ts";
 import type { MemoryMaintenanceService } from "../memory/maintenance.ts";
 import { DynamicToolRegistry } from "../tools/dynamic-registry.ts";
 import { ToolGovernanceService } from "../tools/governance.ts";
+import { SelfEvolutionProposalStore } from "../self-evolution/proposals.ts";
 import { renderOperatorConsole } from "./ui.ts";
 import { renderChatApp } from "./chat-ui.ts";
 import { OperatorSettingsStore } from "./settings.ts";
@@ -74,6 +75,7 @@ import {
   validateChatBody,
   validateMcpBody,
   validateScheduleBody,
+  validateSelfEvolutionProposalBody,
   validateToolApprovalBody,
   validateWebhookBody,
 } from "./validation.ts";
@@ -102,6 +104,7 @@ export class HttpServer {
   private readonly chatBlobs: ChatBlobStore;
   private readonly chatArtifacts: ChatArtifactStore;
   private readonly governance: ToolGovernanceService;
+  private readonly selfEvolution: SelfEvolutionProposalStore;
   private readonly slack: SlackChannel;
   private readonly settings: OperatorSettingsStore;
   private readonly requestAudits: RequestAuditStore;
@@ -151,6 +154,7 @@ export class HttpServer {
     this.chatBlobs = new ChatBlobStore(config.dataDir);
     this.chatArtifacts = new ChatArtifactStore(database);
     this.governance = governance;
+    this.selfEvolution = new SelfEvolutionProposalStore(database);
     this.slack = new SlackChannel(
       config,
       channels,
@@ -253,6 +257,7 @@ export class HttpServer {
           channelInbound: this.channelInbound.summary(),
           channelFeedback: this.slackFeedback.summary(),
           governance: this.governance.summary(),
+          selfEvolution: this.selfEvolution.summary(),
           settings: this.settings.get(),
           metrics: this.metrics.snapshot(),
         });
@@ -296,6 +301,7 @@ export class HttpServer {
           channelInbound: this.channelInbound.summary(),
           channelFeedback: this.slackFeedback.summary(),
           governance: this.governance.summary(),
+          selfEvolution: this.selfEvolution.summary(),
           settings: this.settings.get(),
           setupReadiness,
           rolePolicy: this.orchestration.getRolePolicyStatus(),
@@ -407,6 +413,9 @@ export class HttpServer {
           governanceAudit: this.governance.listAudit(
             settings.memoryTimelineLimit
           ),
+          selfEvolutionProposals: this.selfEvolution.list(
+            settings.memoryTimelineLimit
+          ),
         });
         return;
       }
@@ -468,6 +477,35 @@ export class HttpServer {
           tools: this.governance.list(),
           summary: this.governance.summary(),
         });
+        return;
+      }
+
+      if (
+        req.method === "GET" &&
+        url.pathname === "/admin/self-evolution/proposals"
+      ) {
+        this.requireOperatorAuth(req);
+        const limit = url.searchParams.get("limit");
+        this.json(res, 200, {
+          proposals: this.selfEvolution.list(limit ? Number(limit) : 50),
+          summary: this.selfEvolution.summary(),
+        });
+        return;
+      }
+
+      if (
+        req.method === "POST" &&
+        url.pathname === "/admin/self-evolution/proposals"
+      ) {
+        this.requireOperatorAuth(req);
+        const body = validateSelfEvolutionProposalBody(
+          parseJsonBody(await readTextBody(req))
+        );
+        const proposal = this.selfEvolution.create({
+          ...body,
+          proposedBy: body.proposedBy ?? "operator",
+        });
+        this.json(res, 201, { requestId, proposal });
         return;
       }
 
@@ -1250,7 +1288,15 @@ export class HttpServer {
           ],
         };
       case "governance":
-        return { items: this.governance.listAudit(250) };
+        return {
+          items: [
+            ...this.governance.listAudit(250),
+            ...this.selfEvolution.list(250).map((proposal) => ({
+              ...proposal,
+              kind: "self_evolution_proposal",
+            })),
+          ],
+        };
       case "mcp":
         return { items: this.mcpAudit.list(250) };
       case "runs":
@@ -1284,6 +1330,10 @@ export class HttpServer {
             ...this.slackFeedback.list(50),
             ...(this.memoryMaintenance?.list(50) ?? []),
             ...this.governance.listAudit(50),
+            ...this.selfEvolution.list(50).map((proposal) => ({
+              ...proposal,
+              kind: "self_evolution_proposal",
+            })),
           ],
         };
     }
