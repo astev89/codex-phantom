@@ -2,9 +2,9 @@
 
 This is the living status ledger for `codex-phantom`. Update it at the end of each development wave, after tests pass and before handing off or opening a PR.
 
-Last updated: 2026-05-13
+Last updated: 2026-05-20
 Branch: `jarvis/transcript-artifact-continuity`
-Latest verified commit: `61942bf4c9f093e74d7448aa42956586ec9568ba`
+Latest verified commit: `4869ca5d8e361a0a0d5f77efc227e3ed0ddb7251`
 
 ## Current State
 
@@ -13,6 +13,23 @@ Latest verified commit: `61942bf4c9f093e74d7448aa42956586ec9568ba`
 The project is now past its first serious production-hardening pass. It is not yet equivalent to the original Phantom project, but the core runtime is materially safer to run: request sizes are bounded, secrets are rejected in production when defaults are used, outbound model calls have timeouts, scheduler jobs recover deterministically after restarts, MCP events are durably audited, external webhooks are signed, Slack sends retry transient failures, operator-console workflows have browser coverage, and the Docker image runs compiled JavaScript instead of stripped TypeScript.
 
 ## Just Completed
+
+Continuity test-hardening wave completed locally on 2026-05-13:
+
+- Added restart-visible coverage proving disabled internal tool bundle tools stay absent from MCP `tools/list` after a simulated service restart.
+- Added bounded attachment text-index coverage proving searchable safe-text uploads stop at the 200 KB index window.
+- Confirmed out-of-window attachment content does not appear in `/chat/attachments/search` while indexed attachment metadata remains visible in chat session detail.
+
+Verification from this wave:
+
+```bash
+node --experimental-strip-types --test tests/server.test.ts
+npm run typecheck
+npm test
+npm run build
+git diff --check
+GitNexus detect_changes(scope="staged")
+```
 
 Phantom non-Telegram channel recompare completed locally on 2026-05-13:
 
