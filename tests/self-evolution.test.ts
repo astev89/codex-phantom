@@ -151,3 +151,69 @@ test("self-evolution approvals, apply records, failures, and rollback are audite
 
   database.close();
 });
+
+test("self-evolution rollback requires an applied mutation owned by the proposal", () => {
+  const database = new AppDatabase(":memory:");
+  const store = new SelfEvolutionProposalStore(database);
+  const firstProposal = store.create({
+    target: "configuration",
+    title: "Tune first setting",
+    rationale: "First setting should be auditable.",
+    riskClass: "low",
+    proposedChange: { summary: "First setting" },
+  });
+  const secondProposal = store.create({
+    target: "configuration",
+    title: "Tune second setting",
+    rationale: "Second setting should be auditable.",
+    riskClass: "low",
+    proposedChange: { summary: "Second setting" },
+  });
+  const firstMutation = store.recordApplySuccess({
+    proposalId: firstProposal.id,
+    target: "configuration",
+    mutationType: "operator_settings",
+    before: { dashboardRefreshSeconds: 5 },
+    after: { dashboardRefreshSeconds: 10 },
+    rollback: { operatorSettings: { dashboardRefreshSeconds: 5 } },
+    actor: "operator",
+  });
+  const secondMutation = store.recordApplySuccess({
+    proposalId: secondProposal.id,
+    target: "configuration",
+    mutationType: "operator_settings",
+    before: { dashboardRefreshSeconds: 10 },
+    after: { dashboardRefreshSeconds: 15 },
+    rollback: { operatorSettings: { dashboardRefreshSeconds: 10 } },
+    actor: "operator",
+  });
+
+  assert.throws(
+    () =>
+      store.recordRollback({
+        proposalId: firstProposal.id,
+        mutationId: secondMutation.id,
+        actor: "operator",
+      }),
+    /applied mutation/
+  );
+  assert.equal(store.get(firstProposal.id)?.status, "applied");
+  assert.equal(store.listMutations(secondProposal.id)[0]?.status, "applied");
+
+  store.recordRollback({
+    proposalId: firstProposal.id,
+    mutationId: firstMutation.id,
+    actor: "operator",
+  });
+  assert.throws(
+    () =>
+      store.recordRollback({
+        proposalId: firstProposal.id,
+        mutationId: firstMutation.id,
+        actor: "operator",
+      }),
+    /applied mutation/
+  );
+
+  database.close();
+});

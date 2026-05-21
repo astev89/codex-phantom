@@ -1,4 +1,5 @@
 import { accessSync, constants, readFileSync } from "node:fs";
+import { parse } from "yaml";
 import type { AppConfig } from "../config.ts";
 import { defaultSecrets, modelAdapterMode } from "../config.ts";
 import type { ChannelRecord } from "../channels/registry.ts";
@@ -382,47 +383,74 @@ function readableYamlFileCheck<T>(
 }
 
 function validateRoleConfig(content: string): true {
+  const root = recordValue(parse(content), "role config root");
+  const roles = recordValue(root.roles, "roles");
   const requiredRoles = ["explorer", "builder", "verifier", "researcher"];
-  if (!/^\s*roles\s*:/m.test(content)) {
-    throw new Error("Expected top-level roles.");
-  }
   for (const role of requiredRoles) {
-    if (!new RegExp(`^\\s{2}${role}\\s*:`, "m").test(content)) {
+    if (roles[role] === undefined) {
       throw new Error(`Expected role ${role}.`);
+    }
+    validateRolePolicy(roles[role], role);
+  }
+  for (const role of Object.keys(roles)) {
+    if (!requiredRoles.includes(role)) {
+      throw new Error(`Unknown role ${role}.`);
     }
   }
   return true;
 }
 
 function parseOperatorConfig(content: string): OperatorReadinessConfig {
-  const requiredChannels = readStringList(content, "requiredChannels");
+  const root = recordValue(parse(content), "operator config root");
+  const requiredChannels = stringArray(
+    root.requiredChannels,
+    "requiredChannels"
+  );
   if (requiredChannels.length === 0) {
     throw new Error("Expected non-empty requiredChannels.");
   }
   return {
     requiredChannels,
-    optionalChannels: readStringList(content, "optionalChannels"),
+    optionalChannels:
+      root.optionalChannels === undefined
+        ? []
+        : stringArray(root.optionalChannels, "optionalChannels"),
   };
 }
 
-function readStringList(content: string, key: string): string[] {
-  const lines = content.split(/\r?\n/);
-  const values: string[] = [];
-  let collecting = false;
-  for (const line of lines) {
-    if (new RegExp(`^${key}:\\s*$`).test(line)) {
-      collecting = true;
-      continue;
-    }
-    if (collecting && /^\S/.test(line)) {
-      break;
-    }
-    if (collecting) {
-      const match = line.match(/^\s*-\s*([A-Za-z0-9_-]+)\s*$/);
-      if (match) {
-        values.push(match[1]);
-      }
-    }
+function validateRolePolicy(value: unknown, role: string): void {
+  const record = recordValue(value, `roles.${role}`);
+  const mode = stringValue(record.mode, `roles.${role}.mode`);
+  if (!["read_only", "scoped_write", "full_access"].includes(mode)) {
+    throw new Error(
+      `roles.${role}.mode must be read_only, scoped_write, or full_access`
+    );
   }
-  return values;
+  stringArray(record.fileGlobs, `roles.${role}.fileGlobs`);
+  stringArray(record.allowedToolIds, `roles.${role}.allowedToolIds`);
+  stringArray(record.allowedMcpServers, `roles.${role}.allowedMcpServers`);
+}
+
+function recordValue(value: unknown, label: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label} must be a mapping`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function stringValue(value: unknown, label: string): string {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new Error(`${label} must be a non-empty string`);
+  }
+  return value;
+}
+
+function stringArray(value: unknown, label: string): string[] {
+  if (
+    !Array.isArray(value) ||
+    !value.every((item) => typeof item === "string")
+  ) {
+    throw new Error(`${label} must be an array of strings`);
+  }
+  return [...value];
 }

@@ -45,6 +45,7 @@ export class MemoryMaintenanceService {
   private readonly intervalMs: number;
   private timer?: NodeJS.Timeout;
   private running = false;
+  private executingRunId?: string;
 
   constructor(
     database: AppDatabase,
@@ -75,6 +76,9 @@ export class MemoryMaintenanceService {
   }
 
   async runNow(): Promise<MemoryMaintenanceRun> {
+    if (this.executingRunId || this.hasRunningRun()) {
+      throw new Error("Memory maintenance is already running");
+    }
     const run = this.createScheduledRun(new Date().toISOString());
     return this.execute(run.id);
   }
@@ -177,14 +181,19 @@ export class MemoryMaintenanceService {
         this.armNext();
         return;
       }
-      void this.execute(next.id).finally(() => {
-        this.ensureScheduledRun(new Date().toISOString());
-        this.armNext();
-      });
+      void this.execute(next.id)
+        .catch(() => undefined)
+        .finally(() => {
+          this.ensureScheduledRun(new Date().toISOString());
+          this.armNext();
+        });
     }, timerDelayMs);
   }
 
   private async execute(runId: string): Promise<MemoryMaintenanceRun> {
+    if (this.executingRunId) {
+      throw new Error("Memory maintenance is already running");
+    }
     const row = this.database.get<MemoryMaintenanceRow>(
       "SELECT * FROM memory_maintenance_runs WHERE id = ?",
       runId
@@ -192,8 +201,25 @@ export class MemoryMaintenanceService {
     if (!row || row.status !== "scheduled") {
       throw new Error("Memory maintenance run is not scheduled");
     }
+    if (this.hasRunningRun()) {
+      const finishedAt = new Date().toISOString();
+      this.database.run(
+        `
+          UPDATE memory_maintenance_runs
+          SET status = 'failed',
+              finished_at = ?,
+              failure_reason = ?
+          WHERE id = ? AND status = 'scheduled'
+        `,
+        finishedAt,
+        "Memory maintenance is already running",
+        runId
+      );
+      throw new Error("Memory maintenance is already running");
+    }
 
     const startedAt = new Date().toISOString();
+    this.executingRunId = runId;
     this.database.run(
       "UPDATE memory_maintenance_runs SET status = 'running', started_at = ?, failure_reason = NULL WHERE id = ?",
       startedAt,
@@ -240,6 +266,8 @@ export class MemoryMaintenanceService {
         failureReason,
         runId
       );
+    } finally {
+      this.executingRunId = undefined;
     }
 
     const updated = this.database.get<MemoryMaintenanceRow>(
@@ -250,6 +278,13 @@ export class MemoryMaintenanceService {
       throw new Error("Memory maintenance run disappeared after execution");
     }
     return toMaintenanceRun(updated);
+  }
+
+  private hasRunningRun(): boolean {
+    const row = this.database.get<{ count: number }>(
+      "SELECT COUNT(*) AS count FROM memory_maintenance_runs WHERE status = 'running'"
+    );
+    return (row?.count ?? 0) > 0;
   }
 }
 

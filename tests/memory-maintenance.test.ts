@@ -23,6 +23,17 @@ function makeMemory(database: AppDatabase): MemoryStore {
   );
 }
 
+function maintenanceOutcome() {
+  return {
+    summarizedCount: 0,
+    promotedCount: 0,
+    prunedCount: 0,
+    summaryMemoryIds: [],
+    promotedMemoryIds: [],
+    prunedMemoryIds: [],
+  };
+}
+
 test("scheduled memory maintenance summarizes, promotes, and prunes bounded active entries", async () => {
   const database = new AppDatabase(":memory:");
   const memory = makeMemory(database);
@@ -65,6 +76,77 @@ test("scheduled memory maintenance summarizes, promotes, and prunes bounded acti
     "SELECT COUNT(*) AS count FROM memory_entries WHERE category = 'semantic'"
   )?.count;
   assert.equal(activeSemanticCount, 80);
+  database.close();
+});
+
+test("memory maintenance rejects overlapping manual runs", async () => {
+  const database = new AppDatabase(":memory:");
+  let releaseMaintenance!: () => void;
+  let startedMaintenance!: () => void;
+  let runCount = 0;
+  const started = new Promise<void>((resolve) => {
+    startedMaintenance = resolve;
+  });
+  const release = new Promise<void>((resolve) => {
+    releaseMaintenance = resolve;
+  });
+  const memory = {
+    runMaintenance: async () => {
+      runCount += 1;
+      startedMaintenance();
+      await release;
+      return maintenanceOutcome();
+    },
+  } as unknown as MemoryStore;
+  const service = new MemoryMaintenanceService(database, memory, 3_600_000);
+
+  const firstRun = service.runNow();
+  await started;
+  await assert.rejects(() => service.runNow(), /already running/);
+  assert.equal(runCount, 1);
+  releaseMaintenance();
+  const completed = await firstRun;
+
+  assert.equal(completed.status, "completed");
+  assert.equal(runCount, 1);
+  database.close();
+});
+
+test("memory maintenance refuses to start when a persisted run is active", async () => {
+  const database = new AppDatabase(":memory:");
+  let runCount = 0;
+  const memory = {
+    runMaintenance: async () => {
+      runCount += 1;
+      return maintenanceOutcome();
+    },
+  } as unknown as MemoryStore;
+  const service = new MemoryMaintenanceService(database, memory, 3_600_000);
+  database.run(
+    `
+      INSERT INTO memory_maintenance_runs (
+        id, status, scheduled_at, started_at, finished_at, summarized_count,
+        promoted_count, pruned_count, summary_memory_ids_json,
+        promoted_memory_ids_json, pruned_memory_ids_json, failure_reason, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    "memmaint_running",
+    "running",
+    new Date().toISOString(),
+    new Date().toISOString(),
+    null,
+    0,
+    0,
+    0,
+    "[]",
+    "[]",
+    "[]",
+    null,
+    new Date().toISOString()
+  );
+
+  await assert.rejects(() => service.runNow(), /already running/);
+  assert.equal(runCount, 0);
   database.close();
 });
 

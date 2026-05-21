@@ -342,10 +342,7 @@ export function validateToolBundlePreviewBody(
   input: unknown
 ): ToolBundlePreviewInput {
   const value = asRecord(input);
-  const manifest =
-    value.manifest === undefined
-      ? toJsonValue(value, "manifest")
-      : toJsonValue(value.manifest, "manifest");
+  const manifest = toJsonValue(value.manifest, "manifest");
   return {
     manifest,
     importedBy: optionalString(value.importedBy),

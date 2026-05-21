@@ -84,10 +84,26 @@ test("operator readiness uses operator YAML required channels and validates role
     `
 version: 1
 roles:
-  explorer: {}
-  builder: {}
-  verifier: {}
-  researcher: {}
+  explorer:
+    mode: read_only
+    fileGlobs: ["**/*"]
+    allowedToolIds: ["memory.query"]
+    allowedMcpServers: ["github"]
+  builder:
+    mode: scoped_write
+    fileGlobs: ["src/**/*"]
+    allowedToolIds: ["echo.summary"]
+    allowedMcpServers: ["repo"]
+  verifier:
+    mode: read_only
+    fileGlobs: ["tests/**/*"]
+    allowedToolIds: ["echo.summary"]
+    allowedMcpServers: ["ci"]
+  researcher:
+    mode: read_only
+    fileGlobs: []
+    allowedToolIds: ["echo.summary"]
+    allowedMcpServers: ["docs"]
 `
   );
   await writeFile(
@@ -131,6 +147,80 @@ optionalChannels:
     assert.ok(
       readiness.checks.some(
         (check) => check.id === "channel-webhook" && check.status === "warn"
+      )
+    );
+    assert.ok(
+      !readiness.checks.some((check) => check.id === "channel-webhook-enabled")
+    );
+  } finally {
+    database.close();
+  }
+});
+
+test("operator readiness parses valid YAML instead of raw line shapes", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "codex-phantom-readiness-"));
+  const roleConfigPath = join(dataDir, "roles.yaml");
+  const operatorConfigPath = join(dataDir, "operator.yaml");
+  await writeFile(
+    roleConfigPath,
+    `
+version: 1
+roles:
+  explorer:
+    mode: "read_only" # comments should not invalidate YAML
+    fileGlobs: ["**/*"]
+    allowedToolIds: ["memory.query", "echo.summary"]
+    allowedMcpServers: ["github"]
+  builder:
+    mode: scoped_write
+    fileGlobs: ["src/**/*", "tests/**/*"]
+    allowedToolIds: ["echo.summary"]
+    allowedMcpServers: ["repo"]
+  verifier:
+    mode: read_only
+    fileGlobs: ["src/**/*", "tests/**/*"]
+    allowedToolIds: ["echo.summary"]
+    allowedMcpServers: ["ci"]
+  researcher:
+    mode: read_only
+    fileGlobs: []
+    allowedToolIds: ["echo.summary"]
+    allowedMcpServers: ["docs"]
+`
+  );
+  await writeFile(
+    operatorConfigPath,
+    `
+version: 1
+requiredChannels: ["web", "scheduler"]
+optionalChannels:
+  - "webhook"
+`
+  );
+  const config = makeConfig(dataDir, {
+    roleConfigPath,
+    operatorConfigPath,
+  });
+  const database = new AppDatabase(join(dataDir, "readiness.sqlite"));
+  const channels = new ChannelRegistry(database, config);
+
+  try {
+    channels.upsert({ id: "webhook", enabled: false });
+    const readiness = buildSetupReadiness({
+      config,
+      memory: memoryStatus,
+      channels: channels.list(),
+      databaseReady: database.isReady(),
+    });
+
+    assert.ok(
+      readiness.checks.some(
+        (check) => check.id === "role-config" && check.status === "pass"
+      )
+    );
+    assert.ok(
+      readiness.checks.some(
+        (check) => check.id === "operator-config" && check.status === "pass"
       )
     );
     assert.ok(

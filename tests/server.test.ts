@@ -1568,6 +1568,32 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       )
     );
 
+    const ambiguousBundlePreviewResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/tools/bundles/preview`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          importedBy: "operator",
+          id: "internal.ambiguous",
+          name: "Ambiguous Bundle",
+          version: "1.0.0",
+          tools: [
+            {
+              id: "internal.ambiguous.lookup",
+              description: "Lookup notes.",
+              scopes: ["read"],
+              responseTemplate: "lookup",
+            },
+          ],
+        }),
+      }
+    );
+    assert.equal(ambiguousBundlePreviewResponse.status, 400);
+
     const bundlePreviewResponse = await fetch(
       `http://127.0.0.1:${port}/admin/tools/bundles/preview`,
       {
@@ -1601,6 +1627,22 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assert.equal(bundlePreviewResponse.status, 200);
     assert.equal(bundlePreviewJson.preview.status, "valid");
     assert.equal(bundlePreviewJson.preview.bundleId, "internal.research");
+
+    const previewBundleImportsResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/tools/bundles`,
+      {
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
+    const previewBundleImportsJson =
+      (await previewBundleImportsResponse.json()) as {
+        imports: Array<{ id: string; manifest: { importedBy?: string } }>;
+      };
+    const previewImport = previewBundleImportsJson.imports.find(
+      (item) => item.id === bundlePreviewJson.preview.id
+    );
+    assert.ok(previewImport);
+    assert.equal(previewImport.manifest.importedBy, undefined);
 
     const blockedEnableResponse = await fetch(
       `http://127.0.0.1:${port}/admin/tools/bundles/${encodeURIComponent(bundlePreviewJson.preview.id)}/enable`,

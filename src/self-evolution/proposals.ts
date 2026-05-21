@@ -397,13 +397,25 @@ export class SelfEvolutionProposalStore {
   }): SelfEvolutionProposalRecord {
     const now = new Date().toISOString();
     this.database.transaction(() => {
+      const mutation = this.database.get<MutationRow>(
+        `
+          SELECT * FROM self_evolution_mutations
+          WHERE id = ? AND proposal_id = ? AND status = 'applied'
+        `,
+        input.mutationId,
+        input.proposalId
+      );
+      if (!mutation) {
+        throw new Error("Expected an applied mutation owned by the proposal");
+      }
       this.database.run(
         `
           UPDATE self_evolution_mutations
           SET status = 'rolled_back'
-          WHERE id = ?
+          WHERE id = ? AND proposal_id = ? AND status = 'applied'
         `,
-        input.mutationId
+        input.mutationId,
+        input.proposalId
       );
       this.database.run(
         `
