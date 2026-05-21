@@ -1,6 +1,10 @@
 import type { AppConfig } from "../src/config.ts";
 import type { EmbeddingService } from "../src/memory/embedding.ts";
-import type { VectorPoint, VectorSearchResult, VectorStore } from "../src/memory/types.ts";
+import type {
+  VectorPoint,
+  VectorSearchResult,
+  VectorStore,
+} from "../src/memory/types.ts";
 
 export function makeConfig(
   dataDir = ".",
@@ -14,6 +18,8 @@ export function makeConfig(
     datastorePath: `${dataDir}/test.sqlite`,
     model: "gpt-5",
     agentName: "Test Codex Phantom",
+    roleConfigPath: "config/roles.yaml",
+    operatorConfigPath: "config/operator.yaml",
     operatorBearerToken: "operator-secret",
     mcpBearerToken: "mcp-secret",
     externalChannelSecret: "webhook-secret",
@@ -38,17 +44,19 @@ export function makeConfig(
     defaultRunTimeoutMs: 5_000,
     defaultMaxToolCalls: 4,
     rejectDefaultSecrets: false,
-    ...overrides
+    ...overrides,
   };
 }
 
-export function makeFakeEmbeddings(values: Record<string, number[]>): EmbeddingService {
+export function makeFakeEmbeddings(
+  values: Record<string, number[]>
+): EmbeddingService {
   return {
     enabled: true,
     model: "fake-embedding-model",
     async embed(texts: string[]): Promise<number[][]> {
       return texts.map((text) => values[text] ?? hashEmbedding(text));
-    }
+    },
   };
 }
 
@@ -58,7 +66,7 @@ export function makeDisabledEmbeddings(): EmbeddingService {
     model: "disabled",
     async embed(): Promise<null> {
       return null;
-    }
+    },
   };
 }
 
@@ -68,7 +76,9 @@ export function makeFakeVectorStore(options?: {
   available?: boolean;
   initialPoints?: Record<string, VectorPoint>;
 }): VectorStore & { points: Map<string, VectorPoint> } {
-  const points = new Map<string, VectorPoint>(Object.entries(options?.initialPoints ?? {}));
+  const points = new Map<string, VectorPoint>(
+    Object.entries(options?.initialPoints ?? {})
+  );
   let available = options?.available ?? true;
   let configured = options?.configured ?? true;
 
@@ -89,9 +99,15 @@ export function makeFakeVectorStore(options?: {
         points.set(point.id, point);
       }
     },
-    async search(vector: number[], limit: number): Promise<VectorSearchResult[]> {
+    async search(
+      vector: number[],
+      limit: number
+    ): Promise<VectorSearchResult[]> {
       return [...points.values()]
-        .map((point) => ({ id: point.id, score: cosineSimilarity(vector, point.vector) }))
+        .map((point) => ({
+          id: point.id,
+          score: cosineSimilarity(vector, point.vector),
+        }))
         .sort((left, right) => right.score - left.score)
         .slice(0, limit);
     },
@@ -102,7 +118,7 @@ export function makeFakeVectorStore(options?: {
     },
     async hasPoint(id: string): Promise<boolean> {
       return points.has(id);
-    }
+    },
   };
 }
 
@@ -112,7 +128,7 @@ function hashEmbedding(text: string): number[] {
     lowered.includes("deploy") ? 1 : 0,
     lowered.includes("email") ? 1 : 0,
     lowered.includes("schedule") ? 1 : 0,
-    lowered.length / 100
+    lowered.length / 100,
   ];
 }
 

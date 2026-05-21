@@ -1,37 +1,39 @@
 import type { PermissionPolicy } from "../shared/types.ts";
 import type { SubagentRequest, SubagentRole } from "./types.ts";
 
-const ROLE_BASELINES: Record<SubagentRole, PermissionPolicy> = {
+export type RolePolicyBaselines = Record<SubagentRole, PermissionPolicy>;
+
+const ROLE_BASELINES: RolePolicyBaselines = {
   explorer: {
     mode: "read_only",
     fileGlobs: ["**/*"],
     allowedToolIds: ["memory.query", "echo.summary"],
-    allowedMcpServers: ["github", "docs"]
+    allowedMcpServers: ["github", "docs"],
   },
   builder: {
     mode: "scoped_write",
     fileGlobs: ["src/**/*", "tests/**/*"],
     allowedToolIds: ["echo.summary", "dynamic.note"],
-    allowedMcpServers: ["repo"]
+    allowedMcpServers: ["repo"],
   },
   verifier: {
     mode: "read_only",
     fileGlobs: ["src/**/*", "tests/**/*"],
     allowedToolIds: ["echo.summary"],
-    allowedMcpServers: ["browser", "ci"]
+    allowedMcpServers: ["browser", "ci"],
   },
   researcher: {
     mode: "read_only",
     fileGlobs: [],
     allowedToolIds: ["echo.summary"],
-    allowedMcpServers: ["docs", "web"]
-  }
+    allowedMcpServers: ["docs", "web"],
+  },
 };
 
 const MODE_ORDER: Record<PermissionPolicy["mode"], number> = {
   read_only: 0,
   scoped_write: 1,
-  full_access: 2
+  full_access: 2,
 };
 
 function intersect(base: string[], requested?: string[]): string[] {
@@ -58,19 +60,33 @@ function intersectFileGlobs(base: string[], requested?: string[]): string[] {
   return requested.filter((item) => baseSet.has(item));
 }
 
-function narrowMode(left: PermissionPolicy["mode"], right: PermissionPolicy["mode"]): PermissionPolicy["mode"] {
+function narrowMode(
+  left: PermissionPolicy["mode"],
+  right: PermissionPolicy["mode"]
+): PermissionPolicy["mode"] {
   return MODE_ORDER[left] < MODE_ORDER[right] ? left : right;
 }
 
-export function defaultPolicyForRole(role: SubagentRole): PermissionPolicy {
-  return structuredClone(ROLE_BASELINES[role]);
+export function compiledRoleBaselines(): RolePolicyBaselines {
+  return structuredClone(ROLE_BASELINES);
+}
+
+export function defaultPolicyForRole(
+  role: SubagentRole,
+  baselines: RolePolicyBaselines = ROLE_BASELINES
+): PermissionPolicy {
+  return structuredClone(baselines[role]);
 }
 
 export function buildScopedPolicy(
   parentPolicy: PermissionPolicy,
-  request: Pick<SubagentRequest, "role" | "allowedToolIds" | "allowedMcpServers" | "fileGlobs">
+  request: Pick<
+    SubagentRequest,
+    "role" | "allowedToolIds" | "allowedMcpServers" | "fileGlobs"
+  >,
+  baselines: RolePolicyBaselines = ROLE_BASELINES
 ): PermissionPolicy {
-  const baseline = defaultPolicyForRole(request.role);
+  const baseline = defaultPolicyForRole(request.role, baselines);
 
   return {
     mode: narrowMode(parentPolicy.mode, baseline.mode),
@@ -85,6 +101,6 @@ export function buildScopedPolicy(
     fileGlobs: intersectFileGlobs(
       intersectFileGlobs(parentPolicy.fileGlobs, baseline.fileGlobs),
       request.fileGlobs
-    )
+    ),
   };
 }

@@ -3,6 +3,10 @@ import type { AgentRunEvent } from "../agent/types.ts";
 import { createId } from "../shared/ids.ts";
 import type { ToolCapabilityDescriptor } from "../shared/types.ts";
 import { ToolRegistry } from "../tools/registry.ts";
+import {
+  compiledRolePolicyConfig,
+  type LoadedRolePolicyConfig,
+} from "./role-config.ts";
 import { buildScopedPolicy } from "./roles.ts";
 import { RunGraphStore } from "./run-graph-store.ts";
 import type { RunNode, SubagentRequest } from "./types.ts";
@@ -10,23 +14,40 @@ import type { RunNode, SubagentRequest } from "./types.ts";
 const COORDINATOR_POLICY = {
   mode: "scoped_write" as const,
   fileGlobs: ["src/**/*", "tests/**/*", "docs/**/*"],
-  allowedToolIds: ["memory.query", "echo.summary", "dynamic.note", "dynamic:*"],
-  allowedMcpServers: ["repo", "docs", "github", "web"]
+  allowedToolIds: [
+    "memory.query",
+    "echo.summary",
+    "dynamic.note",
+    "self_evolution.propose",
+    "dynamic:*",
+  ],
+  allowedMcpServers: ["repo", "docs", "github", "web"],
 };
 
 export class OrchestrationService {
   private readonly runtime: AgentRuntime;
   private readonly tools: ToolRegistry;
   private readonly graphStore: RunGraphStore;
+  private readonly rolePolicy: LoadedRolePolicyConfig;
 
-  constructor(runtime: AgentRuntime, tools: ToolRegistry, graphStore: RunGraphStore) {
+  constructor(
+    runtime: AgentRuntime,
+    tools: ToolRegistry,
+    graphStore: RunGraphStore,
+    rolePolicy: LoadedRolePolicyConfig = compiledRolePolicyConfig()
+  ) {
     this.runtime = runtime;
     this.tools = tools;
     this.graphStore = graphStore;
+    this.rolePolicy = rolePolicy;
   }
 
   listTools(): ToolCapabilityDescriptor[] {
     return this.tools.list();
+  }
+
+  getRolePolicyStatus(): LoadedRolePolicyConfig["status"] {
+    return this.rolePolicy.status;
   }
 
   async runCoordinator(
@@ -40,7 +61,9 @@ export class OrchestrationService {
     },
     onEvent: (event: AgentRunEvent) => Promise<void> | void
   ): Promise<{ sessionId: string; runId: string; outputText: string }> {
-    const allowedToolIds = this.tools.resolveAllowedToolIds(COORDINATOR_POLICY.allowedToolIds);
+    const allowedToolIds = this.tools.resolveAllowedToolIds(
+      COORDINATOR_POLICY.allowedToolIds
+    );
     const rootNode: RunNode = {
       runId: createId("coord"),
       role: "coordinator",
@@ -48,13 +71,13 @@ export class OrchestrationService {
       status: "running",
       permissionPolicy: {
         ...COORDINATOR_POLICY,
-        allowedToolIds
+        allowedToolIds,
       },
       allowedMcpServers: [...COORDINATOR_POLICY.allowedMcpServers],
       allowedToolIds,
       childRunIds: [],
       transcript: [{ role: "user", content: input.message }],
-      startedAt: new Date().toISOString()
+      startedAt: new Date().toISOString(),
     };
     await this.graphStore.upsert(rootNode);
 
@@ -72,8 +95,11 @@ export class OrchestrationService {
           role: "coordinator",
           messages: [{ role: "user", content: input.message }],
           permissionPolicy: rootNode.permissionPolicy,
-          toolCapabilities: this.tools.listForRole("coordinator", rootNode.permissionPolicy),
-          timeoutMs: input.timeoutMs
+          toolCapabilities: this.tools.listForRole(
+            "coordinator",
+            rootNode.permissionPolicy
+          ),
+          timeoutMs: input.timeoutMs,
         },
         emit
       );
@@ -83,7 +109,12 @@ export class OrchestrationService {
 
       if (input.subagents && input.subagents.length > 0) {
         for (const subagent of input.subagents) {
-          const child = await this.spawnSubagent(rootNode.runId, runtimeResult.session.sessionId, subagent, emit);
+          const child = await this.spawnSubagent(
+            rootNode.runId,
+            runtimeResult.session.sessionId,
+            subagent,
+            emit
+          );
           childRunIds.push(child.runId);
           outputText = `${outputText}\n${child.role} [${child.status}]: ${child.outputText}`;
         }
@@ -92,33 +123,39 @@ export class OrchestrationService {
       const finalRoot = (await this.graphStore.get(rootNode.runId)) ?? rootNode;
       await this.graphStore.upsert({
         ...finalRoot,
-        childRunIds: childRunIds.length > 0 ? childRunIds : finalRoot.childRunIds,
+        childRunIds:
+          childRunIds.length > 0 ? childRunIds : finalRoot.childRunIds,
         status: "completed",
         summary: outputText,
-        transcript: [...finalRoot.transcript, { role: "assistant", content: outputText }],
+        transcript: [
+          ...finalRoot.transcript,
+          { role: "assistant", content: outputText },
+        ],
         finishedAt: new Date().toISOString(),
         terminalState: {
           outputText,
           previousResponseId: runtimeResult.result.previousResponseId,
           providerSessionId: runtimeResult.result.providerSessionId,
-          usage: runtimeResult.result.usage
-        }
+          usage: runtimeResult.result.usage,
+        },
       });
 
       return {
         sessionId: runtimeResult.session.sessionId,
         runId: rootNode.runId,
-        outputText
+        outputText,
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Coordinator run failed";
-      const failedRoot = (await this.graphStore.get(rootNode.runId)) ?? rootNode;
+      const message =
+        error instanceof Error ? error.message : "Coordinator run failed";
+      const failedRoot =
+        (await this.graphStore.get(rootNode.runId)) ?? rootNode;
       await this.graphStore.upsert({
         ...failedRoot,
         status: "failed",
         summary: message,
         finishedAt: new Date().toISOString(),
-        terminalState: { outputText: message }
+        terminalState: { outputText: message },
       });
       throw error;
     }
@@ -129,14 +166,23 @@ export class OrchestrationService {
     sessionId: string,
     request: SubagentRequest,
     onEvent: (event: AgentRunEvent) => Promise<void> | void
-  ): Promise<{ runId: string; role: string; status: string; outputText: string }> {
+  ): Promise<{
+    runId: string;
+    role: string;
+    status: string;
+    outputText: string;
+  }> {
     const runId = createId("sub");
     const parent = await this.graphStore.get(parentRunId);
     if (!parent) {
       throw new Error(`Parent run not found: ${parentRunId}`);
     }
 
-    const policy = buildScopedPolicy(parent.permissionPolicy, request);
+    const policy = buildScopedPolicy(
+      parent.permissionPolicy,
+      request,
+      this.rolePolicy.baselines
+    );
     const node: RunNode = {
       runId,
       parentRunId,
@@ -150,7 +196,7 @@ export class OrchestrationService {
       maxBudgetUsd: request.maxBudgetUsd,
       timeoutMs: request.timeoutMs ?? request.maxDurationMs,
       transcript: [{ role: "user", content: request.objective }],
-      startedAt: new Date().toISOString()
+      startedAt: new Date().toISOString(),
     };
     await this.graphStore.appendChildRun(parent.runId, runId);
     await this.graphStore.upsert(node);
@@ -159,7 +205,7 @@ export class OrchestrationService {
       runId: parentRunId,
       subagentRunId: runId,
       role: request.role,
-      objective: request.objective
+      objective: request.objective,
     });
 
     try {
@@ -172,7 +218,7 @@ export class OrchestrationService {
           messages: [{ role: "user", content: request.objective }],
           permissionPolicy: policy,
           toolCapabilities: this.tools.listForRole(request.role, policy),
-          timeoutMs: request.timeoutMs ?? request.maxDurationMs
+          timeoutMs: request.timeoutMs ?? request.maxDurationMs,
         },
         async (event) => {
           await this.graphStore.appendEvent(runId, event.type, event);
@@ -183,7 +229,7 @@ export class OrchestrationService {
               runId: parentRunId,
               subagentRunId: runId,
               status: "running",
-              summary: event.delta
+              summary: event.delta,
             });
           }
         }
@@ -193,41 +239,55 @@ export class OrchestrationService {
         ...node,
         status: "completed",
         summary: result.result.outputText,
-        transcript: [...node.transcript, { role: "assistant", content: result.result.outputText }],
+        transcript: [
+          ...node.transcript,
+          { role: "assistant", content: result.result.outputText },
+        ],
         finishedAt: new Date().toISOString(),
         terminalState: {
           outputText: result.result.outputText,
           previousResponseId: result.result.previousResponseId,
           providerSessionId: result.result.providerSessionId,
-          usage: result.result.usage
-        }
+          usage: result.result.usage,
+        },
       });
       await onEvent({
         type: "subagent_progress",
         runId: parentRunId,
         subagentRunId: runId,
         status: "completed",
-        summary: result.result.outputText
+        summary: result.result.outputText,
       });
 
-      return { runId, role: request.role, status: "completed", outputText: result.result.outputText };
+      return {
+        runId,
+        role: request.role,
+        status: "completed",
+        outputText: result.result.outputText,
+      };
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Subagent failed";
+      const message =
+        error instanceof Error ? error.message : "Subagent failed";
       await this.graphStore.upsert({
         ...node,
         status: "failed",
         summary: message,
         finishedAt: new Date().toISOString(),
-        terminalState: { outputText: message }
+        terminalState: { outputText: message },
       });
       await onEvent({
         type: "subagent_progress",
         runId: parentRunId,
         subagentRunId: runId,
         status: "failed",
-        summary: message
+        summary: message,
       });
-      return { runId, role: request.role, status: "failed", outputText: message };
+      return {
+        runId,
+        role: request.role,
+        status: "failed",
+        outputText: message,
+      };
     }
   }
 }

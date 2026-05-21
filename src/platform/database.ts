@@ -111,6 +111,20 @@ export class AppDatabase {
         FOREIGN KEY (session_id) REFERENCES sessions(session_id)
       );
 
+      CREATE TABLE IF NOT EXISTS chat_attachment_text_index (
+        attachment_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        run_id TEXT,
+        content_type TEXT NOT NULL,
+        indexed_text TEXT,
+        indexed_bytes INTEGER NOT NULL DEFAULT 0,
+        skipped_reason TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (attachment_id) REFERENCES chat_attachments(id),
+        FOREIGN KEY (session_id) REFERENCES sessions(session_id)
+      );
+
       CREATE TABLE IF NOT EXISTS chat_artifacts (
         id TEXT PRIMARY KEY,
         session_id TEXT NOT NULL,
@@ -153,6 +167,45 @@ export class AppDatabase {
         score REAL NOT NULL DEFAULT 0
       );
 
+      CREATE TABLE IF NOT EXISTS memory_lifecycle_links (
+        id TEXT PRIMARY KEY,
+        source_memory_id TEXT NOT NULL,
+        target_memory_id TEXT NOT NULL,
+        relationship TEXT NOT NULL,
+        reason TEXT,
+        source_session_id TEXT,
+        source_run_id TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (source_memory_id) REFERENCES memory_entries(id),
+        FOREIGN KEY (target_memory_id) REFERENCES memory_entries(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS memory_reinforcement_events (
+        id TEXT PRIMARY KEY,
+        memory_id TEXT NOT NULL,
+        signal TEXT NOT NULL,
+        weight REAL NOT NULL,
+        reason TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (memory_id) REFERENCES memory_entries(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS memory_maintenance_runs (
+        id TEXT PRIMARY KEY,
+        status TEXT NOT NULL,
+        scheduled_at TEXT NOT NULL,
+        started_at TEXT,
+        finished_at TEXT,
+        summarized_count INTEGER NOT NULL DEFAULT 0,
+        promoted_count INTEGER NOT NULL DEFAULT 0,
+        pruned_count INTEGER NOT NULL DEFAULT 0,
+        summary_memory_ids_json TEXT NOT NULL,
+        promoted_memory_ids_json TEXT NOT NULL,
+        pruned_memory_ids_json TEXT NOT NULL,
+        failure_reason TEXT,
+        created_at TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS dynamic_tools (
         id TEXT PRIMARY KEY,
         description TEXT NOT NULL,
@@ -161,6 +214,68 @@ export class AppDatabase {
         response_template TEXT NOT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS self_evolution_proposals (
+        id TEXT PRIMARY KEY,
+        target TEXT NOT NULL,
+        title TEXT NOT NULL,
+        rationale TEXT NOT NULL,
+        risk_class TEXT NOT NULL,
+        proposed_change_json TEXT NOT NULL,
+        metadata_json TEXT NOT NULL,
+        status TEXT NOT NULL,
+        proposed_by TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS self_evolution_mutations (
+        id TEXT PRIMARY KEY,
+        proposal_id TEXT NOT NULL,
+        target TEXT NOT NULL,
+        mutation_type TEXT NOT NULL,
+        status TEXT NOT NULL,
+        before_json TEXT NOT NULL,
+        after_json TEXT NOT NULL,
+        rollback_json TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        error_message TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (proposal_id) REFERENCES self_evolution_proposals(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS tool_bundle_imports (
+        id TEXT PRIMARY KEY,
+        bundle_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        version TEXT NOT NULL,
+        manifest_json TEXT NOT NULL,
+        status TEXT NOT NULL,
+        lifecycle_state TEXT NOT NULL DEFAULT 'previewed',
+        diagnostics_json TEXT NOT NULL,
+        imported_by TEXT NOT NULL,
+        approved_by TEXT,
+        approved_at TEXT,
+        enabled_by TEXT,
+        enabled_at TEXT,
+        disabled_by TEXT,
+        disabled_at TEXT,
+        uninstalled_by TEXT,
+        uninstalled_at TEXT,
+        failure_reason TEXT,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS tool_bundle_lifecycle_audit (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        import_id TEXT NOT NULL,
+        bundle_id TEXT NOT NULL,
+        action TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        notes TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (import_id) REFERENCES tool_bundle_imports(id)
       );
 
       CREATE TABLE IF NOT EXISTS channels (
@@ -216,6 +331,35 @@ export class AppDatabase {
         UNIQUE(channel_id, provider_event_id)
       );
 
+      CREATE TABLE IF NOT EXISTS inbound_channel_progress (
+        id TEXT PRIMARY KEY,
+        inbound_event_id TEXT NOT NULL,
+        state TEXT NOT NULL,
+        message_ts TEXT,
+        status_reaction TEXT,
+        summary TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (inbound_event_id) REFERENCES inbound_channel_events(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS inbound_channel_feedback (
+        id TEXT PRIMARY KEY,
+        inbound_event_id TEXT,
+        channel_id TEXT NOT NULL,
+        provider_event_id TEXT NOT NULL,
+        rating TEXT NOT NULL,
+        source TEXT NOT NULL,
+        user_id TEXT,
+        slack_channel TEXT,
+        message_ts TEXT,
+        thread_ts TEXT,
+        run_id TEXT,
+        raw_payload_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE(channel_id, provider_event_id),
+        FOREIGN KEY (inbound_event_id) REFERENCES inbound_channel_events(id)
+      );
+
       CREATE TABLE IF NOT EXISTS operator_settings (
         id TEXT PRIMARY KEY,
         settings_json TEXT NOT NULL,
@@ -246,15 +390,31 @@ export class AppDatabase {
       CREATE INDEX IF NOT EXISTS idx_runs_parent_run_id ON runs(parent_run_id);
       CREATE INDEX IF NOT EXISTS idx_run_events_run_id ON run_events(run_id, sequence);
       CREATE INDEX IF NOT EXISTS idx_chat_attachments_session_id ON chat_attachments(session_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_chat_attachment_text_index_session_id ON chat_attachment_text_index(session_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_chat_attachment_text_index_run_id ON chat_attachment_text_index(run_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_chat_artifacts_session_id ON chat_artifacts(session_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_jobs_status_scheduled_at ON jobs(status, scheduled_at);
       CREATE INDEX IF NOT EXISTS idx_memory_entries_category_created_at ON memory_entries(category, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_memory_lifecycle_links_target ON memory_lifecycle_links(target_memory_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_memory_lifecycle_links_source ON memory_lifecycle_links(source_memory_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_memory_reinforcement_events_memory ON memory_reinforcement_events(memory_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_memory_maintenance_runs_status_scheduled_at ON memory_maintenance_runs(status, scheduled_at);
       CREATE INDEX IF NOT EXISTS idx_dynamic_tools_updated_at ON dynamic_tools(updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_self_evolution_proposals_status ON self_evolution_proposals(status, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_self_evolution_proposals_target ON self_evolution_proposals(target, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_self_evolution_mutations_proposal ON self_evolution_mutations(proposal_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_tool_bundle_imports_bundle ON tool_bundle_imports(bundle_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_tool_bundle_imports_status ON tool_bundle_imports(status, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_tool_bundle_imports_lifecycle ON tool_bundle_imports(lifecycle_state, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_tool_bundle_lifecycle_audit_import ON tool_bundle_lifecycle_audit(import_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_channels_updated_at ON channels(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_tool_governance_audit_tool_id ON tool_governance_audit(tool_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_channel_delivery_logs_channel_id ON channel_delivery_logs(channel_id, delivered_at DESC);
       CREATE INDEX IF NOT EXISTS idx_inbound_channel_events_channel_id ON inbound_channel_events(channel_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_inbound_channel_events_status ON inbound_channel_events(status, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_inbound_channel_progress_event ON inbound_channel_progress(inbound_event_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_inbound_channel_feedback_event ON inbound_channel_feedback(inbound_event_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_inbound_channel_feedback_channel ON inbound_channel_feedback(channel_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_operator_settings_updated_at ON operator_settings(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_request_audit_logs_created_at ON request_audit_logs(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_mcp_audit_logs_created_at ON mcp_audit_logs(created_at DESC);
@@ -263,12 +423,37 @@ export class AppDatabase {
 
     ensureColumn(this.db, "memory_entries", "embedding_json", "TEXT");
     ensureColumn(this.db, "memory_entries", "embedding_model", "TEXT");
-    ensureColumn(this.db, "memory_entries", "source_type", "TEXT NOT NULL DEFAULT 'raw_turn'");
-    ensureColumn(this.db, "memory_entries", "importance", "REAL NOT NULL DEFAULT 0.5");
+    ensureColumn(
+      this.db,
+      "memory_entries",
+      "source_type",
+      "TEXT NOT NULL DEFAULT 'raw_turn'"
+    );
+    ensureColumn(
+      this.db,
+      "memory_entries",
+      "importance",
+      "REAL NOT NULL DEFAULT 0.5"
+    );
     ensureColumn(this.db, "memory_entries", "last_accessed_at", "TEXT");
-    ensureColumn(this.db, "memory_entries", "access_count", "INTEGER NOT NULL DEFAULT 0");
-    ensureColumn(this.db, "memory_entries", "is_summary", "INTEGER NOT NULL DEFAULT 0");
-    ensureColumn(this.db, "memory_entries", "is_fact", "INTEGER NOT NULL DEFAULT 0");
+    ensureColumn(
+      this.db,
+      "memory_entries",
+      "access_count",
+      "INTEGER NOT NULL DEFAULT 0"
+    );
+    ensureColumn(
+      this.db,
+      "memory_entries",
+      "is_summary",
+      "INTEGER NOT NULL DEFAULT 0"
+    );
+    ensureColumn(
+      this.db,
+      "memory_entries",
+      "is_fact",
+      "INTEGER NOT NULL DEFAULT 0"
+    );
     ensureColumn(this.db, "memory_entries", "parent_summary_id", "TEXT");
     ensureColumn(this.db, "memory_entries", "source_session_id", "TEXT");
     ensureColumn(this.db, "memory_entries", "source_run_id", "TEXT");
@@ -276,15 +461,87 @@ export class AppDatabase {
     ensureColumn(this.db, "memory_entries", "vector_synced_at", "TEXT");
     ensureColumn(this.db, "memory_entries", "vector_sync_error", "TEXT");
     ensureColumn(this.db, "memory_entries", "vector_point_id", "TEXT");
+    ensureColumn(
+      this.db,
+      "memory_entries",
+      "lifecycle_state",
+      "TEXT NOT NULL DEFAULT 'active'"
+    );
+    ensureColumn(this.db, "memory_entries", "superseded_by_memory_id", "TEXT");
+    ensureColumn(
+      this.db,
+      "memory_entries",
+      "contradicted_by_memory_id",
+      "TEXT"
+    );
+    ensureColumn(
+      this.db,
+      "memory_entries",
+      "reinforcement_score",
+      "REAL NOT NULL DEFAULT 0"
+    );
+    ensureColumn(
+      this.db,
+      "memory_entries",
+      "decay_score",
+      "REAL NOT NULL DEFAULT 0"
+    );
     ensureColumn(this.db, "sessions", "title", "TEXT");
     ensureColumn(this.db, "sessions", "title_source", "TEXT");
     ensureColumn(this.db, "chat_attachments", "storage_path", "TEXT");
     ensureColumn(this.db, "chat_attachments", "sha256", "TEXT");
-    ensureColumn(this.db, "dynamic_tools", "approval_state", "TEXT NOT NULL DEFAULT 'pending'");
+    ensureColumn(
+      this.db,
+      "dynamic_tools",
+      "approval_state",
+      "TEXT NOT NULL DEFAULT 'pending'"
+    );
+    ensureColumn(this.db, "self_evolution_proposals", "reviewed_by", "TEXT");
+    ensureColumn(this.db, "self_evolution_proposals", "reviewed_at", "TEXT");
+    ensureColumn(this.db, "self_evolution_proposals", "review_notes", "TEXT");
+    ensureColumn(this.db, "self_evolution_proposals", "applied_by", "TEXT");
+    ensureColumn(this.db, "self_evolution_proposals", "applied_at", "TEXT");
+    ensureColumn(this.db, "self_evolution_proposals", "rolled_back_by", "TEXT");
+    ensureColumn(this.db, "self_evolution_proposals", "rolled_back_at", "TEXT");
+    ensureColumn(this.db, "self_evolution_proposals", "apply_error", "TEXT");
     ensureColumn(this.db, "dynamic_tools", "approved_by", "TEXT");
     ensureColumn(this.db, "dynamic_tools", "approved_at", "TEXT");
     ensureColumn(this.db, "dynamic_tools", "governance_notes", "TEXT");
-    ensureColumn(this.db, "channel_delivery_logs", "attempt_count", "INTEGER NOT NULL DEFAULT 1");
+    ensureColumn(
+      this.db,
+      "tool_bundle_imports",
+      "lifecycle_state",
+      "TEXT NOT NULL DEFAULT 'previewed'"
+    );
+    ensureColumn(this.db, "tool_bundle_imports", "approved_by", "TEXT");
+    ensureColumn(this.db, "tool_bundle_imports", "approved_at", "TEXT");
+    ensureColumn(this.db, "tool_bundle_imports", "enabled_by", "TEXT");
+    ensureColumn(this.db, "tool_bundle_imports", "enabled_at", "TEXT");
+    ensureColumn(this.db, "tool_bundle_imports", "disabled_by", "TEXT");
+    ensureColumn(this.db, "tool_bundle_imports", "disabled_at", "TEXT");
+    ensureColumn(this.db, "tool_bundle_imports", "uninstalled_by", "TEXT");
+    ensureColumn(this.db, "tool_bundle_imports", "uninstalled_at", "TEXT");
+    ensureColumn(this.db, "tool_bundle_imports", "failure_reason", "TEXT");
+    ensureColumn(
+      this.db,
+      "channel_delivery_logs",
+      "attempt_count",
+      "INTEGER NOT NULL DEFAULT 1"
+    );
+    ensureColumn(this.db, "inbound_channel_events", "progress_state", "TEXT");
+    ensureColumn(
+      this.db,
+      "inbound_channel_events",
+      "progress_message_ts",
+      "TEXT"
+    );
+    ensureColumn(this.db, "inbound_channel_events", "status_reaction", "TEXT");
+    ensureColumn(
+      this.db,
+      "inbound_channel_events",
+      "slack_response_message_ts",
+      "TEXT"
+    );
 
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_memory_entries_summary ON memory_entries(is_summary, category, created_at DESC);
@@ -303,8 +560,15 @@ function openDatabase(path: string): DatabaseSync {
   return new DatabaseSync(normalized);
 }
 
-function ensureColumn(db: DatabaseSync, table: string, column: string, definition: string): void {
-  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+function ensureColumn(
+  db: DatabaseSync,
+  table: string,
+  column: string,
+  definition: string
+): void {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+    name: string;
+  }>;
   if (!columns.some((item) => item.name === column)) {
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
   }
@@ -314,7 +578,10 @@ export function encodeJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
-export function decodeJson<T>(value: string | null | undefined, fallback: T): T {
+export function decodeJson<T>(
+  value: string | null | undefined,
+  fallback: T
+): T {
   if (!value) {
     return fallback;
   }

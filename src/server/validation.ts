@@ -1,15 +1,16 @@
 import type { JsonValue } from "../shared/types.ts";
 import type { SubagentRequest } from "../orchestration/types.ts";
+import type {
+  CreateSelfEvolutionProposalInput,
+  SelfEvolutionRiskClass,
+  SelfEvolutionTarget,
+} from "../self-evolution/proposals.ts";
 
 export class HttpError extends Error {
   readonly status: number;
   readonly details?: JsonValue;
 
-  constructor(
-    status: number,
-    message: string,
-    details?: JsonValue
-  ) {
+  constructor(status: number, message: string, details?: JsonValue) {
     super(message);
     this.status = status;
     this.details = details;
@@ -85,6 +86,30 @@ export type OperatorSettingsInput = {
   memoryTimelineLimit?: number;
 };
 
+export type SelfEvolutionReviewInput = {
+  reviewedBy: string;
+  notes?: string;
+};
+
+export type SelfEvolutionApplyInput = {
+  appliedBy: string;
+  confirmHighRisk?: boolean;
+};
+
+export type SelfEvolutionRollbackInput = {
+  rolledBackBy: string;
+};
+
+export type ToolBundlePreviewInput = {
+  manifest: JsonValue;
+  importedBy?: string;
+};
+
+export type ToolBundleLifecycleInput = {
+  actor: string;
+  notes?: string;
+};
+
 export function parseJsonBody(text: string): unknown {
   if (!text) {
     throw new HttpError(400, "Request body is required");
@@ -107,7 +132,7 @@ export function validateChatBody(input: unknown): ChatMessageInput {
     attachments: validateAttachments(value.attachments),
     attachmentIds: optionalStringArray(value.attachmentIds, "attachmentIds"),
     subagents: validateSubagents(value.subagents),
-    timeoutMs: optionalPositiveInteger(value.timeoutMs, "timeoutMs")
+    timeoutMs: optionalPositiveInteger(value.timeoutMs, "timeoutMs"),
   };
 }
 
@@ -119,7 +144,10 @@ export function validateChatArtifactBody(input: unknown): ChatArtifactInput {
   }
   const content = toJsonValue(value.content, "content");
   if ((kind === "text" || kind === "file") && typeof content !== "string") {
-    throw new HttpError(400, "content must be a string for text and file artifacts");
+    throw new HttpError(
+      400,
+      "content must be a string for text and file artifacts"
+    );
   }
   return {
     sessionId: nonEmptyString(value.sessionId, "sessionId"),
@@ -128,7 +156,10 @@ export function validateChatArtifactBody(input: unknown): ChatArtifactInput {
     kind,
     contentType: nonEmptyString(value.contentType, "contentType"),
     content,
-    metadata: value.metadata === undefined ? undefined : toJsonValue(value.metadata, "metadata")
+    metadata:
+      value.metadata === undefined
+        ? undefined
+        : toJsonValue(value.metadata, "metadata"),
   };
 }
 
@@ -154,7 +185,11 @@ export function validateScheduleBody(input: unknown): ScheduleJobInput {
     delayMs,
     scheduledAt,
     subagents: validateSubagents(value.subagents),
-    maxAttempts: optionalBoundedPositiveInteger(value.maxAttempts, "maxAttempts", 10)
+    maxAttempts: optionalBoundedPositiveInteger(
+      value.maxAttempts,
+      "maxAttempts",
+      10
+    ),
   };
 }
 
@@ -162,7 +197,9 @@ export function validateMcpBody(input: unknown): McpRequestInput {
   const value = asRecord(input);
   return {
     method: nonEmptyString(value.method, "method"),
-    params: value.params ? asRecord(value.params) as { name?: string; input?: JsonValue } : undefined
+    params: value.params
+      ? (asRecord(value.params) as { name?: string; input?: JsonValue })
+      : undefined,
   };
 }
 
@@ -172,8 +209,14 @@ export function validateDynamicToolBody(input: unknown): DynamicToolInput {
     id: nonEmptyString(value.id, "id"),
     description: nonEmptyString(value.description, "description"),
     scopes: optionalStringArray(value.scopes, "scopes"),
-    inputSchema: value.inputSchema === undefined ? undefined : toJsonValue(value.inputSchema, "inputSchema"),
-    responseTemplate: nonEmptyString(value.responseTemplate, "responseTemplate")
+    inputSchema:
+      value.inputSchema === undefined
+        ? undefined
+        : toJsonValue(value.inputSchema, "inputSchema"),
+    responseTemplate: nonEmptyString(
+      value.responseTemplate,
+      "responseTemplate"
+    ),
   };
 }
 
@@ -181,7 +224,7 @@ export function validateChannelUpdateBody(input: unknown): ChannelUpdateInput {
   const value = asRecord(input);
   return {
     id: nonEmptyString(value.id, "id"),
-    enabled: requireBoolean(value.enabled, "enabled")
+    enabled: requireBoolean(value.enabled, "enabled"),
   };
 }
 
@@ -190,7 +233,7 @@ export function validateToolApprovalBody(input: unknown): ToolApprovalInput {
   return {
     toolId: nonEmptyString(value.toolId, "toolId"),
     approvedBy: nonEmptyString(value.approvedBy, "approvedBy"),
-    notes: optionalString(value.notes)
+    notes: optionalString(value.notes),
   };
 }
 
@@ -198,16 +241,121 @@ export function validateSlackMessageBody(input: unknown): SlackMessageInput {
   const value = asRecord(input);
   return {
     channel: nonEmptyString(value.channel, "channel"),
-    text: nonEmptyString(value.text, "text")
+    text: nonEmptyString(value.text, "text"),
   };
 }
 
-export function validateOperatorSettingsBody(input: unknown): OperatorSettingsInput {
+export function validateOperatorSettingsBody(
+  input: unknown
+): OperatorSettingsInput {
   const value = asRecord(input);
   return {
-    dashboardRefreshSeconds: optionalPositiveInteger(value.dashboardRefreshSeconds, "dashboardRefreshSeconds"),
+    dashboardRefreshSeconds: optionalPositiveInteger(
+      value.dashboardRefreshSeconds,
+      "dashboardRefreshSeconds"
+    ),
     chatDefaultConversationId: optionalString(value.chatDefaultConversationId),
-    memoryTimelineLimit: optionalPositiveInteger(value.memoryTimelineLimit, "memoryTimelineLimit")
+    memoryTimelineLimit: optionalPositiveInteger(
+      value.memoryTimelineLimit,
+      "memoryTimelineLimit"
+    ),
+  };
+}
+
+export function validateSelfEvolutionProposalBody(
+  input: unknown
+): CreateSelfEvolutionProposalInput {
+  const value = asRecord(input);
+  const target = nonEmptyString(value.target, "target");
+  if (!isSelfEvolutionTarget(target)) {
+    throw new HttpError(
+      400,
+      "target must be prompt, memory_policy, tool, role, or configuration"
+    );
+  }
+  const riskClass = nonEmptyString(value.riskClass, "riskClass");
+  if (!isSelfEvolutionRiskClass(riskClass)) {
+    throw new HttpError(
+      400,
+      "riskClass must be low, medium, high, or critical"
+    );
+  }
+  const proposedChange = toJsonValue(value.proposedChange, "proposedChange");
+  if (!isJsonObject(proposedChange)) {
+    throw new HttpError(400, "proposedChange must be a JSON object");
+  }
+  if (
+    proposedChange.apply === true ||
+    proposedChange.applyNow === true ||
+    proposedChange.mutationMode === "direct" ||
+    proposedChange.mutationMode === "apply_now"
+  ) {
+    throw new HttpError(400, "proposedChange cannot request direct mutation");
+  }
+  return {
+    target,
+    title: nonEmptyString(value.title, "title"),
+    rationale: nonEmptyString(value.rationale, "rationale"),
+    riskClass,
+    proposedChange,
+    metadata:
+      value.metadata === undefined
+        ? undefined
+        : toJsonValue(value.metadata, "metadata"),
+    proposedBy: optionalString(value.proposedBy),
+  };
+}
+
+export function validateSelfEvolutionReviewBody(
+  input: unknown
+): SelfEvolutionReviewInput {
+  const value = asRecord(input);
+  return {
+    reviewedBy: nonEmptyString(value.reviewedBy, "reviewedBy"),
+    notes: optionalString(value.notes),
+  };
+}
+
+export function validateSelfEvolutionApplyBody(
+  input: unknown
+): SelfEvolutionApplyInput {
+  const value = asRecord(input);
+  return {
+    appliedBy: nonEmptyString(value.appliedBy, "appliedBy"),
+    confirmHighRisk:
+      value.confirmHighRisk === undefined
+        ? undefined
+        : requireBoolean(value.confirmHighRisk, "confirmHighRisk"),
+  };
+}
+
+export function validateSelfEvolutionRollbackBody(
+  input: unknown
+): SelfEvolutionRollbackInput {
+  const value = asRecord(input);
+  return {
+    rolledBackBy: nonEmptyString(value.rolledBackBy, "rolledBackBy"),
+  };
+}
+
+export function validateToolBundlePreviewBody(
+  input: unknown
+): ToolBundlePreviewInput {
+  const value = asRecord(input);
+  const manifest = toJsonValue(value.manifest, "manifest");
+  return {
+    manifest,
+    importedBy: optionalString(value.importedBy),
+  };
+}
+
+export function validateToolBundleLifecycleBody(
+  input: unknown
+): ToolBundleLifecycleInput {
+  const value = asRecord(input);
+  return {
+    actor: nonEmptyString(value.actor, "actor"),
+    notes: optionalString(value.notes),
   };
 }
 
@@ -221,17 +369,41 @@ function validateSubagents(input: unknown): SubagentRequest[] | undefined {
 
   return input.map((item, index) => {
     const value = asRecord(item);
-    const role = nonEmptyString(value.role, `subagents[${index}].role`) as SubagentRequest["role"];
-    const objective = nonEmptyString(value.objective, `subagents[${index}].objective`);
+    const role = nonEmptyString(
+      value.role,
+      `subagents[${index}].role`
+    ) as SubagentRequest["role"];
+    const objective = nonEmptyString(
+      value.objective,
+      `subagents[${index}].objective`
+    );
     return {
       role,
       objective,
-      allowedToolIds: optionalStringArray(value.allowedToolIds, `subagents[${index}].allowedToolIds`),
-      allowedMcpServers: optionalStringArray(value.allowedMcpServers, `subagents[${index}].allowedMcpServers`),
-      fileGlobs: optionalStringArray(value.fileGlobs, `subagents[${index}].fileGlobs`),
-      timeoutMs: optionalPositiveInteger(value.timeoutMs, `subagents[${index}].timeoutMs`),
-      maxBudgetUsd: optionalNumber(value.maxBudgetUsd, `subagents[${index}].maxBudgetUsd`),
-      maxDurationMs: optionalPositiveInteger(value.maxDurationMs, `subagents[${index}].maxDurationMs`)
+      allowedToolIds: optionalStringArray(
+        value.allowedToolIds,
+        `subagents[${index}].allowedToolIds`
+      ),
+      allowedMcpServers: optionalStringArray(
+        value.allowedMcpServers,
+        `subagents[${index}].allowedMcpServers`
+      ),
+      fileGlobs: optionalStringArray(
+        value.fileGlobs,
+        `subagents[${index}].fileGlobs`
+      ),
+      timeoutMs: optionalPositiveInteger(
+        value.timeoutMs,
+        `subagents[${index}].timeoutMs`
+      ),
+      maxBudgetUsd: optionalNumber(
+        value.maxBudgetUsd,
+        `subagents[${index}].maxBudgetUsd`
+      ),
+      maxDurationMs: optionalPositiveInteger(
+        value.maxDurationMs,
+        `subagents[${index}].maxDurationMs`
+      ),
     };
   });
 }
@@ -250,9 +422,16 @@ function validateAttachments(input: unknown): ChatMessageInput["attachments"] {
     const value = asRecord(item);
     return {
       name: nonEmptyString(value.name, `attachments[${index}].name`),
-      contentType: nonEmptyString(value.contentType, `attachments[${index}].contentType`),
-      sizeBytes: boundedNonNegativeInteger(value.sizeBytes, `attachments[${index}].sizeBytes`, 25_000_000),
-      description: optionalString(value.description)
+      contentType: nonEmptyString(
+        value.contentType,
+        `attachments[${index}].contentType`
+      ),
+      sizeBytes: boundedNonNegativeInteger(
+        value.sizeBytes,
+        `attachments[${index}].sizeBytes`,
+        25_000_000
+      ),
+      description: optionalString(value.description),
     };
   });
 }
@@ -276,22 +455,34 @@ function optionalString(value: unknown): string | undefined {
     return undefined;
   }
   if (typeof value !== "string" || value.trim() === "") {
-    throw new HttpError(400, "Optional string field must be a non-empty string when provided");
+    throw new HttpError(
+      400,
+      "Optional string field must be a non-empty string when provided"
+    );
   }
   return value.trim();
 }
 
-function optionalStringArray(value: unknown, field: string): string[] | undefined {
+function optionalStringArray(
+  value: unknown,
+  field: string
+): string[] | undefined {
   if (value === undefined) {
     return undefined;
   }
-  if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || item.trim() === "")) {
+  if (
+    !Array.isArray(value) ||
+    value.some((item) => typeof item !== "string" || item.trim() === "")
+  ) {
     throw new HttpError(400, `${field} must be an array of strings`);
   }
   return value.map((item) => item.trim());
 }
 
-function optionalPositiveInteger(value: unknown, field: string): number | undefined {
+function optionalPositiveInteger(
+  value: unknown,
+  field: string
+): number | undefined {
   if (value === undefined || value === null) {
     return undefined;
   }
@@ -301,7 +492,11 @@ function optionalPositiveInteger(value: unknown, field: string): number | undefi
   return value;
 }
 
-function optionalBoundedPositiveInteger(value: unknown, field: string, max: number): number | undefined {
+function optionalBoundedPositiveInteger(
+  value: unknown,
+  field: string,
+  max: number
+): number | undefined {
   const parsed = optionalPositiveInteger(value, field);
   if (parsed !== undefined && parsed > max) {
     throw new HttpError(400, `${field} must be less than or equal to ${max}`);
@@ -309,9 +504,21 @@ function optionalBoundedPositiveInteger(value: unknown, field: string, max: numb
   return parsed;
 }
 
-function boundedNonNegativeInteger(value: unknown, field: string, max: number): number {
-  if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > max) {
-    throw new HttpError(400, `${field} must be an integer between 0 and ${max}`);
+function boundedNonNegativeInteger(
+  value: unknown,
+  field: string,
+  max: number
+): number {
+  if (
+    typeof value !== "number" ||
+    !Number.isInteger(value) ||
+    value < 0 ||
+    value > max
+  ) {
+    throw new HttpError(
+      400,
+      `${field} must be an integer between 0 and ${max}`
+    );
   }
   return value;
 }
@@ -341,6 +548,22 @@ function requireBoolean(value: unknown, field: string): boolean {
     throw new HttpError(400, `${field} must be a boolean`);
   }
   return value;
+}
+
+function isSelfEvolutionTarget(value: string): value is SelfEvolutionTarget {
+  return ["prompt", "memory_policy", "tool", "role", "configuration"].includes(
+    value
+  );
+}
+
+function isSelfEvolutionRiskClass(
+  value: string
+): value is SelfEvolutionRiskClass {
+  return ["low", "medium", "high", "critical"].includes(value);
+}
+
+function isJsonObject(value: JsonValue): value is { [key: string]: JsonValue } {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function toJsonValue(value: unknown, field: string): JsonValue {

@@ -94,6 +94,10 @@ export function renderOperatorConsole(agentName: string): string {
           <pre id="diagnostics">Loading...</pre>
         </section>
         <section class="panel">
+          <h2>Readiness</h2>
+          <pre id="readiness" data-testid="readiness-panel">Loading...</pre>
+        </section>
+        <section class="panel">
           <h2>Metrics</h2>
           <pre id="metrics">Loading...</pre>
         </section>
@@ -185,6 +189,7 @@ export function renderOperatorConsole(agentName: string): string {
           loadJson('/health', 'health'),
           loadJson('/admin/summary', 'adminSummary'),
           loadJson('/admin/diagnostics', 'diagnostics'),
+          loadJson('/admin/readiness', 'readiness'),
           loadJson('/metrics', 'metrics'),
           loadJson('/sessions', 'sessions'),
           loadJson('/runs', 'runs'),

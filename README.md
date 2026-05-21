@@ -36,6 +36,8 @@ node dist/index.js
   Public runtime readiness. Send operator auth for memory, channel, governance, metrics, and logging summaries.
 - `GET /admin/summary`
   Deployment-oriented overview for logging, database path, Qdrant config, channels, and tool governance.
+- `GET /admin/readiness`
+  First-run production setup checks for secrets, storage, role/config files, required channels, model access, and memory backend status.
 - `GET /admin/diagnostics`
   Startup diagnostics and missing-env guidance for the currently configured feature set.
 - `GET /admin/timeline`
@@ -71,6 +73,7 @@ node dist/index.js
 All operator surfaces except the public `/health` readiness envelope require operator authentication. API clients can send `Authorization: Bearer $OPERATOR_BEARER_TOKEN` or `X-Operator-Token: $OPERATOR_BEARER_TOKEN`. Browser access to `/` can use HTTP Basic auth with any username and the operator token as the password.
 
 Production startup rejects the development default `OPERATOR_BEARER_TOKEN`, `MCP_BEARER_TOKEN`, and `EXTERNAL_CHANNEL_SECRET` values.
+See `docs/operator-readiness.md` for how setup readiness differs from generic process health.
 
 The root console at `/` now exposes panels for:
 

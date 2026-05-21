@@ -2,6 +2,8 @@ import type { AppConfig } from "../config.ts";
 import { modelAdapterMode } from "../config.ts";
 import type { MemoryStatus } from "../memory/types.ts";
 import type { ChannelRecord } from "../channels/registry.ts";
+import type { RolePolicyConfigStatus } from "../orchestration/role-config.ts";
+import type { SetupReadiness } from "./readiness.ts";
 
 export type StartupDiagnostics = {
   appEnv: AppConfig["appEnv"];
@@ -18,12 +20,16 @@ export type StartupDiagnostics = {
   };
   channelReadiness: ChannelRecord[];
   missingRecommendedEnv: string[];
+  setupReadiness?: SetupReadiness;
+  rolePolicy?: RolePolicyConfigStatus;
 };
 
 export function buildStartupDiagnostics(
   config: AppConfig,
   memory: MemoryStatus,
-  channels: ChannelRecord[]
+  channels: ChannelRecord[],
+  setupReadiness?: SetupReadiness,
+  rolePolicy?: RolePolicyConfigStatus
 ): StartupDiagnostics {
   const missingRecommendedEnv = new Set<string>();
   if (modelAdapterMode(config) === "fallback") {
@@ -32,10 +38,16 @@ export function buildStartupDiagnostics(
   if (config.qdrantEnabled && !config.qdrantUrl) {
     missingRecommendedEnv.add("QDRANT_URL");
   }
-  if (channels.some((channel) => channel.id === "slack" && channel.enabled) && !config.slackBotToken) {
+  if (
+    channels.some((channel) => channel.id === "slack" && channel.enabled) &&
+    !config.slackBotToken
+  ) {
     missingRecommendedEnv.add("SLACK_BOT_TOKEN");
   }
-  if (channels.some((channel) => channel.id === "webhook" && channel.enabled) && !config.externalChannelSecret) {
+  if (
+    channels.some((channel) => channel.id === "webhook" && channel.enabled) &&
+    !config.externalChannelSecret
+  ) {
     missingRecommendedEnv.add("EXTERNAL_CHANNEL_SECRET");
   }
 
@@ -46,13 +58,17 @@ export function buildStartupDiagnostics(
       enabled: config.qdrantEnabled,
       configured: memory.qdrantConfigured,
       reachable: memory.qdrantReachable,
-      collectionName: config.qdrantCollectionName
+      collectionName: config.qdrantCollectionName,
     },
     channels: {
-      configuredCount: channels.filter((channel) => channel.secretPresent || !channel.secretEnvVar).length,
-      enabledCount: channels.filter((channel) => channel.enabled).length
+      configuredCount: channels.filter(
+        (channel) => channel.secretPresent || !channel.secretEnvVar
+      ).length,
+      enabledCount: channels.filter((channel) => channel.enabled).length,
     },
     channelReadiness: channels,
-    missingRecommendedEnv: [...missingRecommendedEnv].sort()
+    missingRecommendedEnv: [...missingRecommendedEnv].sort(),
+    setupReadiness,
+    rolePolicy,
   };
 }
