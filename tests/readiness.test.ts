@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { ChannelRegistry } from "../src/channels/registry.ts";
 import { AppDatabase } from "../src/platform/database.ts";
+import { buildStartupDiagnostics } from "../src/server/diagnostics.ts";
 import { buildSetupReadiness } from "../src/server/readiness.ts";
 import { makeConfig } from "./helpers.ts";
 
@@ -101,6 +102,61 @@ test("email channel is available but disabled by default", () => {
           check.status === "fail" && check.id.startsWith("channel-email-")
       )
     );
+  } finally {
+    database.close();
+  }
+});
+
+test("enabled email treats blank required config as missing", () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "codex-phantom-email-blanks-"));
+  const config = makeConfig(dataDir, {
+    emailImapHost: " ",
+    emailImapUsername: "\t",
+    emailImapPassword: "   ",
+    emailSmtpHost: "\n",
+    emailSmtpUsername: " ",
+    emailSmtpPassword: "  ",
+    emailFromAddress: "\t ",
+  });
+  const database = new AppDatabase(join(dataDir, "readiness.sqlite"));
+  const channels = new ChannelRegistry(database, config);
+
+  try {
+    channels.upsert({ id: "email", enabled: true });
+    const email = channels.get("email");
+    assert.ok(email);
+    assert.equal(email.enabled, true);
+    assert.equal(email.secretPresent, false);
+
+    const readiness = buildSetupReadiness({
+      config,
+      memory: memoryStatus,
+      channels: channels.list(),
+      databaseReady: database.isReady(),
+    });
+    const diagnostics = buildStartupDiagnostics(
+      config,
+      memoryStatus,
+      channels.list(),
+      readiness
+    );
+
+    assert.ok(
+      readiness.checks.some(
+        (check) =>
+          check.id === "channel-email-secrets" && check.status === "fail"
+      )
+    );
+    assert.deepEqual(diagnostics.missingRecommendedEnv, [
+      "EMAIL_FROM_ADDRESS",
+      "EMAIL_IMAP_HOST",
+      "EMAIL_IMAP_PASSWORD",
+      "EMAIL_IMAP_USERNAME",
+      "EMAIL_SMTP_HOST",
+      "EMAIL_SMTP_PASSWORD",
+      "EMAIL_SMTP_USERNAME",
+      "OPENAI_API_KEY",
+    ]);
   } finally {
     database.close();
   }

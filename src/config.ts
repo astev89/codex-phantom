@@ -237,15 +237,19 @@ export function defaultSecrets(): {
   };
 }
 
+export function hasConfiguredValue(value: string | undefined): boolean {
+  return Boolean(value?.trim());
+}
+
 export function emailConfigComplete(config: AppConfig): boolean {
   return Boolean(
-    config.emailImapHost &&
-    config.emailImapUsername &&
-    config.emailImapPassword &&
-    config.emailSmtpHost &&
-    config.emailSmtpUsername &&
-    config.emailSmtpPassword &&
-    config.emailFromAddress
+    hasConfiguredValue(config.emailImapHost) &&
+    hasConfiguredValue(config.emailImapUsername) &&
+    hasConfiguredValue(config.emailImapPassword) &&
+    hasConfiguredValue(config.emailSmtpHost) &&
+    hasConfiguredValue(config.emailSmtpUsername) &&
+    hasConfiguredValue(config.emailSmtpPassword) &&
+    hasConfiguredValue(config.emailFromAddress)
   );
 }
 

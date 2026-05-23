@@ -1,4 +1,4 @@
-import type { AppConfig } from "../config.ts";
+import { hasConfiguredValue, type AppConfig } from "../config.ts";
 import type { AppDatabase } from "../platform/database.ts";
 import { decodeJson, encodeJson } from "../platform/database.ts";
 
@@ -264,21 +264,21 @@ export class ChannelRegistry {
       case "SLACK_BOT_USER_ID":
         return Boolean(this.config.slackBotUserId);
       case "EMAIL_IMAP_HOST":
-        return Boolean(this.config.emailImapHost);
+        return hasConfiguredValue(this.config.emailImapHost);
       case "EMAIL_IMAP_USERNAME":
-        return Boolean(this.config.emailImapUsername);
+        return hasConfiguredValue(this.config.emailImapUsername);
       case "EMAIL_IMAP_PASSWORD":
-        return Boolean(this.config.emailImapPassword);
+        return hasConfiguredValue(this.config.emailImapPassword);
       case "EMAIL_SMTP_HOST":
-        return Boolean(this.config.emailSmtpHost);
+        return hasConfiguredValue(this.config.emailSmtpHost);
       case "EMAIL_SMTP_USERNAME":
-        return Boolean(this.config.emailSmtpUsername);
+        return hasConfiguredValue(this.config.emailSmtpUsername);
       case "EMAIL_SMTP_PASSWORD":
-        return Boolean(this.config.emailSmtpPassword);
+        return hasConfiguredValue(this.config.emailSmtpPassword);
       case "EMAIL_FROM_ADDRESS":
-        return Boolean(this.config.emailFromAddress);
+        return hasConfiguredValue(this.config.emailFromAddress);
       case "EMAIL_FROM_NAME":
-        return Boolean(this.config.emailFromName);
+        return hasConfiguredValue(this.config.emailFromName);
       case "EXTERNAL_CHANNEL_SECRET":
         return Boolean(this.config.externalChannelSecret);
       default:
