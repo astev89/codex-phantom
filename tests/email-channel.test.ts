@@ -73,9 +73,14 @@ class RecordingPollTransport implements FakeEmailPollTransport {
 class RecordingSendTransport implements FakeEmailSendTransport {
   readonly sent: EmailSendInput[] = [];
   closed = false;
+  failures: Array<unknown> = [];
 
   async send(input: EmailSendInput): Promise<EmailSendResult> {
     this.sent.push(input);
+    const failure = this.failures.shift();
+    if (failure !== undefined) {
+      throw failure;
+    }
     return {
       providerMessageId: input.messageId,
       response: { accepted: [input.to] },
@@ -135,25 +140,70 @@ class StubInboundRouter {
     responseTarget?: unknown;
     rawPayload: unknown;
   }> = [];
+  readonly completions: Array<Promise<unknown>> = [];
   private readonly behavior: "accept" | "duplicate" | "throw";
+  private readonly invokeCompletionCallbacks: boolean;
 
-  constructor(behavior: "accept" | "duplicate" | "throw" = "accept") {
+  constructor(
+    behavior: "accept" | "duplicate" | "throw" = "accept",
+    options?: { invokeCompletionCallbacks?: boolean }
+  ) {
     this.behavior = behavior;
+    this.invokeCompletionCallbacks =
+      options?.invokeCompletionCallbacks ?? false;
   }
 
-  routeAsync(message: {
-    channelId: string;
-    providerEventId: string;
-    conversationId: string;
-    senderId?: string;
-    message: string;
-    responseTarget?: unknown;
-    rawPayload: unknown;
-  }) {
+  routeAsync(
+    message: {
+      channelId: string;
+      providerEventId: string;
+      conversationId: string;
+      senderId?: string;
+      message: string;
+      responseTarget?: unknown;
+      rawPayload: unknown;
+    },
+    callbacks: {
+      onComplete?: (record: {
+        id: string;
+        channelId: string;
+        providerEventId: string;
+        conversationId: string;
+        message: string;
+        rawPayload: unknown;
+        status: string;
+        outputText?: string;
+        responseTarget?: unknown;
+        createdAt: string;
+        updatedAt: string;
+      }) => Promise<void> | void;
+    } = {}
+  ) {
     this.routed.push(message);
     if (this.behavior === "throw") {
       throw new Error("route failed");
     }
+    const completionRecord = {
+      id: "inbound_123",
+      channelId: message.channelId,
+      providerEventId: message.providerEventId,
+      conversationId: message.conversationId,
+      message: message.message,
+      rawPayload: message.rawPayload,
+      responseTarget: message.responseTarget,
+      status: "completed",
+      outputText: "Reply body\n\n```ts\nconst value = 1 < 2;\n```",
+      createdAt: "2026-05-22T12:00:00.000Z",
+      updatedAt: "2026-05-22T12:00:00.000Z",
+    };
+    const completion = Promise.resolve().then(async () => {
+      if (this.invokeCompletionCallbacks) {
+        await callbacks.onComplete?.(completionRecord);
+      }
+      return completionRecord;
+    });
+    this.completions.push(completion);
+
     return {
       record: {
         id: "inbound_123",
@@ -167,17 +217,7 @@ class StubInboundRouter {
         updatedAt: "2026-05-22T12:00:00.000Z",
       },
       duplicate: this.behavior === "duplicate",
-      completion: Promise.resolve({
-        id: "inbound_123",
-        channelId: message.channelId,
-        providerEventId: message.providerEventId,
-        conversationId: message.conversationId,
-        message: message.message,
-        rawPayload: message.rawPayload,
-        status: "completed",
-        createdAt: "2026-05-22T12:00:00.000Z",
-        updatedAt: "2026-05-22T12:00:00.000Z",
-      }),
+      completion,
     };
   }
 }
@@ -213,10 +253,12 @@ async function withEmailChannelService(
     messages?: EmailInboundMessage[];
     routerBehavior?: "accept" | "duplicate" | "throw";
     hideSeenMessages?: boolean;
+    invokeCompletionCallbacks?: boolean;
   },
   run: (input: {
     service: EmailChannelService;
     pollTransport: SpyPollTransport;
+    sendTransport: RecordingSendTransport;
     inboundRouter: StubInboundRouter;
     channels: ChannelRegistry;
     database: AppDatabase;
@@ -231,7 +273,9 @@ async function withEmailChannelService(
     hideSeenMessages: options.hideSeenMessages,
   });
   const sendTransport = new RecordingSendTransport();
-  const inboundRouter = new StubInboundRouter(options.routerBehavior);
+  const inboundRouter = new StubInboundRouter(options.routerBehavior, {
+    invokeCompletionCallbacks: options.invokeCompletionCallbacks,
+  });
   const service = new EmailChannelService({
     config,
     channels,
@@ -249,6 +293,7 @@ async function withEmailChannelService(
     await run({
       service,
       pollTransport,
+      sendTransport,
       inboundRouter,
       channels,
       database,
@@ -358,6 +403,125 @@ test("email channel pollOnce routes inbound messages with deterministic reply me
         references: ["<root@example.com>", "<parent@example.com>"],
         fromMessageProviderId: "provider-thread",
       });
+    }
+  );
+});
+
+test("email channel sends threaded SMTP replies and audits final delivery under email", async () => {
+  await withEmailChannelService(
+    {
+      configOverrides: {
+        emailFromAddress: "bot@example.com",
+        emailFromName: "Codex Phantom",
+      },
+      channelEnabled: true,
+      invokeCompletionCallbacks: true,
+      messages: [
+        makeInboundMessage({
+          providerMessageId: "provider-thread",
+          subject: "Quarterly <Report>",
+          thread: {
+            messageId: "<child@example.com>",
+            inReplyTo: "<parent@example.com>",
+            references: ["<root@example.com>", "<parent@example.com>"],
+            normalizedSubject: "quarterly report",
+            fallbackThreadKey: "sender@example.com::quarterly report",
+          },
+        }),
+      ],
+    },
+    async ({ service, sendTransport, inboundRouter, database }) => {
+      const summary = await service.pollOnce();
+      assert.equal(summary.acceptedCount, 1);
+
+      const [completedRecord] = await Promise.all(inboundRouter.completions);
+
+      assert.equal(sendTransport.sent.length, 1);
+      assert.equal(sendTransport.sent[0]?.to, "sender@example.com");
+      assert.equal(sendTransport.sent[0]?.subject, "Quarterly <Report>");
+      assert.equal(sendTransport.sent[0]?.inReplyTo, "<child@example.com>");
+      assert.deepEqual(sendTransport.sent[0]?.references, [
+        "<root@example.com>",
+        "<parent@example.com>",
+        "<child@example.com>",
+      ]);
+      assert.match(sendTransport.sent[0]?.messageId ?? "", /^<email_[^>]+>$/);
+      assert.match(sendTransport.sent[0]?.html ?? "", /<pre><code>/);
+      assert.match(sendTransport.sent[0]?.html ?? "", /&lt; 2;/);
+
+      const deliveries = new ChannelDeliveryStore(database).list("email");
+      assert.equal(deliveries.length, 1);
+      assert.equal(deliveries[0]?.channelId, "email");
+      assert.equal(deliveries[0]?.status, "delivered");
+      assert.equal(deliveries[0]?.destination, "sender@example.com");
+      assert.equal(deliveries[0]?.attemptCount, 1);
+    }
+  );
+});
+
+test("email channel retries transient SMTP failures up to three attempts", async () => {
+  await withEmailChannelService(
+    {
+      configOverrides: {
+        emailFromAddress: "bot@example.com",
+        emailFromName: "Codex Phantom",
+      },
+      channelEnabled: true,
+      invokeCompletionCallbacks: true,
+      messages: [makeInboundMessage({ providerMessageId: "provider-retry" })],
+    },
+    async ({ service, sendTransport, inboundRouter, database }) => {
+      sendTransport.failures.push(
+        new Error("ECONNRESET while sending"),
+        Object.assign(new Error("temporary rate limit"), {
+          code: "ETIMEDOUT",
+          statusCode: 429,
+        })
+      );
+
+      await service.pollOnce();
+      const [completedRecord] = await Promise.all(inboundRouter.completions);
+
+      assert.equal(sendTransport.sent.length, 3);
+      const deliveries = new ChannelDeliveryStore(database).list("email");
+      assert.equal(deliveries[0]?.status, "delivered");
+      assert.equal(deliveries[0]?.attemptCount, 3);
+    }
+  );
+});
+
+test("email channel records failed SMTP delivery without failing the inbound completion", async () => {
+  await withEmailChannelService(
+    {
+      configOverrides: {
+        emailFromAddress: "bot@example.com",
+        emailFromName: "Codex Phantom",
+      },
+      channelEnabled: true,
+      invokeCompletionCallbacks: true,
+      messages: [makeInboundMessage({ providerMessageId: "provider-failed" })],
+    },
+    async ({ service, sendTransport, inboundRouter, database }) => {
+      sendTransport.failures.push(
+        new Error("451 temporary unavailable"),
+        new Error("451 temporary unavailable"),
+        new Error("451 temporary unavailable")
+      );
+
+      await service.pollOnce();
+      const [completedRecord] = await Promise.all(inboundRouter.completions);
+
+      assert.equal(sendTransport.sent.length, 3);
+      const deliveries = new ChannelDeliveryStore(database).list("email");
+      assert.equal(deliveries.length, 1);
+      assert.equal(deliveries[0]?.status, "failed");
+      assert.equal(deliveries[0]?.attemptCount, 3);
+      assert.match(deliveries[0]?.errorMessage ?? "", /temporary unavailable/);
+
+      assert.equal(
+        (completedRecord as { status?: string } | undefined)?.status,
+        "completed"
+      );
     }
   );
 });
