@@ -10,7 +10,7 @@ export type EmailAttachmentMetadata = {
   disposition?: string;
   indexedText?: string;
   indexedBytes?: number;
-  skippedReason?: string;
+  skippedReason?: "too_large" | "unsupported_content_type";
 };
 
 export type EmailThreadMetadata = {

@@ -743,11 +743,160 @@ test("parseEmailMessage extracts message and attachment metadata", async () => {
     contentType: "text/plain",
     sizeBytes: 15,
     disposition: "attachment",
+    indexedText: "attachment body",
+    indexedBytes: 15,
   });
-  assert.equal(
-    JSON.stringify(parsed.rawPayload).includes("attachment body"),
-    false
-  );
+  assert.deepEqual(parsed.rawPayload, {
+    uid: "200",
+    providerMessageId: "provider-message-1",
+    sizeBytes: Buffer.byteLength(rawMessage, "utf8"),
+    fetchedBytes: Buffer.byteLength(rawMessage, "utf8"),
+    from: { address: "sender@example.com", name: "Sender" },
+    to: [{ address: "bot@example.com", name: "Bot" }],
+    subject: "Re: Quarterly Report",
+    date: "2026-05-22T12:34:56.000Z",
+    messageId: "<child@example.com>",
+    inReplyTo: "<root@example.com>",
+    references: ["<root@example.com>"],
+    attachmentCount: 1,
+    attachments: [
+      {
+        filename: "notes.txt",
+        contentType: "text/plain",
+        sizeBytes: 15,
+        disposition: "attachment",
+        indexedText: "attachment body",
+        indexedBytes: 15,
+      },
+    ],
+  });
+});
+
+test("parseEmailMessage safely indexes supported text attachments and skips large or binary bodies", async () => {
+  const largeAttachmentBody = "L".repeat(200_001);
+  const rawMessage = [
+    "From: Sender <sender@example.com>",
+    "To: Bot <bot@example.com>",
+    "Subject: Attachments",
+    "Message-ID: <attachments@example.com>",
+    "Date: Thu, 22 May 2026 12:34:56 +0000",
+    'Content-Type: multipart/mixed; boundary="demo"',
+    "",
+    "--demo",
+    "Content-Type: text/plain; charset=utf-8",
+    "",
+    "Hello from email.",
+    "--demo",
+    'Content-Type: text/plain; charset=utf-8; name="notes.txt"',
+    'Content-Disposition: attachment; filename="notes.txt"',
+    "",
+    "safe attachment body",
+    "--demo",
+    'Content-Type: application/json; name="payload.json"',
+    'Content-Disposition: attachment; filename="payload.json"',
+    "",
+    '{"ok":true,"count":2}',
+    "--demo",
+    'Content-Type: text/plain; charset=utf-8; name="large.txt"',
+    'Content-Disposition: attachment; filename="large.txt"',
+    "",
+    largeAttachmentBody,
+    "--demo",
+    'Content-Type: application/octet-stream; name="blob.bin"',
+    "Content-Transfer-Encoding: base64",
+    'Content-Disposition: attachment; filename="blob.bin"',
+    "",
+    "AAEC",
+    "--demo--",
+    "",
+  ].join("\r\n");
+
+  const parsed = await parseEmailMessage({
+    providerMessageId: "provider-message-attachments",
+    uid: "201",
+    raw: Buffer.from(rawMessage, "utf8"),
+  });
+
+  assert.equal(parsed.attachments.length, 4);
+  assert.deepEqual(parsed.attachments[0], {
+    filename: "notes.txt",
+    contentType: "text/plain",
+    sizeBytes: 20,
+    disposition: "attachment",
+    indexedText: "safe attachment body",
+    indexedBytes: 20,
+  });
+  assert.deepEqual(parsed.attachments[1], {
+    filename: "payload.json",
+    contentType: "application/json",
+    sizeBytes: 21,
+    disposition: "attachment",
+    indexedText: '{"ok":true,"count":2}',
+    indexedBytes: 21,
+  });
+  assert.deepEqual(parsed.attachments[2], {
+    filename: "large.txt",
+    contentType: "text/plain",
+    sizeBytes: 200001,
+    disposition: "attachment",
+    skippedReason: "too_large",
+  });
+  assert.deepEqual(parsed.attachments[3], {
+    filename: "blob.bin",
+    contentType: "application/octet-stream",
+    sizeBytes: 3,
+    disposition: "attachment",
+    skippedReason: "unsupported_content_type",
+  });
+  assert.deepEqual(parsed.rawPayload, {
+    uid: "201",
+    providerMessageId: "provider-message-attachments",
+    sizeBytes: Buffer.byteLength(rawMessage, "utf8"),
+    fetchedBytes: Buffer.byteLength(rawMessage, "utf8"),
+    from: { address: "sender@example.com", name: "Sender" },
+    to: [{ address: "bot@example.com", name: "Bot" }],
+    subject: "Attachments",
+    date: "2026-05-22T12:34:56.000Z",
+    messageId: "<attachments@example.com>",
+    inReplyTo: null,
+    references: [],
+    attachmentCount: 4,
+    attachments: [
+      {
+        filename: "notes.txt",
+        contentType: "text/plain",
+        sizeBytes: 20,
+        disposition: "attachment",
+        indexedText: "safe attachment body",
+        indexedBytes: 20,
+      },
+      {
+        filename: "payload.json",
+        contentType: "application/json",
+        sizeBytes: 21,
+        disposition: "attachment",
+        indexedText: '{"ok":true,"count":2}',
+        indexedBytes: 21,
+      },
+      {
+        filename: "large.txt",
+        contentType: "text/plain",
+        sizeBytes: 200001,
+        disposition: "attachment",
+        skippedReason: "too_large",
+      },
+      {
+        filename: "blob.bin",
+        contentType: "application/octet-stream",
+        sizeBytes: 3,
+        disposition: "attachment",
+        skippedReason: "unsupported_content_type",
+      },
+    ],
+  });
+  const rawPayloadJson = JSON.stringify(parsed.rawPayload);
+  assert.equal(rawPayloadJson.includes(largeAttachmentBody), false);
+  assert.equal(rawPayloadJson.includes("AAEC"), false);
 });
 
 test("imap poll transport bounds unread fetches and marks messages seen", async () => {

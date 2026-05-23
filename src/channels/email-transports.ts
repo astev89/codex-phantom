@@ -95,6 +95,7 @@ type ImapTransportOptions = Pick<
   "host" | "port" | "secure" | "auth" | "tls" | "logger"
 > & {
   mailbox?: string;
+  maxAttachmentBytes?: number;
 };
 
 type ImapTransportDependencies = {
@@ -126,10 +127,17 @@ type ParseEmailMessageInput = {
   uid: string;
   raw: Buffer;
   sizeBytes?: number;
+  maxAttachmentBytes?: number;
 };
 
 const mailparser = require("mailparser") as MailParserModule;
 const nodemailer = require("nodemailer") as NodemailerModule;
+const DEFAULT_MAX_ATTACHMENT_BYTES = 200_000;
+const SUPPORTED_INDEXED_ATTACHMENT_TYPES = new Set([
+  "text/plain",
+  "text/markdown",
+  "application/json",
+]);
 
 export class ImapEmailPollTransport implements EmailPollTransport {
   private readonly mailbox: string;
@@ -140,6 +148,7 @@ export class ImapEmailPollTransport implements EmailPollTransport {
   private connected = false;
   private readonly providerMessageIdsToUids = new Map<string, string>();
   private readonly options: ImapTransportOptions;
+  private readonly maxAttachmentBytes: number;
 
   constructor(
     options: ImapTransportOptions,
@@ -147,6 +156,9 @@ export class ImapEmailPollTransport implements EmailPollTransport {
   ) {
     this.options = options;
     this.mailbox = options.mailbox ?? "INBOX";
+    this.maxAttachmentBytes = normalizeMaxAttachmentBytes(
+      options.maxAttachmentBytes
+    );
     this.createClient =
       dependencies.createClient ??
       ((clientOptions) =>
@@ -194,6 +206,7 @@ export class ImapEmailPollTransport implements EmailPollTransport {
           uid: String(fetched.uid),
           raw: fetched.source,
           sizeBytes: fetched.size,
+          maxAttachmentBytes: this.maxAttachmentBytes,
         });
         this.providerMessageIdsToUids.set(
           message.providerMessageId,
@@ -314,7 +327,12 @@ export async function parseEmailMessage(
   const providerMessageId =
     input.providerMessageId ?? threadMessageId ?? input.uid;
   const references = normalizeReferences(parsed.references);
-  const attachments = (parsed.attachments ?? []).map(extractAttachmentMetadata);
+  const maxAttachmentBytes = normalizeMaxAttachmentBytes(
+    input.maxAttachmentBytes
+  );
+  const attachments = (parsed.attachments ?? []).map((attachment) =>
+    extractAttachmentMetadata(attachment, maxAttachmentBytes)
+  );
 
   return {
     providerMessageId,
@@ -346,12 +364,14 @@ export async function parseEmailMessage(
       inReplyTo: normalizeHeaderId(parsed.inReplyTo) ?? null,
       references,
       attachmentCount: attachments.length,
+      attachments,
     },
   };
 }
 
 function extractAttachmentMetadata(
-  attachment: ParsedAttachmentLike
+  attachment: ParsedAttachmentLike,
+  maxAttachmentBytes: number
 ): EmailAttachmentMetadata {
   const contentType =
     attachment.contentType?.trim() || "application/octet-stream";
@@ -370,6 +390,23 @@ function extractAttachmentMetadata(
   if (attachment.contentDisposition) {
     metadata.disposition = attachment.contentDisposition;
   }
+  if (sizeBytes > maxAttachmentBytes) {
+    metadata.skippedReason = "too_large";
+    return metadata;
+  }
+  if (!SUPPORTED_INDEXED_ATTACHMENT_TYPES.has(contentType)) {
+    metadata.skippedReason = "unsupported_content_type";
+    return metadata;
+  }
+
+  const indexedText = extractIndexedText(attachment.content);
+  if (indexedText === undefined) {
+    metadata.skippedReason = "unsupported_content_type";
+    return metadata;
+  }
+
+  metadata.indexedText = indexedText;
+  metadata.indexedBytes = Buffer.byteLength(indexedText, "utf8");
 
   return metadata;
 }
@@ -382,6 +419,17 @@ function normalizeAttachmentSize(attachment: ParsedAttachmentLike): number {
     return attachment.content.length;
   }
   return 0;
+}
+
+function extractIndexedText(content?: Buffer): string | undefined {
+  if (!content || content.length === 0) {
+    return "";
+  }
+  const decoded = content.toString("utf8");
+  if (!Buffer.from(decoded, "utf8").equals(content)) {
+    return undefined;
+  }
+  return decoded;
 }
 
 function firstAddress(addresses?: ParsedAddressLike): EmailAddress {
@@ -445,6 +493,13 @@ function normalizePositiveInteger(value: number, fieldName: string): number {
     throw new Error(`${fieldName} must be a positive integer`);
   }
   return Math.trunc(value);
+}
+
+function normalizeMaxAttachmentBytes(value?: number): number {
+  if (value === undefined) {
+    return DEFAULT_MAX_ATTACHMENT_BYTES;
+  }
+  return normalizePositiveInteger(value, "maxAttachmentBytes");
 }
 
 function parseUid(providerMessageId: string): string {
