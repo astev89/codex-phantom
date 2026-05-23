@@ -93,9 +93,14 @@ class SpyPollTransport implements FakeEmailPollTransport {
     [];
   closed = false;
   private readonly messages: EmailInboundMessage[];
+  private readonly hideSeenMessages: boolean;
 
-  constructor(messages: EmailInboundMessage[]) {
+  constructor(
+    messages: EmailInboundMessage[],
+    options?: { hideSeenMessages?: boolean }
+  ) {
     this.messages = messages;
+    this.hideSeenMessages = options?.hideSeenMessages ?? false;
   }
 
   async listUnread(input: {
@@ -103,7 +108,12 @@ class SpyPollTransport implements FakeEmailPollTransport {
     maxBytes: number;
   }): Promise<EmailInboundMessage[]> {
     this.listUnreadCalls.push(input);
-    return this.messages;
+    if (!this.hideSeenMessages) {
+      return this.messages;
+    }
+    return this.messages.filter(
+      (message) => !this.seen.includes(message.providerMessageId)
+    );
   }
 
   async markSeen(providerMessageId: string): Promise<void> {
@@ -202,6 +212,7 @@ async function withEmailChannelService(
     channelEnabled?: boolean;
     messages?: EmailInboundMessage[];
     routerBehavior?: "accept" | "duplicate" | "throw";
+    hideSeenMessages?: boolean;
   },
   run: (input: {
     service: EmailChannelService;
@@ -216,7 +227,9 @@ async function withEmailChannelService(
   const database = new AppDatabase(join(dataDir, "email.sqlite"));
   const channels = new ChannelRegistry(database, config);
   const deliveries = new ChannelDeliveryStore(database);
-  const pollTransport = new SpyPollTransport(options.messages ?? []);
+  const pollTransport = new SpyPollTransport(options.messages ?? [], {
+    hideSeenMessages: options.hideSeenMessages,
+  });
   const sendTransport = new RecordingSendTransport();
   const inboundRouter = new StubInboundRouter(options.routerBehavior);
   const service = new EmailChannelService({
@@ -275,11 +288,12 @@ test("email channel pollOnce processes at most emailPollBatchSize", async () => 
   );
 });
 
-test("email channel pollOnce skips auto replies before routing", async () => {
+test("email channel pollOnce marks auto replies seen and does not reroute them", async () => {
   await withEmailChannelService(
     {
       configOverrides: { emailPollBatchSize: 5 },
       channelEnabled: true,
+      hideSeenMessages: true,
       messages: [
         makeInboundMessage({
           providerMessageId: "provider-auto",
@@ -295,15 +309,18 @@ test("email channel pollOnce skips auto replies before routing", async () => {
       ],
     },
     async ({ service, inboundRouter, pollTransport }) => {
-      const summary = await service.pollOnce();
+      const firstSummary = await service.pollOnce();
+      const secondSummary = await service.pollOnce();
 
-      assert.equal(summary.skippedAutoReplyCount, 1);
-      assert.equal(summary.acceptedCount, 1);
+      assert.equal(firstSummary.skippedAutoReplyCount, 1);
+      assert.equal(firstSummary.acceptedCount, 1);
+      assert.equal(secondSummary.polledCount, 0);
+      assert.equal(secondSummary.skippedAutoReplyCount, 0);
       assert.deepEqual(
         inboundRouter.routed.map((message) => message.providerEventId),
         ["provider-real"]
       );
-      assert.deepEqual(pollTransport.seen, ["provider-real"]);
+      assert.deepEqual(pollTransport.seen, ["provider-auto", "provider-real"]);
     }
   );
 });

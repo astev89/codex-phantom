@@ -126,6 +126,7 @@ export class EmailChannelService {
     for (const message of limitedMessages) {
       if (isAutoReply(message)) {
         summary.skippedAutoReplyCount += 1;
+        await this.pollTransport.markSeen(message.providerMessageId);
         continue;
       }
       const routed = this.inboundRouter.routeAsync(
