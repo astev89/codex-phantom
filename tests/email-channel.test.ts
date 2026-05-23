@@ -899,6 +899,93 @@ test("parseEmailMessage safely indexes supported text attachments and skips larg
   assert.equal(rawPayloadJson.includes("AAEC"), false);
 });
 
+test("parseEmailMessage indexes markdown below cap and skips attachments at the exact cap", async () => {
+  const markdownBody = "# Note\n\nok";
+  const exactBoundaryBody = "B".repeat(16);
+  const rawMessage = [
+    "From: Sender <sender@example.com>",
+    "To: Bot <bot@example.com>",
+    "Subject: Attachment Boundary",
+    "Message-ID: <boundary@example.com>",
+    "Date: Thu, 22 May 2026 12:34:56 +0000",
+    'Content-Type: multipart/mixed; boundary="demo"',
+    "",
+    "--demo",
+    "Content-Type: text/plain; charset=utf-8",
+    "",
+    "Hello from email.",
+    "--demo",
+    'Content-Type: text/markdown; charset=utf-8; name="notes.md"',
+    'Content-Disposition: attachment; filename="notes.md"',
+    "",
+    markdownBody,
+    "--demo",
+    'Content-Type: text/plain; charset=utf-8; name="boundary.txt"',
+    'Content-Disposition: attachment; filename="boundary.txt"',
+    "",
+    exactBoundaryBody,
+    "--demo--",
+    "",
+  ].join("\r\n");
+
+  const parsed = await parseEmailMessage({
+    providerMessageId: "provider-message-boundary",
+    uid: "202",
+    raw: Buffer.from(rawMessage, "utf8"),
+    maxAttachmentBytes: 16,
+  });
+
+  assert.equal(parsed.attachments.length, 2);
+  assert.deepEqual(parsed.attachments[0], {
+    filename: "notes.md",
+    contentType: "text/markdown",
+    sizeBytes: 10,
+    disposition: "attachment",
+    indexedText: markdownBody,
+    indexedBytes: 10,
+  });
+  assert.deepEqual(parsed.attachments[1], {
+    filename: "boundary.txt",
+    contentType: "text/plain",
+    sizeBytes: 16,
+    disposition: "attachment",
+    skippedReason: "too_large",
+  });
+  assert.deepEqual(parsed.rawPayload, {
+    uid: "202",
+    providerMessageId: "provider-message-boundary",
+    sizeBytes: Buffer.byteLength(rawMessage, "utf8"),
+    fetchedBytes: Buffer.byteLength(rawMessage, "utf8"),
+    from: { address: "sender@example.com", name: "Sender" },
+    to: [{ address: "bot@example.com", name: "Bot" }],
+    subject: "Attachment Boundary",
+    date: "2026-05-22T12:34:56.000Z",
+    messageId: "<boundary@example.com>",
+    inReplyTo: null,
+    references: [],
+    attachmentCount: 2,
+    attachments: [
+      {
+        filename: "notes.md",
+        contentType: "text/markdown",
+        sizeBytes: 10,
+        disposition: "attachment",
+        indexedText: markdownBody,
+        indexedBytes: 10,
+      },
+      {
+        filename: "boundary.txt",
+        contentType: "text/plain",
+        sizeBytes: 16,
+        disposition: "attachment",
+        skippedReason: "too_large",
+      },
+    ],
+  });
+  const rawPayloadJson = JSON.stringify(parsed.rawPayload);
+  assert.equal(rawPayloadJson.includes(exactBoundaryBody), false);
+});
+
 test("imap poll transport bounds unread fetches and marks messages seen", async () => {
   const rawMessages = new Map<number, Buffer>([
     [

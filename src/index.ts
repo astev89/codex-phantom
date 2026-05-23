@@ -140,6 +140,7 @@ const email = new EmailChannelService({
     host: config.emailImapHost ?? "",
     port: config.emailImapPort,
     secure: config.emailImapTls,
+    maxAttachmentBytes: config.emailMaxAttachmentBytes,
     auth: {
       user: config.emailImapUsername ?? "",
       pass: config.emailImapPassword ?? "",

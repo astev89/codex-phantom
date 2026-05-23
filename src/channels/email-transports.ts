@@ -390,7 +390,7 @@ function extractAttachmentMetadata(
   if (attachment.contentDisposition) {
     metadata.disposition = attachment.contentDisposition;
   }
-  if (sizeBytes > maxAttachmentBytes) {
+  if (sizeBytes >= maxAttachmentBytes) {
     metadata.skippedReason = "too_large";
     return metadata;
   }
