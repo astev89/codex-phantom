@@ -114,23 +114,6 @@ const mcp = new McpServer(
   undefined,
   mcpAudit
 );
-const server = new HttpServer(
-  config,
-  orchestration,
-  scheduler,
-  sessions,
-  runs,
-  mcp,
-  database,
-  logger,
-  metrics,
-  memory,
-  dynamicTools,
-  channels,
-  governance,
-  undefined,
-  memoryMaintenance
-);
 const email = new EmailChannelService({
   config,
   channels,
@@ -157,6 +140,24 @@ const email = new EmailChannelService({
   }),
   logger,
 });
+const server = new HttpServer(
+  config,
+  orchestration,
+  scheduler,
+  sessions,
+  runs,
+  mcp,
+  database,
+  logger,
+  metrics,
+  memory,
+  dynamicTools,
+  channels,
+  governance,
+  undefined,
+  memoryMaintenance,
+  email
+);
 
 await memory.backfillEmbeddings();
 await memory.initializeVectorStore();

@@ -4,10 +4,25 @@ import {
   hasConfiguredValue,
   modelAdapterMode,
 } from "../config.ts";
+import type { ChannelDeliveryRecord } from "../channels/delivery-log.ts";
 import type { MemoryStatus } from "../memory/types.ts";
 import type { ChannelRecord } from "../channels/registry.ts";
+import type {
+  EmailChannelStatus,
+  EmailPollSummary,
+} from "../channels/email.ts";
 import type { RolePolicyConfigStatus } from "../orchestration/role-config.ts";
 import type { SetupReadiness } from "./readiness.ts";
+
+export type EmailChannelDiagnostics = {
+  enabled: boolean;
+  running: boolean;
+  configComplete: boolean;
+  lastPollAt?: string;
+  lastSummary?: EmailPollSummary;
+  lastError?: string;
+  recentDeliveryFailures: ChannelDeliveryRecord[];
+};
 
 export type StartupDiagnostics = {
   appEnv: AppConfig["appEnv"];
@@ -24,6 +39,7 @@ export type StartupDiagnostics = {
   };
   channelReadiness: ChannelRecord[];
   missingRecommendedEnv: string[];
+  email?: EmailChannelDiagnostics;
   setupReadiness?: SetupReadiness;
   rolePolicy?: RolePolicyConfigStatus;
 };
@@ -32,6 +48,8 @@ export function buildStartupDiagnostics(
   config: AppConfig,
   memory: MemoryStatus,
   channels: ChannelRecord[],
+  emailStatus?: EmailChannelStatus,
+  emailRecentDeliveryFailures: ChannelDeliveryRecord[] = [],
   setupReadiness?: SetupReadiness,
   rolePolicy?: RolePolicyConfigStatus
 ): StartupDiagnostics {
@@ -80,6 +98,24 @@ export function buildStartupDiagnostics(
     }
   }
 
+  const emailChannel = channels.find((channel) => channel.id === "email");
+  const emailDiagnostics = emailChannel
+    ? {
+        enabled: emailStatus?.enabled ?? emailChannel.enabled,
+        running: emailStatus?.running ?? false,
+        configComplete:
+          emailStatus?.configComplete ?? emailConfigComplete(config),
+        ...(emailStatus?.lastPollAt
+          ? { lastPollAt: emailStatus.lastPollAt }
+          : {}),
+        ...(emailStatus?.lastSummary
+          ? { lastSummary: emailStatus.lastSummary }
+          : {}),
+        ...(emailStatus?.lastError ? { lastError: emailStatus.lastError } : {}),
+        recentDeliveryFailures: emailRecentDeliveryFailures,
+      }
+    : undefined;
+
   return {
     appEnv: config.appEnv,
     modelAdapter: modelAdapterMode(config),
@@ -97,6 +133,7 @@ export function buildStartupDiagnostics(
     },
     channelReadiness: channels,
     missingRecommendedEnv: [...missingRecommendedEnv].sort(),
+    email: emailDiagnostics,
     setupReadiness,
     rolePolicy,
   };

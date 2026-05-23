@@ -138,6 +138,15 @@ test("enabled email treats blank required config as missing", () => {
       config,
       memoryStatus,
       channels.list(),
+      {
+        enabled: true,
+        running: false,
+        configComplete: false,
+        lastPollAt: "2026-05-23T15:30:00.000Z",
+        lastError:
+          "Email channel is enabled but IMAP/SMTP configuration is incomplete",
+      },
+      [],
       readiness
     );
 
@@ -157,6 +166,15 @@ test("enabled email treats blank required config as missing", () => {
       "EMAIL_SMTP_USERNAME",
       "OPENAI_API_KEY",
     ]);
+    assert.deepEqual(diagnostics.email, {
+      enabled: true,
+      running: false,
+      configComplete: false,
+      lastPollAt: "2026-05-23T15:30:00.000Z",
+      lastError:
+        "Email channel is enabled but IMAP/SMTP configuration is incomplete",
+      recentDeliveryFailures: [],
+    });
   } finally {
     database.close();
   }

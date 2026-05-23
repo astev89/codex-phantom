@@ -7,6 +7,8 @@ import { join } from "node:path";
 import type { AppConfig } from "../src/config.ts";
 import { AgentRuntime } from "../src/agent/runtime.ts";
 import { ChannelRegistry } from "../src/channels/registry.ts";
+import { InboundChannelEventStore } from "../src/channels/inbound.ts";
+import type { EmailChannelStatus } from "../src/channels/email.ts";
 import type {
   AgentAdapter,
   AgentRunEvent,
@@ -263,6 +265,18 @@ class FakeSlackTransport implements SlackTransport {
   }
 }
 
+class FakeEmailStatusProvider {
+  private readonly state: EmailChannelStatus;
+
+  constructor(state: EmailChannelStatus) {
+    this.state = state;
+  }
+
+  status(): EmailChannelStatus {
+    return { ...this.state };
+  }
+}
+
 function signedWebhookHeaders(
   secret: string,
   body: string,
@@ -437,6 +451,322 @@ test("slack delivery retries transient failures and records attempt counts", asy
       )
     );
   } finally {
+    database.close();
+  }
+});
+
+test("admin email visibility surfaces channel status, readiness gaps, inbound, deliveries, and summary diagnostics", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "codex-phantom-email-admin-"));
+  const config: AppConfig = makeConfig(dataDir, {
+    port: 0,
+    emailImapHost: " ",
+    emailImapUsername: "\t",
+    emailImapPassword: " ",
+    emailSmtpHost: "",
+    emailSmtpUsername: " ",
+    emailSmtpPassword: "\n",
+    emailFromAddress: " ",
+  });
+  const database = new AppDatabase(join(dataDir, "email-admin.sqlite"));
+  const sessions = new SessionStore(database);
+  const channels = new ChannelRegistry(database, config);
+  channels.upsert({ id: "email", enabled: true });
+  const inbound = new InboundChannelEventStore(database);
+  const deliveries = new ChannelDeliveryStore(database);
+  const memory = new MemoryStore(
+    database,
+    config,
+    makeDisabledEmbeddings(),
+    makeFakeVectorStore({
+      backend: "qdrant",
+      available: false,
+      configured: false,
+    }),
+    makeFakeVectorStore({ backend: "sqlite_fallback", available: true })
+  );
+  const tools = new ToolRegistry();
+  const runtime = new AgentRuntime(
+    config,
+    new FakeAdapter(),
+    sessions,
+    memory,
+    tools
+  );
+  const runs = new RunGraphStore(database);
+  const orchestration = new OrchestrationService(runtime, tools, runs);
+  const scheduler = new SchedulerService(database, orchestration);
+  await scheduler.start();
+  const metrics = new MetricsStore();
+  const mcpAudit = new McpAuditStore(database);
+  const mcp = new McpServer(
+    config.mcpBearerToken,
+    tools,
+    metrics,
+    undefined,
+    mcpAudit
+  );
+  const dynamicTools = new DynamicToolRegistry(database, tools);
+  const governance = new ToolGovernanceService(database);
+  const emailStatus = new FakeEmailStatusProvider({
+    enabled: true,
+    running: false,
+    configComplete: false,
+    lastPollAt: "2026-05-23T15:30:00.000Z",
+    lastError:
+      "Email channel is enabled but IMAP/SMTP configuration is incomplete",
+    lastSummary: {
+      polledCount: 2,
+      acceptedCount: 1,
+      duplicateCount: 0,
+      skippedAutoReplyCount: 1,
+    },
+  });
+  const server = new HttpServer(
+    config,
+    orchestration,
+    scheduler,
+    sessions,
+    runs,
+    mcp,
+    database,
+    new Logger("error"),
+    metrics,
+    memory,
+    dynamicTools,
+    channels,
+    governance,
+    new FakeSlackTransport(),
+    undefined,
+    emailStatus
+  );
+
+  const inboundRecord = inbound.recordReceived({
+    channelId: "email",
+    providerEventId: "email-provider-1",
+    conversationId: "thread-123",
+    senderId: "sender@example.com",
+    message: "hello from email",
+    threadId: "<thread-123@example.com>",
+    responseTarget: {
+      type: "email_reply",
+      to: "sender@example.com",
+      subject: "Re: hello",
+      messageId: "<thread-123@example.com>",
+      references: ["<parent@example.com>"],
+      fromMessageProviderId: "email-provider-1",
+    },
+    rawPayload: { providerMessageId: "email-provider-1" },
+  }).record;
+  inbound.markCompleted(inboundRecord.id, {
+    sessionId: "session_email_1",
+    runId: "run_email_1",
+    outputText: "assistant:hello from email",
+  });
+  deliveries.record({
+    channelId: "email",
+    destination: "sender@example.com",
+    payload: {
+      method: "email.reply",
+      providerEventId: "email-provider-1",
+    },
+    status: "failed",
+    errorMessage: "Mailbox unavailable",
+    attemptCount: 2,
+    response: { responseCode: 550 },
+  });
+
+  try {
+    const instance = await server.listen();
+    const address = instance.address();
+    assert.equal(typeof address, "object");
+    const port = address && typeof address === "object" ? address.port : 0;
+    const headers = {
+      Authorization: `Bearer ${config.operatorBearerToken}`,
+    };
+
+    const channelsResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/channels`,
+      { headers }
+    );
+    assert.equal(channelsResponse.status, 200);
+    const channelsJson = (await channelsResponse.json()) as {
+      channels: Array<{ id: string; enabled: boolean }>;
+    };
+    assert.ok(
+      channelsJson.channels.some(
+        (channel) => channel.id === "email" && channel.enabled === true
+      )
+    );
+
+    const readinessResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/readiness`,
+      { headers }
+    );
+    assert.equal(readinessResponse.status, 503);
+    const readinessJson = (await readinessResponse.json()) as {
+      diagnostics?: { missingRecommendedEnv: string[] };
+      readiness: {
+        checks: Array<{ id: string; status: string }>;
+      };
+    };
+    assert.ok(
+      readinessJson.readiness.checks.some(
+        (check) =>
+          check.id === "channel-email-secrets" && check.status === "fail"
+      )
+    );
+    assert.deepEqual(readinessJson.diagnostics?.missingRecommendedEnv, [
+      "EMAIL_FROM_ADDRESS",
+      "EMAIL_IMAP_HOST",
+      "EMAIL_IMAP_PASSWORD",
+      "EMAIL_IMAP_USERNAME",
+      "EMAIL_SMTP_HOST",
+      "EMAIL_SMTP_PASSWORD",
+      "EMAIL_SMTP_USERNAME",
+      "OPENAI_API_KEY",
+    ]);
+
+    const inboundResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/channels/inbound?channelId=email`,
+      { headers }
+    );
+    assert.equal(inboundResponse.status, 200);
+    const inboundJson = (await inboundResponse.json()) as {
+      events: Array<{
+        channelId: string;
+        providerEventId: string;
+        status: string;
+      }>;
+    };
+    assert.ok(
+      inboundJson.events.some(
+        (event) =>
+          event.channelId === "email" &&
+          event.providerEventId === "email-provider-1" &&
+          event.status === "completed"
+      )
+    );
+
+    const deliveriesResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/channels/deliveries?channelId=email`,
+      { headers }
+    );
+    assert.equal(deliveriesResponse.status, 200);
+    const deliveriesJson = (await deliveriesResponse.json()) as {
+      deliveries: Array<{
+        channelId: string;
+        destination: string;
+        status: string;
+        errorMessage?: string;
+        attemptCount: number;
+      }>;
+    };
+    assert.ok(
+      deliveriesJson.deliveries.some(
+        (delivery) =>
+          delivery.channelId === "email" &&
+          delivery.destination === "sender@example.com" &&
+          delivery.status === "failed" &&
+          delivery.errorMessage === "Mailbox unavailable" &&
+          delivery.attemptCount === 2
+      )
+    );
+
+    const summaryResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/summary`,
+      { headers }
+    );
+    assert.equal(summaryResponse.status, 200);
+    const summaryJson = (await summaryResponse.json()) as {
+      channels: Array<{ id: string; enabled: boolean }>;
+      channelDeliveries: {
+        recentFailed: Array<{ channelId: string; destination: string }>;
+      };
+      diagnostics: {
+        missingRecommendedEnv: string[];
+        email?: {
+          enabled: boolean;
+          running: boolean;
+          configComplete: boolean;
+          lastPollAt?: string;
+          lastError?: string;
+          lastSummary?: {
+            polledCount: number;
+            acceptedCount: number;
+            duplicateCount: number;
+            skippedAutoReplyCount: number;
+          };
+          recentDeliveryFailures: Array<{
+            id: string;
+            channelId: string;
+            destination: string;
+            payload: { method: string; providerEventId: string };
+            status: string;
+            response?: { responseCode: number };
+            errorMessage?: string;
+            attemptCount: number;
+            deliveredAt: string;
+          }>;
+        };
+      };
+    };
+    assert.ok(
+      summaryJson.channels.some(
+        (channel) => channel.id === "email" && channel.enabled === true
+      )
+    );
+    assert.ok(
+      summaryJson.channelDeliveries.recentFailed.some(
+        (delivery) =>
+          delivery.channelId === "email" &&
+          delivery.destination === "sender@example.com"
+      )
+    );
+    assert.deepEqual(summaryJson.diagnostics.missingRecommendedEnv, [
+      "EMAIL_FROM_ADDRESS",
+      "EMAIL_IMAP_HOST",
+      "EMAIL_IMAP_PASSWORD",
+      "EMAIL_IMAP_USERNAME",
+      "EMAIL_SMTP_HOST",
+      "EMAIL_SMTP_PASSWORD",
+      "EMAIL_SMTP_USERNAME",
+      "OPENAI_API_KEY",
+    ]);
+    assert.deepEqual(summaryJson.diagnostics.email, {
+      enabled: true,
+      running: false,
+      configComplete: false,
+      lastPollAt: "2026-05-23T15:30:00.000Z",
+      lastError:
+        "Email channel is enabled but IMAP/SMTP configuration is incomplete",
+      lastSummary: {
+        polledCount: 2,
+        acceptedCount: 1,
+        duplicateCount: 0,
+        skippedAutoReplyCount: 1,
+      },
+      recentDeliveryFailures: [
+        {
+          id: summaryJson.diagnostics.email?.recentDeliveryFailures[0]?.id,
+          channelId: "email",
+          destination: "sender@example.com",
+          payload: {
+            method: "email.reply",
+            providerEventId: "email-provider-1",
+          },
+          status: "failed",
+          response: { responseCode: 550 },
+          errorMessage: "Mailbox unavailable",
+          attemptCount: 2,
+          deliveredAt:
+            summaryJson.diagnostics.email?.recentDeliveryFailures[0]
+              ?.deliveredAt,
+        },
+      ],
+    });
+  } finally {
+    await server.close();
+    await scheduler.stop();
     database.close();
   }
 });

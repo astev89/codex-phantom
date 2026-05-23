@@ -13,6 +13,8 @@ import { createId } from "../shared/ids.ts";
 import { validateWebhookSecret } from "../channels/webhook.ts";
 import { ChannelRegistry } from "../channels/registry.ts";
 import { ChannelDeliveryStore } from "../channels/delivery-log.ts";
+import type { ChannelDeliveryRecord } from "../channels/delivery-log.ts";
+import type { EmailChannelStatus } from "../channels/email.ts";
 import {
   InboundChannelEventStore,
   InboundChannelRouter,
@@ -103,6 +105,10 @@ import {
 
 const DEFAULT_MAX_BODY_BYTES = 1_048_576;
 
+type EmailStatusProvider = {
+  status(): EmailChannelStatus;
+};
+
 export class HttpServer {
   private readonly server: Server;
   private readonly config: AppConfig;
@@ -132,6 +138,7 @@ export class HttpServer {
   private readonly settings: OperatorSettingsStore;
   private readonly requestAudits: RequestAuditStore;
   private readonly mcpAudit: McpAuditStore;
+  private readonly emailStatusProvider?: EmailStatusProvider;
   private readonly operatorTokenHash: Buffer;
   private readonly mcpTokenHash: Buffer;
   private readonly mcpRateLimiter = new SimpleRateLimiter(12, 60_000);
@@ -151,7 +158,8 @@ export class HttpServer {
     channels: ChannelRegistry,
     governance: ToolGovernanceService,
     slackTransport?: SlackTransport,
-    memoryMaintenance?: MemoryMaintenanceService
+    memoryMaintenance?: MemoryMaintenanceService,
+    emailStatusProvider?: EmailStatusProvider
   ) {
     this.config = config;
     this.orchestration = orchestration;
@@ -189,6 +197,7 @@ export class HttpServer {
     this.settings = new OperatorSettingsStore(database);
     this.requestAudits = new RequestAuditStore(database);
     this.mcpAudit = new McpAuditStore(database);
+    this.emailStatusProvider = emailStatusProvider;
     this.operatorTokenHash = hashToken(config.operatorBearerToken);
     this.mcpTokenHash = hashToken(config.mcpBearerToken);
     this.server = createServer((req, res) => {
@@ -334,12 +343,10 @@ export class HttpServer {
           rolePolicy: this.orchestration.getRolePolicyStatus(),
           requestAudits: { recent: this.requestAudits.list(10).length },
           channels,
-          diagnostics: buildStartupDiagnostics(
-            this.config,
+          diagnostics: this.buildDiagnostics(
             memoryStatus,
             channels,
-            setupReadiness,
-            this.orchestration.getRolePolicyStatus()
+            setupReadiness
           ),
         });
         return;
@@ -348,15 +355,21 @@ export class HttpServer {
       if (req.method === "GET" && url.pathname === "/admin/readiness") {
         this.requireOperatorAuth(req);
         const channels = this.channels.list();
+        const memoryStatus = this.memory.getStatus();
         const setupReadiness = buildSetupReadiness({
           config: this.config,
-          memory: this.memory.getStatus(),
+          memory: memoryStatus,
           channels,
           databaseReady: this.database.isReady(),
         });
         this.json(res, setupReadiness.ok ? 200 : 503, {
           requestId,
           readiness: setupReadiness,
+          diagnostics: this.buildDiagnostics(
+            memoryStatus,
+            channels,
+            setupReadiness
+          ),
         });
         return;
       }
@@ -372,12 +385,10 @@ export class HttpServer {
           databaseReady: this.database.isReady(),
         });
         this.json(res, 200, {
-          diagnostics: buildStartupDiagnostics(
-            this.config,
+          diagnostics: this.buildDiagnostics(
             memoryStatus,
             channels,
-            setupReadiness,
-            this.orchestration.getRolePolicyStatus()
+            setupReadiness
           ),
         });
         return;
@@ -1854,6 +1865,30 @@ export class HttpServer {
       );
     }
     return artifacts;
+  }
+
+  private buildDiagnostics(
+    memoryStatus: ReturnType<MemoryStore["getStatus"]>,
+    channels: ReturnType<ChannelRegistry["list"]>,
+    setupReadiness: ReturnType<typeof buildSetupReadiness>
+  ) {
+    return buildStartupDiagnostics(
+      this.config,
+      memoryStatus,
+      channels,
+      this.emailStatusProvider?.status(),
+      this.listRecentFailedDeliveries("email"),
+      setupReadiness,
+      this.orchestration.getRolePolicyStatus()
+    );
+  }
+
+  private listRecentFailedDeliveries(
+    channelId: string
+  ): ChannelDeliveryRecord[] {
+    return this.channelDeliveries
+      .list(channelId, 10)
+      .filter((delivery) => delivery.status === "failed");
   }
 
   private json(res: ServerResponse, status: number, body: unknown): void {
