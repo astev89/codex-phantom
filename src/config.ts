@@ -32,6 +32,23 @@ export type AppConfig = {
   slackAppToken?: string;
   slackSigningSecret?: string;
   slackBotUserId?: string;
+  emailImapHost?: string;
+  emailImapPort: number;
+  emailImapUsername?: string;
+  emailImapPassword?: string;
+  emailImapTls: boolean;
+  emailSmtpHost?: string;
+  emailSmtpPort: number;
+  emailSmtpUsername?: string;
+  emailSmtpPassword?: string;
+  emailSmtpTls: boolean;
+  emailFromAddress?: string;
+  emailFromName: string;
+  emailPollIntervalMs: number;
+  emailPollBatchSize: number;
+  emailMaxMessageBytes: number;
+  emailMaxAttachmentBytes: number;
+  emailSendTimeoutMs: number;
   memoryEmbeddingBatchSize: number;
   memoryTopK: number;
   memoryPerCategoryLimit: number;
@@ -108,6 +125,52 @@ export function loadConfig(): AppConfig {
     slackAppToken: process.env.SLACK_APP_TOKEN,
     slackSigningSecret: process.env.SLACK_SIGNING_SECRET,
     slackBotUserId: process.env.SLACK_BOT_USER_ID,
+    emailImapHost: process.env.EMAIL_IMAP_HOST,
+    emailImapPort: parsePositiveInteger(
+      process.env.EMAIL_IMAP_PORT,
+      993,
+      "EMAIL_IMAP_PORT"
+    ),
+    emailImapUsername: process.env.EMAIL_IMAP_USERNAME,
+    emailImapPassword: process.env.EMAIL_IMAP_PASSWORD,
+    emailImapTls: parseBoolean(process.env.EMAIL_IMAP_TLS, true),
+    emailSmtpHost: process.env.EMAIL_SMTP_HOST,
+    emailSmtpPort: parsePositiveInteger(
+      process.env.EMAIL_SMTP_PORT,
+      587,
+      "EMAIL_SMTP_PORT"
+    ),
+    emailSmtpUsername: process.env.EMAIL_SMTP_USERNAME,
+    emailSmtpPassword: process.env.EMAIL_SMTP_PASSWORD,
+    emailSmtpTls: parseBoolean(process.env.EMAIL_SMTP_TLS, true),
+    emailFromAddress: process.env.EMAIL_FROM_ADDRESS,
+    emailFromName:
+      process.env.EMAIL_FROM_NAME ?? process.env.AGENT_NAME ?? "Codex Phantom",
+    emailPollIntervalMs: parsePositiveInteger(
+      process.env.EMAIL_POLL_INTERVAL_MS,
+      30_000,
+      "EMAIL_POLL_INTERVAL_MS"
+    ),
+    emailPollBatchSize: parsePositiveInteger(
+      process.env.EMAIL_POLL_BATCH_SIZE,
+      10,
+      "EMAIL_POLL_BATCH_SIZE"
+    ),
+    emailMaxMessageBytes: parsePositiveInteger(
+      process.env.EMAIL_MAX_MESSAGE_BYTES,
+      1_048_576,
+      "EMAIL_MAX_MESSAGE_BYTES"
+    ),
+    emailMaxAttachmentBytes: parsePositiveInteger(
+      process.env.EMAIL_MAX_ATTACHMENT_BYTES,
+      200_000,
+      "EMAIL_MAX_ATTACHMENT_BYTES"
+    ),
+    emailSendTimeoutMs: parsePositiveInteger(
+      process.env.EMAIL_SEND_TIMEOUT_MS,
+      10_000,
+      "EMAIL_SEND_TIMEOUT_MS"
+    ),
     memoryEmbeddingBatchSize: parsePositiveInteger(
       process.env.MEMORY_EMBEDDING_BATCH_SIZE,
       8,
@@ -174,6 +237,18 @@ export function defaultSecrets(): {
   };
 }
 
+export function emailConfigComplete(config: AppConfig): boolean {
+  return Boolean(
+    config.emailImapHost &&
+    config.emailImapUsername &&
+    config.emailImapPassword &&
+    config.emailSmtpHost &&
+    config.emailSmtpUsername &&
+    config.emailSmtpPassword &&
+    config.emailFromAddress
+  );
+}
+
 function normalizeEnvironment(value: string | undefined): AppEnvironment {
   if (value === "production" || value === "test") {
     return value;
@@ -191,6 +266,19 @@ function normalizeLogLevel(value: string | undefined): LogLevel {
     return value;
   }
   return "info";
+}
+
+function parseBoolean(raw: string | undefined, fallback: boolean): boolean {
+  if (raw === undefined) {
+    return fallback;
+  }
+  if (raw === "true") {
+    return true;
+  }
+  if (raw === "false") {
+    return false;
+  }
+  throw new Error("Boolean env vars must be set to true or false");
 }
 
 function parsePositiveInteger(

@@ -1,5 +1,5 @@
 import type { AppConfig } from "../config.ts";
-import { modelAdapterMode } from "../config.ts";
+import { emailConfigComplete, modelAdapterMode } from "../config.ts";
 import type { MemoryStatus } from "../memory/types.ts";
 import type { ChannelRecord } from "../channels/registry.ts";
 import type { RolePolicyConfigStatus } from "../orchestration/role-config.ts";
@@ -49,6 +49,31 @@ export function buildStartupDiagnostics(
     !config.externalChannelSecret
   ) {
     missingRecommendedEnv.add("EXTERNAL_CHANNEL_SECRET");
+  }
+  if (channels.some((channel) => channel.id === "email" && channel.enabled)) {
+    if (!emailConfigComplete(config)) {
+      if (!config.emailImapHost) {
+        missingRecommendedEnv.add("EMAIL_IMAP_HOST");
+      }
+      if (!config.emailImapUsername) {
+        missingRecommendedEnv.add("EMAIL_IMAP_USERNAME");
+      }
+      if (!config.emailImapPassword) {
+        missingRecommendedEnv.add("EMAIL_IMAP_PASSWORD");
+      }
+      if (!config.emailSmtpHost) {
+        missingRecommendedEnv.add("EMAIL_SMTP_HOST");
+      }
+      if (!config.emailSmtpUsername) {
+        missingRecommendedEnv.add("EMAIL_SMTP_USERNAME");
+      }
+      if (!config.emailSmtpPassword) {
+        missingRecommendedEnv.add("EMAIL_SMTP_PASSWORD");
+      }
+      if (!config.emailFromAddress) {
+        missingRecommendedEnv.add("EMAIL_FROM_ADDRESS");
+      }
+    }
   }
 
   return {

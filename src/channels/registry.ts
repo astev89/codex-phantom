@@ -34,9 +34,10 @@ const DEFAULT_CHANNELS = [
     id: "web",
     kind: "operator_ui",
     displayName: "Web Console",
-    description: "Direct operator chat surface served by the local HTTP console.",
+    description:
+      "Direct operator chat surface served by the local HTTP console.",
     enabled: true,
-    config: { transport: "http" }
+    config: { transport: "http" },
   },
   {
     id: "webhook",
@@ -46,7 +47,7 @@ const DEFAULT_CHANNELS = [
     enabled: true,
     secretEnvVar: "EXTERNAL_CHANNEL_SECRET",
     webhookPath: "/channels/webhook",
-    config: { transport: "http" }
+    config: { transport: "http" },
   },
   {
     id: "scheduler",
@@ -54,22 +55,45 @@ const DEFAULT_CHANNELS = [
     displayName: "Scheduler",
     description: "Internal scheduled jobs that enqueue coordinator runs.",
     enabled: true,
-    config: { transport: "internal" }
+    config: { transport: "internal" },
   },
   {
     id: "slack",
     kind: "external_chat",
     displayName: "Slack",
-    description: "Slack channel with outbound delivery and signed inbound Events API ingestion.",
+    description:
+      "Slack channel with outbound delivery and signed inbound Events API ingestion.",
     enabled: false,
     secretEnvVar: "SLACK_BOT_TOKEN",
     config: {
       transport: "slack",
       status: "available",
       requiredSecretEnvVars: ["SLACK_BOT_TOKEN", "SLACK_SIGNING_SECRET"],
-      optionalSecretEnvVars: ["SLACK_BOT_USER_ID"]
-    }
-  }
+      optionalSecretEnvVars: ["SLACK_BOT_USER_ID"],
+    },
+  },
+  {
+    id: "email",
+    kind: "external_chat",
+    displayName: "Email",
+    description: "Email channel with bounded IMAP polling and SMTP replies.",
+    enabled: false,
+    secretEnvVar: "EMAIL_IMAP_PASSWORD",
+    config: {
+      transport: "email",
+      status: "available",
+      requiredSecretEnvVars: [
+        "EMAIL_IMAP_HOST",
+        "EMAIL_IMAP_USERNAME",
+        "EMAIL_IMAP_PASSWORD",
+        "EMAIL_SMTP_HOST",
+        "EMAIL_SMTP_USERNAME",
+        "EMAIL_SMTP_PASSWORD",
+        "EMAIL_FROM_ADDRESS",
+      ],
+      optionalSecretEnvVars: ["EMAIL_FROM_NAME"],
+    },
+  },
 ] as Array<{
   id: string;
   kind: string;
@@ -134,7 +158,12 @@ export class ChannelRegistry {
       throw new Error(`Unknown channel: ${input.id}`);
     }
     const now = new Date().toISOString();
-    this.database.run("UPDATE channels SET enabled = ?, updated_at = ? WHERE id = ?", input.enabled ? 1 : 0, now, input.id);
+    this.database.run(
+      "UPDATE channels SET enabled = ?, updated_at = ? WHERE id = ?",
+      input.enabled ? 1 : 0,
+      now,
+      input.id
+    );
     const updated = this.database.get<ChannelRow>(
       `
         SELECT
@@ -151,12 +180,18 @@ export class ChannelRegistry {
     return this.toChannelRecord(updated);
   }
 
-  summary(): { configured: number; enabled: number; channels: ChannelRecord[] } {
+  summary(): {
+    configured: number;
+    enabled: number;
+    channels: ChannelRecord[];
+  } {
     const channels = this.list();
     return {
-      configured: channels.filter((channel) => channel.secretPresent || !channel.secretEnvVar).length,
+      configured: channels.filter(
+        (channel) => channel.secretPresent || !channel.secretEnvVar
+      ).length,
       enabled: channels.filter((channel) => channel.enabled).length,
-      channels
+      channels,
     };
   }
 
@@ -203,13 +238,18 @@ export class ChannelRegistry {
       description: row.description,
       enabled: row.enabled === 1,
       secretEnvVar: row.secret_env_var ?? undefined,
-      secretPresent: requiredSecrets.length > 0
-        ? requiredSecrets.every((secretEnvVar) => this.resolveSecretPresence(secretEnvVar))
-        : row.secret_env_var ? this.resolveSecretPresence(row.secret_env_var) : true,
+      secretPresent:
+        requiredSecrets.length > 0
+          ? requiredSecrets.every((secretEnvVar) =>
+              this.resolveSecretPresence(secretEnvVar)
+            )
+          : row.secret_env_var
+            ? this.resolveSecretPresence(row.secret_env_var)
+            : true,
       webhookPath: row.webhook_path ?? undefined,
       config,
       createdAt: row.created_at,
-      updatedAt: row.updated_at
+      updatedAt: row.updated_at,
     };
   }
 
@@ -223,6 +263,22 @@ export class ChannelRegistry {
         return Boolean(this.config.slackSigningSecret);
       case "SLACK_BOT_USER_ID":
         return Boolean(this.config.slackBotUserId);
+      case "EMAIL_IMAP_HOST":
+        return Boolean(this.config.emailImapHost);
+      case "EMAIL_IMAP_USERNAME":
+        return Boolean(this.config.emailImapUsername);
+      case "EMAIL_IMAP_PASSWORD":
+        return Boolean(this.config.emailImapPassword);
+      case "EMAIL_SMTP_HOST":
+        return Boolean(this.config.emailSmtpHost);
+      case "EMAIL_SMTP_USERNAME":
+        return Boolean(this.config.emailSmtpUsername);
+      case "EMAIL_SMTP_PASSWORD":
+        return Boolean(this.config.emailSmtpPassword);
+      case "EMAIL_FROM_ADDRESS":
+        return Boolean(this.config.emailFromAddress);
+      case "EMAIL_FROM_NAME":
+        return Boolean(this.config.emailFromName);
       case "EXTERNAL_CHANNEL_SECRET":
         return Boolean(this.config.externalChannelSecret);
       default:
@@ -232,5 +288,7 @@ export class ChannelRegistry {
 }
 
 function stringArrayValue(value: unknown): string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === "string") ? value : [];
+  return Array.isArray(value) && value.every((item) => typeof item === "string")
+    ? value
+    : [];
 }

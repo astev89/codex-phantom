@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -70,6 +71,22 @@ test("operator readiness reports unsafe first-run setup gaps", async () => {
         (check) => check.id === "openai-api-key" && check.status === "fail"
       )
     );
+  } finally {
+    database.close();
+  }
+});
+
+test("email channel is available but disabled by default", () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "codex-phantom-email-readiness-"));
+  const config = makeConfig(dataDir);
+  const database = new AppDatabase(join(dataDir, "readiness.sqlite"));
+  const channels = new ChannelRegistry(database, config);
+
+  try {
+    const email = channels.get("email");
+    assert.ok(email);
+    assert.equal(email.enabled, false);
+    assert.equal(email.secretPresent, false);
   } finally {
     database.close();
   }
