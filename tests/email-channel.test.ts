@@ -455,6 +455,40 @@ test("email channel sends threaded SMTP replies and audits final delivery under 
       assert.equal(deliveries[0]?.status, "delivered");
       assert.equal(deliveries[0]?.destination, "sender@example.com");
       assert.equal(deliveries[0]?.attemptCount, 1);
+      assert.deepEqual(deliveries[0]?.payload, {
+        method: "email.reply",
+        inboundEventId: "inbound_123",
+        providerEventId: "provider-thread",
+        messageId: sendTransport.sent[0]?.messageId ?? null,
+        inReplyTo: "<child@example.com>",
+        references: [
+          "<root@example.com>",
+          "<parent@example.com>",
+          "<child@example.com>",
+        ],
+        subject: "Quarterly <Report>",
+        fromMessageProviderId: "provider-thread",
+        textCharCount: sendTransport.sent[0]?.text.length ?? 0,
+        textByteCount: Buffer.byteLength(
+          sendTransport.sent[0]?.text ?? "",
+          "utf8"
+        ),
+        htmlCharCount: sendTransport.sent[0]?.html.length ?? 0,
+        htmlByteCount: Buffer.byteLength(
+          sendTransport.sent[0]?.html ?? "",
+          "utf8"
+        ),
+      });
+      assert.equal(
+        "text" in ((deliveries[0]?.payload as Record<string, unknown>) ?? {}),
+        false
+      );
+      assert.equal(
+        "html" in ((deliveries[0]?.payload as Record<string, unknown>) ?? {}),
+        false
+      );
+      assert.match(sendTransport.sent[0]?.text ?? "", /Reply body/);
+      assert.match(sendTransport.sent[0]?.html ?? "", /Reply body/);
     }
   );
 });
@@ -486,6 +520,71 @@ test("email channel retries transient SMTP failures up to three attempts", async
       const deliveries = new ChannelDeliveryStore(database).list("email");
       assert.equal(deliveries[0]?.status, "delivered");
       assert.equal(deliveries[0]?.attemptCount, 3);
+    }
+  );
+});
+
+test("email channel retries transient SMTP 4xx response codes and eventually delivers", async () => {
+  await withEmailChannelService(
+    {
+      configOverrides: {
+        emailFromAddress: "bot@example.com",
+        emailFromName: "Codex Phantom",
+      },
+      channelEnabled: true,
+      invokeCompletionCallbacks: true,
+      messages: [
+        makeInboundMessage({ providerMessageId: "provider-smtp-4xx" }),
+      ],
+    },
+    async ({ service, sendTransport, inboundRouter, database }) => {
+      sendTransport.failures.push(
+        Object.assign(new Error("Mailbox temporarily unavailable"), {
+          responseCode: 450,
+        })
+      );
+
+      await service.pollOnce();
+      await Promise.all(inboundRouter.completions);
+
+      assert.equal(sendTransport.sent.length, 2);
+      const deliveries = new ChannelDeliveryStore(database).list("email");
+      assert.equal(deliveries.length, 1);
+      assert.equal(deliveries[0]?.status, "delivered");
+      assert.equal(deliveries[0]?.attemptCount, 2);
+    }
+  );
+});
+
+test("email channel does not retry permanent SMTP 5xx response codes", async () => {
+  await withEmailChannelService(
+    {
+      configOverrides: {
+        emailFromAddress: "bot@example.com",
+        emailFromName: "Codex Phantom",
+      },
+      channelEnabled: true,
+      invokeCompletionCallbacks: true,
+      messages: [
+        makeInboundMessage({ providerMessageId: "provider-smtp-5xx" }),
+      ],
+    },
+    async ({ service, sendTransport, inboundRouter, database }) => {
+      sendTransport.failures.push(
+        Object.assign(new Error("Mailbox unavailable"), {
+          responseCode: 550,
+          code: "ETIMEDOUT",
+        })
+      );
+
+      await service.pollOnce();
+      await Promise.all(inboundRouter.completions);
+
+      assert.equal(sendTransport.sent.length, 1);
+      const deliveries = new ChannelDeliveryStore(database).list("email");
+      assert.equal(deliveries.length, 1);
+      assert.equal(deliveries[0]?.status, "failed");
+      assert.equal(deliveries[0]?.attemptCount, 1);
     }
   );
 });

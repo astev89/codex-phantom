@@ -214,9 +214,11 @@ export class EmailChannelService {
       inReplyTo: input.inReplyTo ?? null,
       references: input.references,
       subject: input.subject,
-      text: input.text,
-      html: input.html,
       fromMessageProviderId: record.responseTarget.fromMessageProviderId,
+      textCharCount: input.text.length,
+      textByteCount: Buffer.byteLength(input.text, "utf8"),
+      htmlCharCount: input.html.length,
+      htmlByteCount: Buffer.byteLength(input.html, "utf8"),
     };
 
     for (let attempt = 1; attempt <= 3; attempt += 1) {
@@ -421,13 +423,24 @@ function isRetryableEmailSendError(error: unknown): boolean {
   const statusCode =
     typeof errorWithMeta.statusCode === "number"
       ? errorWithMeta.statusCode
-      : typeof errorWithMeta.responseCode === "number"
-        ? errorWithMeta.responseCode
-        : undefined;
+      : undefined;
+  const responseCode =
+    typeof errorWithMeta.responseCode === "number"
+      ? errorWithMeta.responseCode
+      : undefined;
   const message =
     typeof errorWithMeta.message === "string"
       ? errorWithMeta.message.toLowerCase()
       : "";
+
+  if (responseCode !== undefined) {
+    if (responseCode >= 400 && responseCode < 500) {
+      return true;
+    }
+    if (responseCode >= 500 && responseCode < 600) {
+      return false;
+    }
+  }
 
   return (
     (code.startsWith("E") &&
