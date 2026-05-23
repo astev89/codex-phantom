@@ -215,8 +215,12 @@ export class ImapEmailPollTransport implements EmailPollTransport {
     const lock = await client.getMailboxLock(this.mailbox);
 
     try {
-      await client.messageFlagsAdd(resolvedUid, ["\\Seen"], { uid: true });
-      this.providerMessageIdsToUids.delete(providerMessageId);
+      const markedSeen = await client.messageFlagsAdd(resolvedUid, ["\\Seen"], {
+        uid: true,
+      });
+      if (markedSeen) {
+        this.providerMessageIdsToUids.delete(providerMessageId);
+      }
     } finally {
       lock.release();
     }
