@@ -90,6 +90,8 @@ mcp__gitnexus__.impact({
 
 Expected: report blast radius before editing. Stop and warn the user if any result is HIGH or CRITICAL.
 
+Implementation note: Task 1 impact results were `loadConfig LOW`, `validateConfig LOW`, `ChannelRegistry CRITICAL`, `buildSetupReadiness LOW`, and `buildStartupDiagnostics LOW`. Because `ChannelRegistry` was critical, the shipped registry change stayed narrow to disabled email seeding and config-backed secret detection.
+
 - [ ] **Step 2: Write failing readiness tests for disabled Email**
 
 Add coverage in `tests/readiness.test.ts` proving the default `email` channel exists, is disabled, and does not fail readiness when Email env vars are absent.

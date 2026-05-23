@@ -87,6 +87,20 @@ test("email channel is available but disabled by default", () => {
     assert.ok(email);
     assert.equal(email.enabled, false);
     assert.equal(email.secretPresent, false);
+
+    const readiness = buildSetupReadiness({
+      config,
+      memory: memoryStatus,
+      channels: channels.list(),
+      databaseReady: database.isReady(),
+    });
+
+    assert.ok(
+      !readiness.checks.some(
+        (check) =>
+          check.status === "fail" && check.id.startsWith("channel-email-")
+      )
+    );
   } finally {
     database.close();
   }
