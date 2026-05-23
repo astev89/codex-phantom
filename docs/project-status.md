@@ -2,17 +2,34 @@
 
 This is the living status ledger for `codex-phantom`. Update it at the end of each development wave, after tests pass and before handing off or opening a PR.
 
-Last updated: 2026-05-20
-Branch: `jarvis/transcript-artifact-continuity`
-Latest verified commit: `4869ca5d8e361a0a0d5f77efc227e3ed0ddb7251`
+Last updated: 2026-05-23
+Branch: `jarvis/gitnexus-skills-refresh`
+Latest verified implementation commit: `e7b4f443aead9fe7af902f779a3434be479b5425`
 
 ## Current State
 
-`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, a Codex-native `/chat` product surface with durable/searchable attachment continuity, explicit artifacts, and bounded automatic artifact extraction, hybrid long-term memory with Qdrant-backed vector recall, SQLite fallback, lifecycle controls, restart-safe maintenance, decay/reinforcement-aware ranking, governed self-evolution proposals with operator-approved apply/rollback for settings changes, and governed internal tool bundles with preview, approval, enable, disable, and uninstall lifecycle.
+`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, a Codex-native `/chat` product surface with durable/searchable attachment continuity, explicit artifacts, and bounded automatic artifact extraction, hybrid long-term memory with Qdrant-backed vector recall, SQLite fallback, lifecycle controls, restart-safe maintenance, decay/reinforcement-aware ranking, governed self-evolution proposals with operator-approved apply/rollback for settings changes, governed internal tool bundles with preview, approval, enable, disable, and uninstall lifecycle, and a disabled-by-default Email runtime channel with bounded IMAP polling and audited SMTP replies.
 
 The project is now past its first serious production-hardening pass. It is not yet equivalent to the original Phantom project, but the core runtime is materially safer to run: request sizes are bounded, secrets are rejected in production when defaults are used, outbound model calls have timeouts, scheduler jobs recover deterministically after restarts, MCP events are durably audited, external webhooks are signed, Slack sends retry transient failures, operator-console workflows have browser coverage, and the Docker image runs compiled JavaScript instead of stripped TypeScript.
 
 ## Just Completed
+
+Email parity wave completed locally on 2026-05-23:
+
+- Closed the remaining non-Telegram built-in channel gap by shipping Email as a first-class runtime channel.
+- Kept Email disabled by default and all-or-nothing when enabled: complete IMAP and SMTP config is required together.
+- Landed bounded IMAP polling, durable inbound routing, threaded SMTP replies, metadata-first attachment handling, SMTP-native retry semantics, and operator visibility through existing channel/admin surfaces.
+- Documented the bounded-polling ADR decision, mailbox/config requirements, inspection endpoints, and first-slice verification stance without requiring a real mailbox smoke blocker.
+
+Verification from this wave:
+
+```bash
+npm run typecheck
+npm test
+npm run build
+git diff --check
+GitNexus detect_changes(scope="staged")
+```
 
 Continuity test-hardening wave completed locally on 2026-05-13:
 
@@ -452,16 +469,15 @@ npm run build
 
 Use `docs/phantom-parity.md` as the canonical production-level parity roadmap. Keep this section limited to immediate handoff notes and proof gaps.
 
-### P1: Email Channel Parity
+### P2: Channel And Parity Polish
 
 Suggested work:
 
-- Add a production-safe Email channel modeled on Phantom's built-in channel.
-- Support IMAP/SMTP configuration, inbound thread routing, outbound replies, and attachment-aware metadata.
-- Add auth/secret validation, bounded body and attachment handling, delivery audit, retries, operator visibility, and docs.
-- Keep Discord out of scope unless it becomes a shipped Phantom channel rather than a self-extension story.
+- Run an optional live mailbox smoke once provider credentials are available to validate real provider behavior on top of the fake transport test matrix.
+- Tighten operator-facing polish only if real mailbox usage reveals gaps in diagnostics, summaries, or delivery visibility.
+- Keep roadmap detail in `docs/phantom-parity.md`; do not reopen Email as a missing parity feature.
 
-Tracking issue: [#21](https://github.com/astev89/codex-phantom/issues/21).
+Tracking note: keep Telegram excluded and Discord out of scope unless Phantom ships it as a built-in channel.
 
 ## Known Constraints
 

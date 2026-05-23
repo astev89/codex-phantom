@@ -69,4 +69,12 @@ The Email channel is present in the runtime registry but disabled by default. En
 
 This parity slice is intentionally bounded. Polling uses `EMAIL_POLL_INTERVAL_MS` and `EMAIL_POLL_BATCH_SIZE` rather than a long-lived IMAP IDLE session, and message or attachment processing is capped by `EMAIL_MAX_MESSAGE_BYTES` and `EMAIL_MAX_ATTACHMENT_BYTES`.
 
+The mailbox must support both IMAP unread polling and SMTP submission for the runtime identity, and the IMAP side must be allowed to mark accepted or deduped messages seen. There is no inbound-only or outbound-only mode in this slice: whitespace-only values are treated as missing and partial Email config keeps the channel unavailable when enabled.
+
+Attachment handling is metadata-first. Text-like attachments under `EMAIL_MAX_ATTACHMENT_BYTES` can expose bounded `indexedText`; oversized attachments record `skippedReason: "too_large"` and unsupported or binary attachments record `skippedReason: "unsupported_content_type"`.
+
+SMTP delivery uses protocol-aware retries. Transient `4xx` response codes and retryable transport errors are retried up to three total attempts, while permanent `5xx` failures stop without retry. Delivery failures are visible through `GET /admin/channels/deliveries?channelId=email` and do not retroactively fail an already-completed inbound run.
+
+Operators can inspect inbound Email acceptance and dedupe state through `GET /admin/channels/inbound?channelId=email` and summary diagnostics through `/admin/summary`. No real mailbox smoke test is required to land the first implementation; fake transport tests plus repo verification are the blocker.
+
 For hosted providers, prefer provider-specific app passwords or mailbox credentials with the minimum required scope instead of reusing a personal login password.

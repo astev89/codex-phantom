@@ -45,6 +45,8 @@
 
 ## Task 1: Config, Registry, And Readiness Skeleton
 
+Status: completed in `d57e452`, `0158955`, and `4e9c937`.
+
 **Files:**
 
 - Modify: `package.json`
@@ -263,6 +265,8 @@ git commit -m "feat(channels): add email readiness skeleton"
 
 ## Task 2: Email Transport Interfaces And Real Adapters
 
+Status: completed in `a739c4b`, `ac42283`, and `1202399`.
+
 **Files:**
 
 - Create: `src/channels/email-types.ts`
@@ -409,6 +413,8 @@ git commit -m "feat(channels): add email transport adapters"
 
 ## Task 3: Email Channel Polling And Inbound Routing
 
+Status: completed in `2a27506` and `63bad8f`.
+
 **Files:**
 
 - Create: `src/channels/email.ts`
@@ -542,6 +548,8 @@ git commit -m "feat(channels): route inbound email messages"
 
 ## Task 4: SMTP Replies, Retry, And Delivery Audit
 
+Status: completed in `723f264` and `ce8d54c`.
+
 **Files:**
 
 - Modify: `src/channels/email.ts`
@@ -639,6 +647,8 @@ git commit -m "feat(channels): send audited email replies"
 
 ## Task 5: Attachment Metadata And Safe Text Extraction
 
+Status: completed in `a61e437` and `e85443b`.
+
 **Files:**
 
 - Modify: `src/channels/email-types.ts`
@@ -720,6 +730,8 @@ git commit -m "feat(channels): capture safe email attachment metadata"
 ```
 
 ## Task 6: Admin Visibility And Operator Console
+
+Status: completed in `e769750` and `e7b4f44`.
 
 **Files:**
 
@@ -815,7 +827,7 @@ git commit -m "feat(server): surface email channel operations"
 - Modify: `docs/project-status.md`
 - Modify: `docs/superpowers/plans/2026-05-23-email-channel-parity.md` only for checked-off execution notes
 
-- [ ] **Step 1: Document Email setup**
+- [x] **Step 1: Document Email setup**
 
 Document:
 
@@ -829,7 +841,7 @@ Document:
 - operator endpoints for inbound/delivery inspection
 - no real mailbox smoke blocker for first implementation
 
-- [ ] **Step 2: Update parity docs**
+- [x] **Step 2: Update parity docs**
 
 In `docs/phantom-parity.md`:
 
@@ -844,7 +856,7 @@ In `docs/project-status.md`:
 - remove or rewrite P1 Email next task
 - include exact verification commands that passed
 
-- [ ] **Step 3: Run final verification**
+- [x] **Step 3: Run final verification**
 
 Run:
 
@@ -863,7 +875,7 @@ mcp__gitnexus__.detect_changes({ repo: "codex-phantom", scope: "staged" });
 
 Expected: low or expected risk, no surprising affected flows.
 
-- [ ] **Step 4: Commit Task 7**
+- [x] **Step 4: Commit Task 7**
 
 ```bash
 git add docs/channels.md docs/configuration.md docs/phantom-parity.md docs/project-status.md docs/superpowers/plans/2026-05-23-email-channel-parity.md
