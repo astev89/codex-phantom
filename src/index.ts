@@ -1,5 +1,15 @@
 import { loadConfig } from "./config.ts";
 import { SessionStore } from "./chat/session-store.ts";
+import { ChannelDeliveryStore } from "./channels/delivery-log.ts";
+import { EmailChannelService } from "./channels/email.ts";
+import {
+  ImapEmailPollTransport,
+  SmtpEmailSendTransport,
+} from "./channels/email-transports.ts";
+import {
+  InboundChannelEventStore,
+  InboundChannelRouter,
+} from "./channels/inbound.ts";
 import { ChannelRegistry } from "./channels/registry.ts";
 import { MemoryStore } from "./memory/store.ts";
 import { MemoryMaintenanceService } from "./memory/maintenance.ts";
@@ -31,6 +41,8 @@ const metrics = new MetricsStore();
 const database = new AppDatabase(config.datastorePath);
 const sessions = new SessionStore(database);
 const channels = new ChannelRegistry(database, config);
+const channelDeliveries = new ChannelDeliveryStore(database);
+const channelInbound = new InboundChannelEventStore(database);
 const embeddings = new OpenAiEmbeddingService(config);
 const memory = new MemoryStore(database, config, embeddings);
 const memoryMaintenance = new MemoryMaintenanceService(database, memory);
@@ -89,6 +101,11 @@ const orchestration = new OrchestrationService(
   runs,
   rolePolicy
 );
+const inboundRouter = new InboundChannelRouter(
+  channels,
+  channelInbound,
+  orchestration
+);
 const scheduler = new SchedulerService(database, orchestration);
 const mcp = new McpServer(
   config.mcpBearerToken,
@@ -114,6 +131,31 @@ const server = new HttpServer(
   undefined,
   memoryMaintenance
 );
+const email = new EmailChannelService({
+  config,
+  channels,
+  inboundRouter,
+  deliveries: channelDeliveries,
+  pollTransport: new ImapEmailPollTransport({
+    host: config.emailImapHost ?? "",
+    port: config.emailImapPort,
+    secure: config.emailImapTls,
+    auth: {
+      user: config.emailImapUsername ?? "",
+      pass: config.emailImapPassword ?? "",
+    },
+  }),
+  sendTransport: new SmtpEmailSendTransport({
+    host: config.emailSmtpHost ?? "",
+    port: config.emailSmtpPort,
+    secure: config.emailSmtpTls,
+    auth: {
+      user: config.emailSmtpUsername ?? "",
+      pass: config.emailSmtpPassword ?? "",
+    },
+  }),
+  logger,
+});
 
 await memory.backfillEmbeddings();
 await memory.initializeVectorStore();
@@ -121,6 +163,7 @@ await memory.backfillVectors();
 await memoryMaintenance.start();
 await scheduler.start();
 await server.listen();
+await email.start();
 logger.info("server_listening", {
   port: config.port,
   agent: config.agentName,
@@ -129,6 +172,7 @@ logger.info("server_listening", {
 
 const shutdown = async (signal: string): Promise<void> => {
   logger.info("shutdown_requested", { signal });
+  await email.stop();
   await memoryMaintenance.stop();
   await scheduler.stop();
   await server.close();

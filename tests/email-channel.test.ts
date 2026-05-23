@@ -7,11 +7,20 @@ import type {
   EmailSendResult,
   EmailSendTransport,
 } from "../src/channels/email-types.ts";
+import { EmailChannelService } from "../src/channels/email.ts";
 import {
   ImapEmailPollTransport,
   SmtpEmailSendTransport,
   parseEmailMessage,
 } from "../src/channels/email-transports.ts";
+import { ChannelRegistry } from "../src/channels/registry.ts";
+import { ChannelDeliveryStore } from "../src/channels/delivery-log.ts";
+import { AppDatabase } from "../src/platform/database.ts";
+import { Logger } from "../src/platform/logger.ts";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { makeConfig } from "./helpers.ts";
 
 type FakeEmailPollTransport = {
   listUnread(input: {
@@ -78,6 +87,91 @@ class RecordingSendTransport implements FakeEmailSendTransport {
   }
 }
 
+class SpyPollTransport implements FakeEmailPollTransport {
+  readonly seen: string[] = [];
+  readonly listUnreadCalls: Array<{ maxMessages: number; maxBytes: number }> =
+    [];
+  closed = false;
+  private readonly messages: EmailInboundMessage[];
+
+  constructor(messages: EmailInboundMessage[]) {
+    this.messages = messages;
+  }
+
+  async listUnread(input: {
+    maxMessages: number;
+    maxBytes: number;
+  }): Promise<EmailInboundMessage[]> {
+    this.listUnreadCalls.push(input);
+    return this.messages;
+  }
+
+  async markSeen(providerMessageId: string): Promise<void> {
+    this.seen.push(providerMessageId);
+  }
+
+  async close(): Promise<void> {
+    this.closed = true;
+  }
+}
+
+class StubInboundRouter {
+  readonly routed: Array<{
+    channelId: string;
+    providerEventId: string;
+    conversationId: string;
+    senderId?: string;
+    message: string;
+    responseTarget?: unknown;
+    rawPayload: unknown;
+  }> = [];
+  private readonly behavior: "accept" | "duplicate" | "throw";
+
+  constructor(behavior: "accept" | "duplicate" | "throw" = "accept") {
+    this.behavior = behavior;
+  }
+
+  routeAsync(message: {
+    channelId: string;
+    providerEventId: string;
+    conversationId: string;
+    senderId?: string;
+    message: string;
+    responseTarget?: unknown;
+    rawPayload: unknown;
+  }) {
+    this.routed.push(message);
+    if (this.behavior === "throw") {
+      throw new Error("route failed");
+    }
+    return {
+      record: {
+        id: "inbound_123",
+        channelId: message.channelId,
+        providerEventId: message.providerEventId,
+        conversationId: message.conversationId,
+        message: message.message,
+        rawPayload: message.rawPayload,
+        status: this.behavior === "duplicate" ? "completed" : "running",
+        createdAt: "2026-05-22T12:00:00.000Z",
+        updatedAt: "2026-05-22T12:00:00.000Z",
+      },
+      duplicate: this.behavior === "duplicate",
+      completion: Promise.resolve({
+        id: "inbound_123",
+        channelId: message.channelId,
+        providerEventId: message.providerEventId,
+        conversationId: message.conversationId,
+        message: message.message,
+        rawPayload: message.rawPayload,
+        status: "completed",
+        createdAt: "2026-05-22T12:00:00.000Z",
+        updatedAt: "2026-05-22T12:00:00.000Z",
+      }),
+    };
+  }
+}
+
 function makeInboundMessage(
   overrides: Partial<EmailInboundMessage> = {}
 ): EmailInboundMessage {
@@ -101,6 +195,185 @@ function makeInboundMessage(
     ...overrides,
   };
 }
+
+async function withEmailChannelService(
+  options: {
+    configOverrides?: Parameters<typeof makeConfig>[1];
+    channelEnabled?: boolean;
+    messages?: EmailInboundMessage[];
+    routerBehavior?: "accept" | "duplicate" | "throw";
+  },
+  run: (input: {
+    service: EmailChannelService;
+    pollTransport: SpyPollTransport;
+    inboundRouter: StubInboundRouter;
+    channels: ChannelRegistry;
+    database: AppDatabase;
+  }) => Promise<void>
+): Promise<void> {
+  const dataDir = await mkdtemp(join(tmpdir(), "codex-phantom-email-service-"));
+  const config = makeConfig(dataDir, options.configOverrides);
+  const database = new AppDatabase(join(dataDir, "email.sqlite"));
+  const channels = new ChannelRegistry(database, config);
+  const deliveries = new ChannelDeliveryStore(database);
+  const pollTransport = new SpyPollTransport(options.messages ?? []);
+  const sendTransport = new RecordingSendTransport();
+  const inboundRouter = new StubInboundRouter(options.routerBehavior);
+  const service = new EmailChannelService({
+    config,
+    channels,
+    inboundRouter: inboundRouter as never,
+    deliveries,
+    pollTransport,
+    sendTransport,
+    logger: new Logger("error"),
+  });
+
+  try {
+    if (options.channelEnabled) {
+      channels.upsert({ id: "email", enabled: true });
+    }
+    await run({
+      service,
+      pollTransport,
+      inboundRouter,
+      channels,
+      database,
+    });
+  } finally {
+    await service.stop();
+    database.close();
+  }
+}
+
+test("email channel pollOnce processes at most emailPollBatchSize", async () => {
+  await withEmailChannelService(
+    {
+      configOverrides: { emailPollBatchSize: 2, emailMaxMessageBytes: 321 },
+      channelEnabled: true,
+      messages: [
+        makeInboundMessage({ providerMessageId: "provider-1" }),
+        makeInboundMessage({ providerMessageId: "provider-2", uid: "102" }),
+        makeInboundMessage({ providerMessageId: "provider-3", uid: "103" }),
+      ],
+    },
+    async ({ service, pollTransport, inboundRouter }) => {
+      const summary = await service.pollOnce();
+
+      assert.equal(pollTransport.listUnreadCalls.length, 1);
+      assert.deepEqual(pollTransport.listUnreadCalls[0], {
+        maxMessages: 2,
+        maxBytes: 321,
+      });
+      assert.equal(summary.polledCount, 2);
+      assert.equal(summary.acceptedCount, 2);
+      assert.deepEqual(
+        inboundRouter.routed.map((message) => message.providerEventId),
+        ["provider-1", "provider-2"]
+      );
+    }
+  );
+});
+
+test("email channel pollOnce skips auto replies before routing", async () => {
+  await withEmailChannelService(
+    {
+      configOverrides: { emailPollBatchSize: 5 },
+      channelEnabled: true,
+      messages: [
+        makeInboundMessage({
+          providerMessageId: "provider-auto",
+          subject: "Automatic reply: away today",
+          text: "Out of office auto-reply",
+        }),
+        makeInboundMessage({
+          providerMessageId: "provider-real",
+          uid: "102",
+          subject: "Need help",
+          text: "Please help",
+        }),
+      ],
+    },
+    async ({ service, inboundRouter, pollTransport }) => {
+      const summary = await service.pollOnce();
+
+      assert.equal(summary.skippedAutoReplyCount, 1);
+      assert.equal(summary.acceptedCount, 1);
+      assert.deepEqual(
+        inboundRouter.routed.map((message) => message.providerEventId),
+        ["provider-real"]
+      );
+      assert.deepEqual(pollTransport.seen, ["provider-real"]);
+    }
+  );
+});
+
+test("email channel pollOnce routes inbound messages with deterministic reply metadata", async () => {
+  await withEmailChannelService(
+    {
+      channelEnabled: true,
+      messages: [
+        makeInboundMessage({
+          providerMessageId: "provider-thread",
+          thread: {
+            messageId: "<child@example.com>",
+            inReplyTo: "<parent@example.com>",
+            references: ["<root@example.com>", "<parent@example.com>"],
+            normalizedSubject: "status update",
+            fallbackThreadKey: "sender@example.com::status update",
+          },
+        }),
+      ],
+    },
+    async ({ service, inboundRouter }) => {
+      await service.pollOnce();
+
+      assert.equal(inboundRouter.routed.length, 1);
+      assert.equal(
+        inboundRouter.routed[0]?.conversationId,
+        "<root@example.com>"
+      );
+      assert.deepEqual(inboundRouter.routed[0]?.responseTarget, {
+        type: "email_reply",
+        to: "sender@example.com",
+        subject: "Status Update",
+        messageId: "<child@example.com>",
+        references: ["<root@example.com>", "<parent@example.com>"],
+        fromMessageProviderId: "provider-thread",
+      });
+    }
+  );
+});
+
+test("email channel pollOnce marks messages seen only after accept or dedupe", async () => {
+  await withEmailChannelService(
+    {
+      channelEnabled: true,
+      routerBehavior: "duplicate",
+      messages: [makeInboundMessage({ providerMessageId: "provider-dup" })],
+    },
+    async ({ service, pollTransport }) => {
+      const summary = await service.pollOnce();
+
+      assert.equal(summary.duplicateCount, 1);
+      assert.deepEqual(pollTransport.seen, ["provider-dup"]);
+    }
+  );
+});
+
+test("email channel pollOnce leaves messages unseen when route accept fails", async () => {
+  await withEmailChannelService(
+    {
+      channelEnabled: true,
+      routerBehavior: "throw",
+      messages: [makeInboundMessage({ providerMessageId: "provider-fail" })],
+    },
+    async ({ service, pollTransport }) => {
+      await assert.rejects(() => service.pollOnce(), /route failed/);
+      assert.deepEqual(pollTransport.seen, []);
+    }
+  );
+});
 
 test("fake email poll transport matches the channel polling contract", async () => {
   const transport = new RecordingPollTransport([

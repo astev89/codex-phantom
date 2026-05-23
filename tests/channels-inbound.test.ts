@@ -378,6 +378,46 @@ test("inbound event store records lifecycle states and dedupes provider events",
   }
 });
 
+test("inbound event store preserves email reply response targets", async () => {
+  const dataDir = await mkdtemp(
+    join(tmpdir(), "codex-phantom-inbound-email-reply-")
+  );
+  const config = makeConfig(dataDir);
+  const database = new AppDatabase(join(dataDir, "email-reply.sqlite"));
+  const store = new InboundChannelEventStore(database);
+
+  try {
+    const recorded = store.recordReceived({
+      channelId: "email",
+      providerEventId: "provider-email-1",
+      conversationId: "<root@example.com>",
+      senderId: "sender@example.com",
+      message: "hello from email",
+      responseTarget: {
+        type: "email_reply",
+        to: "sender@example.com",
+        subject: "Status Update",
+        messageId: "<child@example.com>",
+        references: ["<root@example.com>", "<parent@example.com>"],
+        fromMessageProviderId: "provider-email-1",
+      },
+      rawPayload: { providerMessageId: "provider-email-1" },
+    });
+    const stored = store.get(recorded.record.id);
+
+    assert.deepEqual(stored?.responseTarget, {
+      type: "email_reply",
+      to: "sender@example.com",
+      subject: "Status Update",
+      messageId: "<child@example.com>",
+      references: ["<root@example.com>", "<parent@example.com>"],
+      fromMessageProviderId: "provider-email-1",
+    });
+  } finally {
+    database.close();
+  }
+});
+
 test("slack channel supports message updates, reactions, and block payloads", async () => {
   const dataDir = await mkdtemp(
     join(tmpdir(), "codex-phantom-slack-transport-")
