@@ -300,6 +300,115 @@ test("imap poll transport bounds unread fetches and marks messages seen", async 
   assert.equal(logoutCount, 1);
 });
 
+test("imap markSeen retains providerMessageId mappings across poll cycles", async () => {
+  const rawMessages = new Map<number, Buffer>([
+    [
+      101,
+      Buffer.from(
+        [
+          "From: Sender <sender@example.com>",
+          "To: Bot <bot@example.com>",
+          "Subject: First",
+          "Message-ID: <first@example.com>",
+          "Date: Thu, 22 May 2026 12:34:56 +0000",
+          "",
+          "First body",
+          "",
+        ].join("\r\n"),
+        "utf8"
+      ),
+    ],
+    [
+      102,
+      Buffer.from(
+        [
+          "From: Sender <sender@example.com>",
+          "To: Bot <bot@example.com>",
+          "Subject: Second",
+          "Message-ID: <second@example.com>",
+          "Date: Thu, 22 May 2026 12:35:56 +0000",
+          "",
+          "Second body",
+          "",
+        ].join("\r\n"),
+        "utf8"
+      ),
+    ],
+  ]);
+  const seenFlags: Array<{ uid: string; flags: string[]; uidMode?: boolean }> =
+    [];
+  let searchCallCount = 0;
+
+  const transport = new ImapEmailPollTransport(
+    {
+      host: "imap.example.com",
+      port: 993,
+      secure: true,
+      auth: { user: "bot@example.com", pass: "secret" },
+      mailbox: "INBOX",
+    },
+    {
+      createClient() {
+        return {
+          async connect() {
+            return;
+          },
+          async getMailboxLock() {
+            return { release() {} };
+          },
+          async search() {
+            searchCallCount += 1;
+            return searchCallCount === 1 ? [101] : [102];
+          },
+          async fetchOne(
+            uid: string,
+            query: { source?: { maxLength?: number } }
+          ) {
+            const numericUid = Number(uid);
+            const raw = rawMessages.get(numericUid);
+            assert.ok(raw);
+            return {
+              uid: numericUid,
+              size: raw.length,
+              source: raw.subarray(0, query.source?.maxLength ?? raw.length),
+            };
+          },
+          async messageFlagsAdd(
+            uid: string,
+            flags: string[],
+            options?: { uid?: boolean }
+          ) {
+            seenFlags.push({ uid, flags, uidMode: options?.uid });
+            return true;
+          },
+          async logout() {
+            return;
+          },
+        };
+      },
+    }
+  );
+
+  const firstUnread = await transport.listUnread({
+    maxMessages: 1,
+    maxBytes: 1024,
+  });
+  const secondUnread = await transport.listUnread({
+    maxMessages: 1,
+    maxBytes: 1024,
+  });
+
+  assert.equal(firstUnread[0]?.providerMessageId, "<first@example.com>");
+  assert.equal(secondUnread[0]?.providerMessageId, "<second@example.com>");
+
+  await transport.markSeen("<first@example.com>");
+  await transport.close();
+
+  assert.deepEqual(seenFlags, [
+    { uid: "101", flags: ["\\Seen"], uidMode: true },
+  ]);
+});
+
 test("smtp send transport maps send input onto the provider transport", async () => {
   const sentMessages: Array<Record<string, unknown>> = [];
   let closeCount = 0;

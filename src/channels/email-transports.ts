@@ -171,7 +171,6 @@ export class ImapEmailPollTransport implements EmailPollTransport {
         .slice(-maxMessages)
         .reverse();
       const messages: EmailInboundMessage[] = [];
-      this.providerMessageIdsToUids.clear();
 
       for (const uid of selectedUids) {
         const fetched = await client.fetchOne(
@@ -217,6 +216,7 @@ export class ImapEmailPollTransport implements EmailPollTransport {
 
     try {
       await client.messageFlagsAdd(resolvedUid, ["\\Seen"], { uid: true });
+      this.providerMessageIdsToUids.delete(providerMessageId);
     } finally {
       lock.release();
     }
