@@ -101,8 +101,8 @@ export function buildStartupDiagnostics(
   const emailChannel = channels.find((channel) => channel.id === "email");
   const emailDiagnostics = emailChannel
     ? {
-        enabled: emailStatus?.enabled ?? emailChannel.enabled,
-        running: emailStatus?.running ?? false,
+        enabled: emailChannel.enabled,
+        running: emailChannel.enabled ? (emailStatus?.running ?? false) : false,
         configComplete:
           emailStatus?.configComplete ?? emailConfigComplete(config),
         ...(emailStatus?.lastPollAt

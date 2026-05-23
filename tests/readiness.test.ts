@@ -180,6 +180,54 @@ test("enabled email treats blank required config as missing", () => {
   }
 });
 
+test("email diagnostics treat registry enabled state as authoritative over provider cache", () => {
+  const dataDir = mkdtempSync(
+    join(tmpdir(), "codex-phantom-email-diagnostics-")
+  );
+  const config = makeConfig(dataDir);
+  const database = new AppDatabase(join(dataDir, "diagnostics.sqlite"));
+  const channels = new ChannelRegistry(database, config);
+
+  try {
+    const diagnostics = buildStartupDiagnostics(
+      config,
+      memoryStatus,
+      channels.list(),
+      {
+        enabled: true,
+        running: true,
+        configComplete: true,
+        lastPollAt: "2026-05-23T16:00:00.000Z",
+        lastError: "cached failure",
+        lastSummary: {
+          polledCount: 3,
+          acceptedCount: 2,
+          duplicateCount: 0,
+          skippedAutoReplyCount: 1,
+        },
+      },
+      []
+    );
+
+    assert.deepEqual(diagnostics.email, {
+      enabled: false,
+      running: false,
+      configComplete: true,
+      lastPollAt: "2026-05-23T16:00:00.000Z",
+      lastError: "cached failure",
+      lastSummary: {
+        polledCount: 3,
+        acceptedCount: 2,
+        duplicateCount: 0,
+        skippedAutoReplyCount: 1,
+      },
+      recentDeliveryFailures: [],
+    });
+  } finally {
+    database.close();
+  }
+});
+
 test("operator readiness uses operator YAML required channels and validates role YAML", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "codex-phantom-readiness-"));
   const roleConfigPath = join(dataDir, "roles.yaml");
