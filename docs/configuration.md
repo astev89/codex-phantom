@@ -33,6 +33,23 @@
 | `SLACK_APP_TOKEN`              | unset                                            | optional                 | Reserved for future Slack app-level flows.                                                       |
 | `SLACK_SIGNING_SECRET`         | unset                                            | optional                 | Required for `POST /channels/slack/events`.                                                      |
 | `SLACK_BOT_USER_ID`            | unset                                            | optional                 | Bot user id used to strip `<@bot>` mentions and ignore self-authored Slack events.               |
+| `EMAIL_IMAP_HOST`              | unset                                            | optional                 | Required with the other Email vars only when the Email channel is enabled.                       |
+| `EMAIL_IMAP_PORT`              | `993`                                            | optional                 | Positive integer IMAP port. Defaults to the TLS IMAP port.                                       |
+| `EMAIL_IMAP_USERNAME`          | unset                                            | optional                 | Mailbox username for bounded inbound polling.                                                    |
+| `EMAIL_IMAP_PASSWORD`          | unset                                            | optional                 | Mailbox password or provider app password for IMAP auth.                                         |
+| `EMAIL_IMAP_TLS`               | `true`                                           | optional                 | Set `false` only for providers that require plaintext IMAP on a trusted network.                 |
+| `EMAIL_SMTP_HOST`              | unset                                            | optional                 | Required with the other Email vars only when the Email channel is enabled.                       |
+| `EMAIL_SMTP_PORT`              | `587`                                            | optional                 | Positive integer SMTP port. Defaults to STARTTLS-friendly submission.                            |
+| `EMAIL_SMTP_USERNAME`          | unset                                            | optional                 | SMTP username for threaded agent replies.                                                        |
+| `EMAIL_SMTP_PASSWORD`          | unset                                            | optional                 | SMTP password or provider app password.                                                          |
+| `EMAIL_SMTP_TLS`               | `true`                                           | optional                 | Set `false` only for providers that require plaintext SMTP on a trusted network.                 |
+| `EMAIL_FROM_ADDRESS`           | unset                                            | optional                 | Required sender address for agent replies when Email is enabled.                                 |
+| `EMAIL_FROM_NAME`              | `AGENT_NAME`                                     | optional                 | Display name for outbound replies. Defaults to the configured agent name.                        |
+| `EMAIL_POLL_INTERVAL_MS`       | `30000`                                          | optional                 | Positive integer bounded polling interval for unread mail checks.                                |
+| `EMAIL_POLL_BATCH_SIZE`        | `10`                                             | optional                 | Positive integer cap for each IMAP poll batch.                                                   |
+| `EMAIL_MAX_MESSAGE_BYTES`      | `1048576`                                        | optional                 | Positive integer cap for accepted raw message size.                                              |
+| `EMAIL_MAX_ATTACHMENT_BYTES`   | `200000`                                         | optional                 | Positive integer cap for attachment text extraction and metadata indexing.                       |
+| `EMAIL_SEND_TIMEOUT_MS`        | `10000`                                          | optional                 | Positive integer timeout for outbound SMTP sends.                                                |
 | `MEMORY_EMBEDDING_BATCH_SIZE`  | `8`                                              | optional                 | Positive integer batch size for embedding backfills.                                             |
 | `MEMORY_TOP_K`                 | `12`                                             | optional                 | Positive integer semantic retrieval result count.                                                |
 | `MEMORY_PER_CATEGORY_LIMIT`    | `3`                                              | optional                 | Positive integer category cap for memory query responses.                                        |
@@ -45,3 +62,19 @@
 ## Failure Behavior
 
 Startup fails fast when integer fields are non-positive, role/config paths are blank, required secrets are blank, `QDRANT_ENABLED=true` lacks `QDRANT_URL`, production lacks `OPENAI_API_KEY`, or production/default-secret rejection finds `replace-me` or development defaults.
+
+## Email Channel Notes
+
+The Email channel is present in the runtime registry but disabled by default. Enabling it requires a complete IMAP and SMTP configuration together: `EMAIL_IMAP_HOST`, `EMAIL_IMAP_USERNAME`, `EMAIL_IMAP_PASSWORD`, `EMAIL_SMTP_HOST`, `EMAIL_SMTP_USERNAME`, `EMAIL_SMTP_PASSWORD`, and `EMAIL_FROM_ADDRESS`.
+
+This parity slice is intentionally bounded. Polling uses `EMAIL_POLL_INTERVAL_MS` and `EMAIL_POLL_BATCH_SIZE` rather than a long-lived IMAP IDLE session, and message or attachment processing is capped by `EMAIL_MAX_MESSAGE_BYTES` and `EMAIL_MAX_ATTACHMENT_BYTES`.
+
+The mailbox must support both IMAP unread polling and SMTP submission for the runtime identity, and the IMAP side must be allowed to mark accepted or deduped messages seen. There is no inbound-only or outbound-only mode in this slice: whitespace-only values are treated as missing and partial Email config keeps the channel unavailable when enabled.
+
+Attachment handling is metadata-first. Text-like attachments under `EMAIL_MAX_ATTACHMENT_BYTES` can expose bounded `indexedText`; oversized attachments record `skippedReason: "too_large"` and unsupported or binary attachments record `skippedReason: "unsupported_content_type"`.
+
+SMTP delivery uses protocol-aware retries. Transient `4xx` response codes and retryable transport errors are retried up to three total attempts, while permanent `5xx` failures stop without retry. Delivery failures are visible through `GET /admin/channels/deliveries?channelId=email` and do not retroactively fail an already-completed inbound run.
+
+Operators can inspect inbound Email acceptance and dedupe state through `GET /admin/channels/inbound?channelId=email` and summary diagnostics through `/admin/summary`. No real mailbox smoke test is required to land the first implementation; fake transport tests plus repo verification are the blocker.
+
+For hosted providers, prefer provider-specific app passwords or mailbox credentials with the minimum required scope instead of reusing a personal login password.

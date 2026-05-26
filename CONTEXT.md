@@ -44,6 +44,18 @@ _Avoid_: Telegram parity
 Matching Phantom's built-in email channel capability with production-safe IMAP/SMTP configuration, inbound thread routing, outbound replies, attachment handling, auth boundaries, audit, and operator visibility.
 _Avoid_: Newsletter feature, generic email notifications
 
+**First-class runtime channel**:
+An enabled channel that participates in runtime startup, readiness, inbound routing, outbound delivery, audit, and operator visibility.
+_Avoid_: Manual-only integration, notification helper
+
+**Email thread identity**:
+The conversation identity for an email exchange, derived from RFC message threading headers when available and from sender plus normalized subject only as a fallback.
+_Avoid_: Subject-only thread, mailbox folder identity
+
+**Email attachment parity**:
+Attachment-aware email handling that records attachment metadata and only ingests safe bounded content through audited storage/indexing paths.
+_Avoid_: Unbounded mailbox ingestion, opaque binary hoarding
+
 **Production-safe feature**:
 A parity feature with auth boundaries, bounded inputs, auditability, operator visibility, recovery behavior, failure isolation, and verification evidence.
 _Avoid_: Implemented feature, feature complete
@@ -68,6 +80,10 @@ _Avoid_: Implemented feature, feature complete
 - **Channel parity** is part of **Production-level parity**.
 - **Channel parity** explicitly excludes Telegram and defaults future discovered Phantom channels to in scope unless carved out.
 - **Email channel parity** is part of **Channel parity** because Phantom ships a built-in Email channel.
+- **Email channel parity** requires Email to be a **First-class runtime channel**, not a manual-only SMTP notifier.
+- **Email channel parity** treats inbound IMAP and outbound SMTP as one all-or-nothing enabled capability; partial inbound-only or outbound-only modes are not parity-complete.
+- **Email thread identity** uses message headers first so replies remain attached to the correct exchange across subject edits and multi-party threads.
+- **Email attachment parity** prioritizes metadata and safe bounded text extraction before raw binary storage or outbound attachment generation.
 - **Production-level parity** backlog order is **Production proof**, **Slack parity**, **Operator onboarding parity**, **Managed memory parity**, **Governed self-evolution**, **Internal tool parity**, artifact intelligence, then newly discovered non-Telegram **Channel parity** gaps.
 - Every feature counted toward **Production-level parity** must be a **Production-safe feature**.
 
@@ -103,6 +119,18 @@ _Avoid_: Implemented feature, feature complete
 > **Dev:** "Does Phantom's built-in Email channel count?"
 > **Domain expert:** "Yes — **Email channel parity** is in scope because Phantom ships email as a first-class channel. Implement it with production-safe IMAP/SMTP boundaries."
 >
+> **Dev:** "Can Email parity just send SMTP notifications?"
+> **Domain expert:** "No — **Email channel parity** requires a **First-class runtime channel** with inbound routing, replies, audit, readiness, and operator visibility."
+>
+> **Dev:** "Can we enable Email with only SMTP configured?"
+> **Domain expert:** "No — **Email channel parity** is all-or-nothing: an enabled Email channel must have both IMAP inbound and SMTP outbound configured."
+>
+> **Dev:** "Can we group Email conversations by subject?"
+> **Domain expert:** "Only as a fallback — **Email thread identity** should use Message-ID, In-Reply-To, and References when those headers are present."
+>
+> **Dev:** "Does Email parity mean storing every attachment?"
+> **Domain expert:** "No — **Email attachment parity** means metadata plus safe bounded ingestion; binaries can be skipped with an auditable reason unless a concrete workflow needs them."
+>
 > **Dev:** "Should memory work happen before Slack parity?"
 > **Domain expert:** "No — after **Production proof**, prioritize **Slack parity**, then **Operator onboarding parity**, then **Managed memory parity**."
 >
@@ -121,3 +149,7 @@ _Avoid_: Implemented feature, feature complete
 - "Docker smoke" was mixed into parity work; resolved: classify it as **Production proof**, not a Phantom feature gap.
 - "channel parity" previously meant webhook and Slack only; resolved: all Phantom channels are in scope except Telegram unless explicitly carved out.
 - "Email" was discovered during the non-Telegram channel recompare; resolved: Phantom ships it as a built-in channel, so it is in scope for **Channel parity**.
+- "Email channel" could mean SMTP-only notifications; resolved: **Email channel parity** requires a **First-class runtime channel** with IMAP inbound and SMTP outbound.
+- "Enabled Email" could mean inbound-only or outbound-only operation; resolved: **Email channel parity** requires both IMAP and SMTP when enabled.
+- "Email thread" could mean a subject line or a provider mailbox thread; resolved: **Email thread identity** is header-first with sender plus normalized subject as fallback.
+- "Email attachments" could mean storing all mailbox binaries; resolved: **Email attachment parity** is metadata-first with safe bounded content ingestion.

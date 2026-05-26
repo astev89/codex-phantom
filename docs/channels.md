@@ -149,3 +149,51 @@ Selected `reaction_added` events are also treated as feedback when the reaction 
 - negative: `thumbsdown`, `x`, `warning`
 
 If the reaction does not target a known response/progress message, normal Slack reaction routing still applies and can trigger a coordinator run.
+
+## Email Channel
+
+Operators must enable the `email` channel before `codex-phantom` polls a mailbox or sends threaded Email replies. Email is disabled by default and this parity slice is intentionally all-or-nothing: enabling the channel requires a complete IMAP and SMTP configuration together.
+
+Provider mailbox expectations:
+
+- the mailbox must support IMAP unread polling and SMTP submission for the same runtime identity;
+- the configured mailbox should have permission to mark messages seen after durable accept or dedupe succeeds;
+- provider app passwords or scoped mailbox credentials are preferred over reusing a personal login password.
+
+Required environment variables when Email is enabled:
+
+- `EMAIL_IMAP_HOST`
+- `EMAIL_IMAP_USERNAME`
+- `EMAIL_IMAP_PASSWORD`
+- `EMAIL_SMTP_HOST`
+- `EMAIL_SMTP_USERNAME`
+- `EMAIL_SMTP_PASSWORD`
+- `EMAIL_FROM_ADDRESS`
+
+Useful optional variables:
+
+- `EMAIL_IMAP_PORT`
+- `EMAIL_IMAP_TLS`
+- `EMAIL_SMTP_PORT`
+- `EMAIL_SMTP_TLS`
+- `EMAIL_FROM_NAME`
+- `EMAIL_POLL_INTERVAL_MS`
+- `EMAIL_POLL_BATCH_SIZE`
+- `EMAIL_MAX_MESSAGE_BYTES`
+- `EMAIL_MAX_ATTACHMENT_BYTES`
+- `EMAIL_SEND_TIMEOUT_MS`
+
+Bounded Email behavior:
+
+- polling uses `EMAIL_POLL_INTERVAL_MS` and `EMAIL_POLL_BATCH_SIZE`;
+- per-message raw size acceptance is capped by `EMAIL_MAX_MESSAGE_BYTES`;
+- attachment metadata is captured without storing raw mailbox blobs in SQLite;
+- text-like attachments under `EMAIL_MAX_ATTACHMENT_BYTES` can include bounded `indexedText` metadata;
+- oversized attachments record `skippedReason: "too_large"`;
+- unsupported or binary attachments record `skippedReason: "unsupported_content_type"`.
+
+Inbound Email is normalized through the same router and audit path as other channels. Operators can inspect Email activity through `GET /admin/channels/inbound?channelId=email`, `GET /admin/channels/deliveries?channelId=email`, and `/admin/summary`.
+
+Outbound Email replies use SMTP-native retry behavior. Transient `4xx` `responseCode` failures and retryable transport errors are retried up to three total attempts; permanent `5xx` failures stop immediately. Final delivery outcomes are audited under channel `email`, and a delivery failure does not turn a completed inbound run into a failed run.
+
+This first implementation does not require a real mailbox smoke test to land. Fake IMAP/SMTP transport coverage and repo verification are the release gate for the parity slice; live mailbox smoke can follow as operator polish when provider credentials are available.

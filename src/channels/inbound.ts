@@ -15,6 +15,14 @@ export type InboundResponseTarget =
       channel: string;
       threadTs: string;
       messageTs?: string;
+    }
+  | {
+      type: "email_reply";
+      to: string;
+      subject: string;
+      messageId?: string;
+      references: string[];
+      fromMessageProviderId: string;
     };
 
 export type InboundChannelMessage = {

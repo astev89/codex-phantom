@@ -1,87 +1,98 @@
 ---
 name: server
-description: "Skill for the Server area of codex-phantom. 33 symbols across 9 files."
+description: "Skill for the Server area of codex-phantom. 165 symbols across 34 files."
 ---
 
 # Server
 
-33 symbols | 9 files | Cohesion: 80%
+165 symbols | 34 files | Cohesion: 83%
 
 ## When to Use
 
 - Working with code in `src/`
-- Understanding how modelAdapterMode, parseJsonBody, renderOperatorConsole work
+- Understanding how validateSlackRequest, validateWebhookSecret, renderChatApp work
 - Modifying server-related functionality
 
 ## Key Files
 
-| File | Symbols |
-|------|---------|
-| `src/server/validation.ts` | parseJsonBody, HttpError, validateChatBody, validateWebhookBody, validateScheduleBody (+9) |
-| `src/server/http-server.ts` | constructor, handle, emit, json, readTextBody (+2) |
-| `src/platform/metrics.ts` | increment, observe, snapshot |
-| `src/server/ui.ts` | renderOperatorConsole, escapeHtml |
-| `src/scheduler/service.ts` | isRunning, stop |
-| `src/platform/database.ts` | isReady, close |
-| `src/config.ts` | modelAdapterMode |
-| `src/channels/webhook.ts` | validateWebhookSecret |
-| `src/index.ts` | shutdown |
+| File                                   | Symbols                                                                                         |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `src/server/http-server.ts`            | handle, buildExportPayload, json, buildAutoTitle, readTextBody (+35)                            |
+| `src/server/validation.ts`             | HttpError, parseJsonBody, validateChatBody, validateChatArtifactBody, validateWebhookBody (+29) |
+| `src/server/readiness.ts`              | buildSetupReadiness, secretChecks, secretCheck, storageChecks, roleConfigChecks (+11)           |
+| `src/chat/attachment-text-index.ts`    | listForSession, list, search, toIndexRecord, toSearchResult (+2)                                |
+| `src/self-evolution/proposals.ts`      | list, summary, listMutations, get, toProposalRecord                                             |
+| `src/memory/store.ts`                  | listEntries, getEntry, listLifecycleLinks, toMemoryEntry                                        |
+| `src/orchestration/run-graph-store.ts` | list, listChildren, listEvents, toRunNode                                                       |
+| `src/platform/metrics.ts`              | observe, snapshot, toPrometheus, prometheusName                                                 |
+| `src/tools/bundles.ts`                 | list, summary, listAudit, listByLifecycle                                                       |
+| `src/server/settings.ts`               | get, update, normalizeSettings, clampInteger                                                    |
 
 ## Entry Points
 
 Start here when exploring this area:
 
-- **`modelAdapterMode`** (Function) — `src/config.ts:82`
-- **`parseJsonBody`** (Function) — `src/server/validation.ts:40`
-- **`renderOperatorConsole`** (Function) — `src/server/ui.ts:0`
-- **`escapeHtml`** (Function) — `src/server/ui.ts:156`
-- **`emit`** (Function) — `src/server/http-server.ts:122`
+- **`validateSlackRequest`** (Function) — `src/channels/slack-events.ts:13`
+- **`validateWebhookSecret`** (Function) — `src/channels/webhook.ts:11`
+- **`renderChatApp`** (Function) — `src/server/chat-ui.ts:0`
+- **`escapeHtml`** (Function) — `src/server/chat-ui.ts:455`
+- **`toScriptJson`** (Function) — `src/server/chat-ui.ts:465`
 
 ## Key Symbols
 
-| Symbol | Type | File | Line |
-|--------|------|------|------|
-| `HttpError` | Class | `src/server/validation.ts` | 3 |
-| `modelAdapterMode` | Function | `src/config.ts` | 82 |
-| `parseJsonBody` | Function | `src/server/validation.ts` | 40 |
-| `renderOperatorConsole` | Function | `src/server/ui.ts` | 0 |
-| `escapeHtml` | Function | `src/server/ui.ts` | 156 |
-| `emit` | Function | `src/server/http-server.ts` | 122 |
-| `validateWebhookSecret` | Function | `src/channels/webhook.ts` | 8 |
-| `validateChatBody` | Function | `src/server/validation.ts` | 52 |
-| `validateWebhookBody` | Function | `src/server/validation.ts` | 64 |
-| `validateScheduleBody` | Function | `src/server/validation.ts` | 72 |
-| `validateMcpBody` | Function | `src/server/validation.ts` | 90 |
-| `constructor` | Method | `src/server/http-server.ts` | 38 |
-| `handle` | Method | `src/server/http-server.ts` | 78 |
-| `json` | Method | `src/server/http-server.ts` | 237 |
-| `isRunning` | Method | `src/scheduler/service.ts` | 70 |
-| `increment` | Method | `src/platform/metrics.ts` | 9 |
-| `observe` | Method | `src/platform/metrics.ts` | 13 |
-| `snapshot` | Method | `src/platform/metrics.ts` | 20 |
-| `isReady` | Method | `src/platform/database.ts` | 17 |
-| `close` | Method | `src/server/http-server.ts` | 72 |
+| Symbol                     | Type     | File                           | Line |
+| -------------------------- | -------- | ------------------------------ | ---- |
+| `ChatWireEventBuilder`     | Class    | `src/chat/wire-events.ts`      | 22   |
+| `HttpError`                | Class    | `src/server/validation.ts`     | 8    |
+| `HttpServer`               | Class    | `src/server/http-server.ts`    | 105  |
+| `validateSlackRequest`     | Function | `src/channels/slack-events.ts` | 13   |
+| `validateWebhookSecret`    | Function | `src/channels/webhook.ts`      | 11   |
+| `renderChatApp`            | Function | `src/server/chat-ui.ts`        | 0    |
+| `escapeHtml`               | Function | `src/server/chat-ui.ts`        | 455  |
+| `toScriptJson`             | Function | `src/server/chat-ui.ts`        | 465  |
+| `buildJsonExport`          | Function | `src/server/export.ts`         | 33   |
+| `buildNdjsonExport`        | Function | `src/server/export.ts`         | 48   |
+| `buildOperatorExport`      | Function | `src/server/export.ts`         | 63   |
+| `renderOperatorConsole`    | Function | `src/server/ui.ts`             | 0    |
+| `escapeHtml`               | Function | `src/server/ui.ts`             | 320  |
+| `parseJsonBody`            | Function | `src/server/validation.ts`     | 112  |
+| `validateChatBody`         | Function | `src/server/validation.ts`     | 124  |
+| `validateChatArtifactBody` | Function | `src/server/validation.ts`     | 138  |
+| `validateWebhookBody`      | Function | `src/server/validation.ts`     | 165  |
+| `validateScheduleBody`     | Function | `src/server/validation.ts`     | 173  |
+| `validateMcpBody`          | Function | `src/server/validation.ts`     | 195  |
+| `validateDynamicToolBody`  | Function | `src/server/validation.ts`     | 205  |
 
 ## Execution Flows
 
-| Flow | Type | Steps |
-|------|------|-------|
-| `Constructor → EscapeHtml` | intra_community | 4 |
-| `Constructor → Json` | intra_community | 3 |
-| `Constructor → IsReady` | intra_community | 3 |
-| `Constructor → IsRunning` | intra_community | 3 |
+| Flow                                | Type            | Steps |
+| ----------------------------------- | --------------- | ----- |
+| `Constructor → HashToken`           | cross_community | 6     |
+| `OnFailure → HttpError`             | cross_community | 6     |
+| `Timer → All`                       | cross_community | 6     |
+| `Emit → IsSafeExtractedContentType` | cross_community | 6     |
+| `OnEvent → HttpError`               | cross_community | 6     |
+| `BuildExportPayload → All`          | cross_community | 5     |
+| `OnComplete → HttpError`            | cross_community | 5     |
+| `RunAsync → All`                    | cross_community | 5     |
+| `Completed → HttpError`             | cross_community | 5     |
+| `Reject → DecodeJson`               | cross_community | 5     |
 
 ## Connected Areas
 
-| Area | Connections |
-|------|-------------|
-| Orchestration | 6 calls |
-| Scheduler | 1 calls |
-| Memory | 1 calls |
-| Tools | 1 calls |
+| Area           | Connections |
+| -------------- | ----------- |
+| Memory         | 36 calls    |
+| Channels       | 16 calls    |
+| Tools          | 15 calls    |
+| Agent          | 8 calls     |
+| Orchestration  | 5 calls     |
+| Scheduler      | 3 calls     |
+| Self-evolution | 3 calls     |
+| Chat           | 3 calls     |
 
 ## How to Explore
 
-1. `gitnexus_context({name: "modelAdapterMode"})` — see callers and callees
+1. `gitnexus_context({name: "validateSlackRequest"})` — see callers and callees
 2. `gitnexus_query({query: "server"})` — find related execution flows
 3. Read key files listed above for implementation details

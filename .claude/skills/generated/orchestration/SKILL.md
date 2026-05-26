@@ -1,90 +1,90 @@
 ---
 name: orchestration
-description: "Skill for the Orchestration area of codex-phantom. 32 symbols across 7 files."
+description: "Skill for the Orchestration area of codex-phantom. 20 symbols across 6 files."
 ---
 
 # Orchestration
 
-32 symbols | 7 files | Cohesion: 63%
+20 symbols | 6 files | Cohesion: 81%
 
 ## When to Use
 
 - Working with code in `src/`
-- Understanding how decodeJson, defaultPolicyForRole, buildScopedPolicy work
+- Understanding how compiledRolePolicyConfig, loadRolePolicyConfig, compiledRoleBaselines work
 - Modifying orchestration-related functionality
 
 ## Key Files
 
-| File | Symbols |
-|------|---------|
-| `src/orchestration/run-graph-store.ts` | list, listChildren, listEvents, toRunNode, get (+3) |
-| `src/memory/store.ts` | backfillVectors, syncRowsToPrimary, hasSimilarMemory, normalizeText, dedupeStrings (+1) |
-| `src/orchestration/roles.ts` | intersect, intersectFileGlobs, narrowMode, defaultPolicyForRole, buildScopedPolicy |
-| `src/platform/database.ts` | all, decodeJson, get, toJsonValue |
-| `src/chat/session-store.ts` | list, get, toSessionRecord |
-| `src/tools/registry.ts` | unregisterDynamic, has, listForRole |
-| `src/orchestration/service.ts` | runCoordinator, spawnSubagent, emit |
+| File                                   | Symbols                                                                                     |
+| -------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `src/orchestration/role-config.ts`     | compiledRolePolicyConfig, loadRolePolicyConfig, parsePolicy, recordValue, stringValue (+1)  |
+| `src/orchestration/roles.ts`           | compiledRoleBaselines, intersect, intersectFileGlobs, narrowMode, defaultPolicyForRole (+1) |
+| `src/orchestration/service.ts`         | constructor, runCoordinator, spawnSubagent                                                  |
+| `src/orchestration/run-graph-store.ts` | get, appendChildRun, upsert                                                                 |
+| `src/server/http-server.ts`            | requireSessionRun                                                                           |
+| `src/tools/registry.ts`                | listForRole                                                                                 |
 
 ## Entry Points
 
 Start here when exploring this area:
 
-- **`decodeJson`** (Function) — `src/platform/database.ts:172`
-- **`defaultPolicyForRole`** (Function) — `src/orchestration/roles.ts:64`
-- **`buildScopedPolicy`** (Function) — `src/orchestration/roles.ts:68`
-- **`emit`** (Function) — `src/orchestration/service.ts:63`
-- **`toJsonValue`** (Function) — `src/platform/database.ts:184`
+- **`compiledRolePolicyConfig`** (Function) — `src/orchestration/role-config.ts:26`
+- **`loadRolePolicyConfig`** (Function) — `src/orchestration/role-config.ts:38`
+- **`compiledRoleBaselines`** (Function) — `src/orchestration/roles.ts:69`
+- **`defaultPolicyForRole`** (Function) — `src/orchestration/roles.ts:73`
+- **`buildScopedPolicy`** (Function) — `src/orchestration/roles.ts:80`
 
 ## Key Symbols
 
-| Symbol | Type | File | Line |
-|--------|------|------|------|
-| `decodeJson` | Function | `src/platform/database.ts` | 172 |
-| `defaultPolicyForRole` | Function | `src/orchestration/roles.ts` | 64 |
-| `buildScopedPolicy` | Function | `src/orchestration/roles.ts` | 68 |
-| `emit` | Function | `src/orchestration/service.ts` | 63 |
-| `toJsonValue` | Function | `src/platform/database.ts` | 184 |
-| `list` | Method | `src/orchestration/run-graph-store.ts` | 38 |
-| `listChildren` | Method | `src/orchestration/run-graph-store.ts` | 49 |
-| `listEvents` | Method | `src/orchestration/run-graph-store.ts` | 129 |
-| `backfillVectors` | Method | `src/memory/store.ts` | 234 |
-| `syncRowsToPrimary` | Method | `src/memory/store.ts` | 511 |
-| `list` | Method | `src/chat/session-store.ts` | 24 |
-| `get` | Method | `src/chat/session-store.ts` | 30 |
-| `all` | Method | `src/platform/database.ts` | 37 |
-| `unregisterDynamic` | Method | `src/tools/registry.ts` | 25 |
-| `has` | Method | `src/tools/registry.ts` | 56 |
-| `hasSimilarMemory` | Method | `src/memory/store.ts` | 522 |
-| `listForRole` | Method | `src/tools/registry.ts` | 38 |
-| `runCoordinator` | Method | `src/orchestration/service.ts` | 31 |
-| `spawnSubagent` | Method | `src/orchestration/service.ts` | 129 |
-| `get` | Method | `src/orchestration/run-graph-store.ts` | 44 |
+| Symbol                     | Type     | File                                   | Line |
+| -------------------------- | -------- | -------------------------------------- | ---- |
+| `compiledRolePolicyConfig` | Function | `src/orchestration/role-config.ts`     | 26   |
+| `loadRolePolicyConfig`     | Function | `src/orchestration/role-config.ts`     | 38   |
+| `compiledRoleBaselines`    | Function | `src/orchestration/roles.ts`           | 69   |
+| `defaultPolicyForRole`     | Function | `src/orchestration/roles.ts`           | 73   |
+| `buildScopedPolicy`        | Function | `src/orchestration/roles.ts`           | 80   |
+| `constructor`              | Method   | `src/orchestration/service.ts`         | 32   |
+| `get`                      | Method   | `src/orchestration/run-graph-store.ts` | 44   |
+| `appendChildRun`           | Method   | `src/orchestration/run-graph-store.ts` | 55   |
+| `upsert`                   | Method   | `src/orchestration/run-graph-store.ts` | 66   |
+| `runCoordinator`           | Method   | `src/orchestration/service.ts`         | 52   |
+| `spawnSubagent`            | Method   | `src/orchestration/service.ts`         | 163  |
+| `requireSessionRun`        | Method   | `src/server/http-server.ts`            | 1818 |
+| `listForRole`              | Method   | `src/tools/registry.ts`                | 38   |
+| `parsePolicy`              | Function | `src/orchestration/role-config.ts`     | 69   |
+| `recordValue`              | Function | `src/orchestration/role-config.ts`     | 91   |
+| `stringValue`              | Function | `src/orchestration/role-config.ts`     | 98   |
+| `stringArray`              | Function | `src/orchestration/role-config.ts`     | 105  |
+| `intersect`                | Function | `src/orchestration/roles.ts`           | 38   |
+| `intersectFileGlobs`       | Function | `src/orchestration/roles.ts`           | 47   |
+| `narrowMode`               | Function | `src/orchestration/roles.ts`           | 62   |
 
 ## Execution Flows
 
-| Flow | Type | Steps |
-|------|------|-------|
-| `Schedule → DecodeJson` | cross_community | 6 |
-| `Schedule → Run` | cross_community | 6 |
-| `Schedule → EncodeJson` | cross_community | 6 |
-| `Schedule → CreateId` | cross_community | 6 |
-| `Start → DecodeJson` | cross_community | 6 |
-| `Start → Run` | cross_community | 6 |
-| `SpawnSubagent → DecodeJson` | cross_community | 5 |
-| `Schedule → Get` | cross_community | 5 |
-| `Schedule → List` | cross_community | 5 |
-| `Execute → Get` | cross_community | 5 |
+| Flow                            | Type            | Steps |
+| ------------------------------- | --------------- | ----- |
+| `Timer → Get`                   | cross_community | 6     |
+| `Timer → EmbedOrNull`           | cross_community | 6     |
+| `Timer → All`                   | cross_community | 6     |
+| `RunAsync → Get`                | cross_community | 5     |
+| `RunAsync → EmbedOrNull`        | cross_community | 5     |
+| `Timer → IsAllowedByAllowedIds` | cross_community | 5     |
+| `Timer → Run`                   | cross_community | 5     |
+| `Timer → EncodeJson`            | cross_community | 5     |
+| `RunCoordinator → DecodeJson`   | cross_community | 5     |
+| `RunCoordinator → Transaction`  | cross_community | 5     |
 
 ## Connected Areas
 
-| Area | Connections |
-|------|-------------|
-| Memory | 8 calls |
-| Tools | 2 calls |
-| Agent | 2 calls |
+| Area   | Connections |
+| ------ | ----------- |
+| Memory | 6 calls     |
+| Tools  | 2 calls     |
+| Agent  | 2 calls     |
+| Server | 2 calls     |
 
 ## How to Explore
 
-1. `gitnexus_context({name: "decodeJson"})` — see callers and callees
+1. `gitnexus_context({name: "compiledRolePolicyConfig"})` — see callers and callees
 2. `gitnexus_query({query: "orchestration"})` — find related execution flows
 3. Read key files listed above for implementation details

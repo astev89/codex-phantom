@@ -205,11 +205,7 @@ function channelChecks(
       continue;
     }
     if (channel.enabled && !channel.secretPresent) {
-      const requiredSecrets = Array.isArray(
-        channel.config.requiredSecretEnvVars
-      )
-        ? channel.config.requiredSecretEnvVars.join(", ")
-        : channel.secretEnvVar;
+      const requiredSecrets = channelRequiredEnvVars(channel);
       checks.push({
         id: `channel-${channel.id}-secrets`,
         category: "channels",
@@ -237,6 +233,12 @@ function channelChecks(
     });
   }
   return checks;
+}
+
+function channelRequiredEnvVars(channel: ChannelRecord): string | undefined {
+  return Array.isArray(channel.config.requiredSecretEnvVars)
+    ? channel.config.requiredSecretEnvVars.join(", ")
+    : channel.secretEnvVar;
 }
 
 function modelChecks(config: AppConfig): ReadinessCheck[] {
