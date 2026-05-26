@@ -133,7 +133,11 @@ export function loadConfig(): AppConfig {
     ),
     emailImapUsername: process.env.EMAIL_IMAP_USERNAME,
     emailImapPassword: process.env.EMAIL_IMAP_PASSWORD,
-    emailImapTls: parseBoolean(process.env.EMAIL_IMAP_TLS, true),
+    emailImapTls: parseBoolean(
+      process.env.EMAIL_IMAP_TLS,
+      true,
+      "EMAIL_IMAP_TLS"
+    ),
     emailSmtpHost: process.env.EMAIL_SMTP_HOST,
     emailSmtpPort: parsePositiveInteger(
       process.env.EMAIL_SMTP_PORT,
@@ -142,7 +146,11 @@ export function loadConfig(): AppConfig {
     ),
     emailSmtpUsername: process.env.EMAIL_SMTP_USERNAME,
     emailSmtpPassword: process.env.EMAIL_SMTP_PASSWORD,
-    emailSmtpTls: parseBoolean(process.env.EMAIL_SMTP_TLS, true),
+    emailSmtpTls: parseBoolean(
+      process.env.EMAIL_SMTP_TLS,
+      true,
+      "EMAIL_SMTP_TLS"
+    ),
     emailFromAddress: process.env.EMAIL_FROM_ADDRESS,
     emailFromName:
       process.env.EMAIL_FROM_NAME ?? process.env.AGENT_NAME ?? "Codex Phantom",
@@ -272,7 +280,11 @@ function normalizeLogLevel(value: string | undefined): LogLevel {
   return "info";
 }
 
-function parseBoolean(raw: string | undefined, fallback: boolean): boolean {
+function parseBoolean(
+  raw: string | undefined,
+  fallback: boolean,
+  field: string
+): boolean {
   if (raw === undefined) {
     return fallback;
   }
@@ -282,7 +294,7 @@ function parseBoolean(raw: string | undefined, fallback: boolean): boolean {
   if (raw === "false") {
     return false;
   }
-  throw new Error("Boolean env vars must be set to true or false");
+  throw new Error(`${field} must be set to true or false`);
 }
 
 function parsePositiveInteger(

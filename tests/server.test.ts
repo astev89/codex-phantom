@@ -267,6 +267,8 @@ class FakeSlackTransport implements SlackTransport {
 
 class FakeEmailStatusProvider {
   private readonly state: EmailChannelStatus;
+  startCount = 0;
+  stopCount = 0;
 
   constructor(state: EmailChannelStatus) {
     this.state = state;
@@ -274,6 +276,14 @@ class FakeEmailStatusProvider {
 
   status(): EmailChannelStatus {
     return { ...this.state };
+  }
+
+  async start(): Promise<void> {
+    this.startCount += 1;
+  }
+
+  async stop(): Promise<void> {
+    this.stopCount += 1;
   }
 }
 
@@ -597,6 +607,30 @@ test("admin email visibility surfaces channel status, readiness gaps, inbound, d
         (channel) => channel.id === "email" && channel.enabled === true
       )
     );
+
+    const disableEmailResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/channels`,
+      {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ id: "email", enabled: false }),
+      }
+    );
+    assert.equal(disableEmailResponse.status, 200);
+    assert.equal(emailStatus.stopCount, 1);
+    assert.equal(emailStatus.startCount, 0);
+
+    const enableEmailResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/channels`,
+      {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ id: "email", enabled: true }),
+      }
+    );
+    assert.equal(enableEmailResponse.status, 200);
+    assert.equal(emailStatus.stopCount, 1);
+    assert.equal(emailStatus.startCount, 1);
 
     const readinessResponse = await fetch(
       `http://127.0.0.1:${port}/admin/readiness`,

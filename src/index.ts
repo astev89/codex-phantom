@@ -133,6 +133,9 @@ const email = new EmailChannelService({
     host: config.emailSmtpHost ?? "",
     port: config.emailSmtpPort,
     secure: config.emailSmtpTls,
+    connectionTimeout: config.emailSendTimeoutMs,
+    greetingTimeout: config.emailSendTimeoutMs,
+    socketTimeout: config.emailSendTimeoutMs,
     auth: {
       user: config.emailSmtpUsername ?? "",
       pass: config.emailSmtpPassword ?? "",

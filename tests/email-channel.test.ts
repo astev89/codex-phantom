@@ -1089,6 +1089,61 @@ test("imap poll transport bounds unread fetches and marks messages seen", async 
   assert.equal(logoutCount, 1);
 });
 
+test("imap poll transport marks oversized unread messages seen", async () => {
+  const seenFlags: Array<{ uid: string; flags: string[]; uidMode?: boolean }> =
+    [];
+  const transport = new ImapEmailPollTransport(
+    {
+      host: "imap.example.com",
+      port: 993,
+      secure: true,
+      auth: { user: "bot@example.com", pass: "secret" },
+      mailbox: "INBOX",
+    },
+    {
+      createClient() {
+        return {
+          async connect() {
+            return;
+          },
+          async getMailboxLock() {
+            return { release() {} };
+          },
+          async search() {
+            return [101];
+          },
+          async fetchOne() {
+            return {
+              uid: 101,
+              size: 2048,
+              source: Buffer.from("partial body", "utf8"),
+            };
+          },
+          async messageFlagsAdd(
+            uid: string,
+            flags: string[],
+            options?: { uid?: boolean }
+          ) {
+            seenFlags.push({ uid, flags, uidMode: options?.uid });
+            return true;
+          },
+          async logout() {
+            return;
+          },
+        };
+      },
+    }
+  );
+
+  const unread = await transport.listUnread({ maxMessages: 1, maxBytes: 1024 });
+  await transport.close();
+
+  assert.deepEqual(unread, []);
+  assert.deepEqual(seenFlags, [
+    { uid: "101", flags: ["\\Seen"], uidMode: true },
+  ]);
+});
+
 test("imap markSeen retains providerMessageId mappings across poll cycles", async () => {
   const rawMessages = new Map<number, Buffer>([
     [
@@ -1299,9 +1354,15 @@ test("smtp send transport maps send input onto the provider transport", async ()
       port: 587,
       secure: false,
       auth: { user: "bot@example.com", pass: "secret" },
+      connectionTimeout: 12_000,
+      greetingTimeout: 12_000,
+      socketTimeout: 12_000,
     },
     {
-      createTransport() {
+      createTransport(options) {
+        assert.equal(options.connectionTimeout, 12_000);
+        assert.equal(options.greetingTimeout, 12_000);
+        assert.equal(options.socketTimeout, 12_000);
         return {
           async sendMail(message: Record<string, unknown>) {
             sentMessages.push(message);

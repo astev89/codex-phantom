@@ -107,6 +107,8 @@ const DEFAULT_MAX_BODY_BYTES = 1_048_576;
 
 type EmailStatusProvider = {
   status(): EmailChannelStatus;
+  start(): Promise<void>;
+  stop(): Promise<void>;
 };
 
 export class HttpServer {
@@ -477,6 +479,13 @@ export class HttpServer {
           parseJsonBody(await readTextBody(req))
         );
         const channel = this.channels.upsert(body);
+        if (channel.id === "email") {
+          if (channel.enabled) {
+            await this.emailStatusProvider?.start();
+          } else {
+            await this.emailStatusProvider?.stop();
+          }
+        }
         this.json(res, 200, { requestId, channel });
         return;
       }

@@ -111,6 +111,9 @@ type SmtpTransportOptions = {
     pass: string;
   };
   tls?: Record<string, unknown>;
+  connectionTimeout?: number;
+  greetingTimeout?: number;
+  socketTimeout?: number;
 };
 
 type SmtpClientLike = {
@@ -200,6 +203,7 @@ export class ImapEmailPollTransport implements EmailPollTransport {
           fetched.size > maxBytes ||
           fetched.source.length > maxBytes
         ) {
+          await client.messageFlagsAdd(String(uid), ["\\Seen"], { uid: true });
           continue;
         }
         const message = await parseEmailMessage({

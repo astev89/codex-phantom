@@ -3,7 +3,10 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { loadConfig } from "../src/config.ts";
 
-function withEnv(overrides: Record<string, string | undefined>, run: () => void): void {
+function withEnv(
+  overrides: Record<string, string | undefined>,
+  run: () => void
+): void {
   const original = { ...process.env };
   for (const [key, value] of Object.entries(overrides)) {
     if (value === undefined) {
@@ -30,7 +33,10 @@ test("production config rejects default secrets", () => {
   delete process.env.OPENAI_EMBEDDING_MODEL;
 
   try {
-    assert.throws(() => loadConfig(), /OPERATOR_BEARER_TOKEN|MCP_BEARER_TOKEN|OPENAI_API_KEY/);
+    assert.throws(
+      () => loadConfig(),
+      /OPERATOR_BEARER_TOKEN|MCP_BEARER_TOKEN|OPENAI_API_KEY/
+    );
   } finally {
     process.env = original;
   }
@@ -40,7 +46,7 @@ test("config parses outbound OpenAI timeout settings", () => {
   withEnv(
     {
       OPENAI_REQUEST_TIMEOUT_MS: "12000",
-      OPENAI_EMBEDDING_TIMEOUT_MS: "3000"
+      OPENAI_EMBEDDING_TIMEOUT_MS: "3000",
     },
     () => {
       const config = loadConfig();
@@ -52,7 +58,19 @@ test("config parses outbound OpenAI timeout settings", () => {
 
 test("config rejects invalid outbound OpenAI timeout settings", () => {
   withEnv({ OPENAI_REQUEST_TIMEOUT_MS: "0" }, () => {
-    assert.throws(() => loadConfig(), /OPENAI_REQUEST_TIMEOUT_MS must be a positive integer/);
+    assert.throws(
+      () => loadConfig(),
+      /OPENAI_REQUEST_TIMEOUT_MS must be a positive integer/
+    );
+  });
+});
+
+test("config identifies invalid email boolean settings", () => {
+  withEnv({ EMAIL_IMAP_TLS: "maybe" }, () => {
+    assert.throws(
+      () => loadConfig(),
+      /EMAIL_IMAP_TLS must be set to true or false/
+    );
   });
 });
 
@@ -101,9 +119,17 @@ test("runtime configuration reference documents every env var", async () => {
 
   assert.ok(envVars.length > 0);
   for (const envVar of envVars) {
-    assert.match(docs, new RegExp(`\\\`${envVar}\\\``), `${envVar} must be documented`);
+    assert.match(
+      docs,
+      new RegExp(`\\\`${envVar}\\\``),
+      `${envVar} must be documented`
+    );
     if (envVar !== "NODE_ENV") {
-      assert.match(envExample, new RegExp(`^${envVar}=`, "m"), `${envVar} must appear in .env.example`);
+      assert.match(
+        envExample,
+        new RegExp(`^${envVar}=`, "m"),
+        `${envVar} must appear in .env.example`
+      );
     }
   }
 });

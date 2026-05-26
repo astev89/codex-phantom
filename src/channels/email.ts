@@ -155,7 +155,6 @@ export class EmailChannelService {
     this.statusState.lastPollAt = new Date().toISOString();
     this.statusState.lastSummary = summary;
     this.statusState.lastError = undefined;
-    void this.deliveries;
     return summary;
   }
 
