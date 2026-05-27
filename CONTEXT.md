@@ -76,6 +76,10 @@ _Avoid_: Storage helper, route workflow
 A central chat policy module that owns artifact and attachment byte limits, safe searchable content types, extracted-artifact content rules, download names, and file-name generation.
 _Avoid_: Per-route content checks, duplicated MIME allowlist
 
+**Operator export module**:
+An operator module interface that owns export scope collection and formatting across audit, channel, governance, run, MCP, chat, and timeline sources while HTTP remains only auth, query parsing, and response writing.
+_Avoid_: Export formatter, route scope switch
+
 **Email thread identity**:
 The conversation identity for an email exchange, derived from RFC message threading headers when available and from sender plus normalized subject only as a fallback.
 _Avoid_: Subject-only thread, mailbox folder identity
@@ -116,6 +120,7 @@ _Avoid_: Implemented feature, feature complete
 - A **First-class runtime channel** uses the **Inbound response dispatcher** so inbound run completion behavior stays local to channel reply adapters instead of leaking into HTTP routes or polling loops.
 - **Web Chat parity** uses the **Chat artifact module** so attachment continuity, artifact persistence, search, downloads, and extraction side effects stay local to chat instead of leaking into HTTP routes.
 - The **Chat artifact module** depends on the **Artifact content policy** for byte limits, safe text indexing, extracted-artifact content rules, and download names.
+- Operator visibility uses the **Operator export module** so export scope collection stays local instead of leaking across HTTP routes.
 - **Email channel parity** treats inbound IMAP and outbound SMTP as one all-or-nothing enabled capability; partial inbound-only or outbound-only modes are not parity-complete.
 - **Email thread identity** uses message headers first so replies remain attached to the correct exchange across subject edits and multi-party threads.
 - **Email attachment parity** prioritizes metadata and safe bounded text extraction before raw binary storage or outbound attachment generation.

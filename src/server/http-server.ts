@@ -73,7 +73,7 @@ import { OperatorSettingsStore } from "./settings.ts";
 import { RequestAuditStore } from "./request-audit.ts";
 import { buildStartupDiagnostics } from "./diagnostics.ts";
 import { buildSetupReadiness } from "./readiness.ts";
-import { buildOperatorExport } from "./export.ts";
+import { OperatorExportService, buildOperatorExport } from "./export.ts";
 import {
   validateChannelUpdateBody,
   validateDynamicToolBody,
@@ -126,6 +126,7 @@ export class HttpServer {
   private readonly settings: OperatorSettingsStore;
   private readonly requestAudits: RequestAuditStore;
   private readonly mcpAudit: McpAuditStore;
+  private readonly operatorExports: OperatorExportService;
   private readonly runtimeChannels: RuntimeChannelCapabilities;
   private readonly operatorTokenHash: Buffer;
   private readonly mcpTokenHash: Buffer;
@@ -203,6 +204,19 @@ export class HttpServer {
     });
     this.requestAudits = new RequestAuditStore(database);
     this.mcpAudit = new McpAuditStore(database);
+    this.operatorExports = new OperatorExportService({
+      requestAudits: this.requestAudits,
+      channelDeliveries: this.channelDeliveries,
+      channelInbound: this.channelInbound,
+      slackFeedback: this.slackFeedback,
+      governance: this.governance,
+      selfEvolution: this.selfEvolution,
+      toolBundles: this.toolBundles,
+      mcpAudit: this.mcpAudit,
+      runEvents: this.database,
+      chatArtifacts: this.chatArtifacts,
+      memoryMaintenance: this.memoryMaintenance,
+    });
     this.runtimeChannels = runtimeChannels;
     this.operatorTokenHash = hashToken(config.operatorBearerToken);
     this.mcpTokenHash = hashToken(config.mcpBearerToken);
@@ -414,7 +428,7 @@ export class HttpServer {
         const scope = url.searchParams.get("scope") ?? "timeline";
         const format =
           url.searchParams.get("format") === "ndjson" ? "ndjson" : "json";
-        const payload = await this.buildExportPayload(scope);
+        const payload = await this.operatorExports.collect(scope);
         const exportPayload = buildOperatorExport(format, {
           scope,
           items: payload.items,
@@ -1439,81 +1453,6 @@ export class HttpServer {
         `http.${req.method?.toLowerCase() ?? "unknown"}.${url.pathname}`
       );
       this.metrics.observe("http.request.duration_ms", Date.now() - startedAt);
-    }
-  }
-
-  private async buildExportPayload(
-    scope: string
-  ): Promise<{ items: Array<Record<string, JsonValue>> }> {
-    switch (scope) {
-      case "requests":
-        return { items: this.requestAudits.list(250) };
-      case "channels":
-        return {
-          items: [
-            ...this.channelDeliveries.list(undefined, 250),
-            ...this.channelInbound.list({ limit: 250 }),
-            ...this.slackFeedback.list(250),
-          ],
-        };
-      case "governance":
-        return {
-          items: [
-            ...this.governance.listAudit(250),
-            ...this.selfEvolution.list(250).map((proposal) => ({
-              ...proposal,
-              kind: "self_evolution_proposal",
-            })),
-            ...this.selfEvolution
-              .listMutations(undefined, 250)
-              .map((mutation) => ({
-                ...mutation,
-                kind: "self_evolution_mutation",
-              })),
-            ...this.toolBundles.list(250).map((importRecord) => ({
-              ...importRecord,
-              kind: "tool_bundle_import",
-            })),
-          ],
-        };
-      case "mcp":
-        return { items: this.mcpAudit.list(250) };
-      case "runs":
-        return {
-          items: this.database.all(
-            "SELECT * FROM run_events ORDER BY created_at DESC LIMIT 250"
-          ),
-        };
-      case "chat":
-        return {
-          items: await this.chatArtifacts.listChatExportItems(250),
-        };
-      case "timeline":
-      default:
-        return {
-          items: [
-            ...this.requestAudits.list(50),
-            ...this.channelDeliveries.list(undefined, 50),
-            ...this.channelInbound.list({ limit: 50 }),
-            ...this.slackFeedback.list(50),
-            ...(this.memoryMaintenance?.list(50) ?? []),
-            ...this.governance.listAudit(50),
-            ...this.selfEvolution.list(50).map((proposal) => ({
-              ...proposal,
-              kind: "self_evolution_proposal",
-            })),
-            ...this.selfEvolution
-              .listMutations(undefined, 50)
-              .map((mutation) => ({
-                ...mutation,
-                kind: "self_evolution_mutation",
-              })),
-            ...this.toolBundles.list(50).map((importRecord) => ({
-              ...importRecord,
-              kind: "tool_bundle_import",
-            })),
-          ],
-        };
     }
   }
 

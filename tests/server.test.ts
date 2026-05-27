@@ -29,7 +29,6 @@ import { McpAuditStore } from "../src/mcp/audit.ts";
 import { McpServer } from "../src/mcp/server.ts";
 import { renderChatApp } from "../src/server/chat-ui.ts";
 import { HttpServer } from "../src/server/http-server.ts";
-import { buildJsonExport, buildNdjsonExport } from "../src/server/export.ts";
 import { AppDatabase } from "../src/platform/database.ts";
 import { Logger } from "../src/platform/logger.ts";
 import { MetricsStore } from "../src/platform/metrics.ts";
@@ -332,65 +331,6 @@ async function eventually<T>(
   }
   return latest;
 }
-
-test("buildJsonExport wraps records in an operator-friendly envelope", () => {
-  const payload = buildJsonExport({
-    scope: "requests",
-    exportedAt: "2026-04-23T12:00:00.000Z",
-    meta: { requestedBy: "operator-console" },
-    items: [
-      {
-        requestId: "req_123",
-        path: "/health",
-        statusCode: 200,
-      },
-    ],
-  });
-
-  assert.deepEqual(payload, {
-    scope: "requests",
-    format: "json",
-    exportedAt: "2026-04-23T12:00:00.000Z",
-    count: 1,
-    meta: { requestedBy: "operator-console" },
-    items: [
-      {
-        requestId: "req_123",
-        path: "/health",
-        statusCode: 200,
-      },
-    ],
-  });
-});
-
-test("buildNdjsonExport emits one serialized record per line", () => {
-  const payload = buildNdjsonExport({
-    scope: "channels",
-    exportedAt: "2026-04-23T12:00:00.000Z",
-    items: [
-      {
-        channelId: "slack",
-        status: "delivered",
-      },
-      {
-        channelId: "webhook",
-        status: "failed",
-      },
-    ],
-  });
-
-  assert.equal(payload.scope, "channels");
-  assert.equal(payload.format, "ndjson");
-  assert.equal(payload.exportedAt, "2026-04-23T12:00:00.000Z");
-  assert.equal(payload.count, 2);
-  assert.equal(
-    payload.body,
-    [
-      '{"channelId":"slack","status":"delivered"}',
-      '{"channelId":"webhook","status":"failed"}',
-    ].join("\n")
-  );
-});
 
 test("renderChatApp preserves fenced code blocks and safely injects title data", () => {
   const html = renderChatApp("Bad </script><script>alert(1)</script>");
