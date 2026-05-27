@@ -4,6 +4,10 @@ import { ChannelDeliveryStore } from "./channels/delivery-log.ts";
 import { RuntimeChannelCapabilities } from "./channels/capabilities.ts";
 import { EmailChannelService } from "./channels/email.ts";
 import {
+  InboundResponseDispatcher,
+  createEmailInboundResponseAdapter,
+} from "./channels/inbound-response-dispatcher.ts";
+import {
   ImapEmailPollTransport,
   SmtpEmailSendTransport,
 } from "./channels/email-transports.ts";
@@ -115,11 +119,34 @@ const mcp = new McpServer(
   undefined,
   mcpAudit
 );
+const emailSendTransport = new SmtpEmailSendTransport({
+  host: config.emailSmtpHost ?? "",
+  port: config.emailSmtpPort,
+  secure: config.emailSmtpTls,
+  connectionTimeout: config.emailSendTimeoutMs,
+  greetingTimeout: config.emailSendTimeoutMs,
+  socketTimeout: config.emailSendTimeoutMs,
+  auth: {
+    user: config.emailSmtpUsername ?? "",
+    pass: config.emailSmtpPassword ?? "",
+  },
+});
+const emailResponseDispatcher = new InboundResponseDispatcher({
+  logger,
+  adapters: {
+    email_reply: createEmailInboundResponseAdapter({
+      config,
+      deliveries: channelDeliveries,
+      sendTransport: emailSendTransport,
+      logger,
+    }),
+  },
+});
 const email = new EmailChannelService({
   config,
   channels,
   inboundRouter,
-  deliveries: channelDeliveries,
+  responseDispatcher: emailResponseDispatcher,
   pollTransport: new ImapEmailPollTransport({
     host: config.emailImapHost ?? "",
     port: config.emailImapPort,
@@ -130,18 +157,7 @@ const email = new EmailChannelService({
       pass: config.emailImapPassword ?? "",
     },
   }),
-  sendTransport: new SmtpEmailSendTransport({
-    host: config.emailSmtpHost ?? "",
-    port: config.emailSmtpPort,
-    secure: config.emailSmtpTls,
-    connectionTimeout: config.emailSendTimeoutMs,
-    greetingTimeout: config.emailSendTimeoutMs,
-    socketTimeout: config.emailSendTimeoutMs,
-    auth: {
-      user: config.emailSmtpUsername ?? "",
-      pass: config.emailSmtpPassword ?? "",
-    },
-  }),
+  sendTransport: emailSendTransport,
   logger,
 });
 const runtimeChannels = new RuntimeChannelCapabilities();

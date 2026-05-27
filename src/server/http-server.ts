@@ -18,20 +18,21 @@ import type { ChannelDeliveryRecord } from "../channels/delivery-log.ts";
 import {
   InboundChannelEventStore,
   InboundChannelRouter,
-  type InboundResponseTarget,
 } from "../channels/inbound.ts";
 import {
   SlackFeedbackStore,
   mapSlackInteractionFeedback,
   mapSlackReactionFeedback,
-  slackFeedbackBlocks,
 } from "../channels/slack-feedback.ts";
 import {
   mapSlackEventToInboundMessage,
   validateSlackRequest,
   type SlackEventsPayload,
 } from "../channels/slack-events.ts";
-import { SlackProgressReporter } from "../channels/slack-progress.ts";
+import {
+  InboundResponseDispatcher,
+  createSlackInboundResponseAdapter,
+} from "../channels/inbound-response-dispatcher.ts";
 import type { SlackTransport } from "../channels/slack.ts";
 import { SlackChannel } from "../channels/slack.ts";
 import { OrchestrationService } from "../orchestration/service.ts";
@@ -125,6 +126,7 @@ export class HttpServer {
   private readonly channelInbound: InboundChannelEventStore;
   private readonly slackFeedback: SlackFeedbackStore;
   private readonly inboundRouter: InboundChannelRouter;
+  private readonly inboundResponses: InboundResponseDispatcher;
   private readonly chatBlobs: ChatBlobStore;
   private readonly chatArtifacts: ChatArtifactStore;
   private readonly attachmentTextIndex: AttachmentTextIndexStore;
@@ -190,6 +192,16 @@ export class HttpServer {
       this.channelDeliveries,
       slackTransport
     );
+    this.inboundResponses = new InboundResponseDispatcher({
+      logger,
+      adapters: {
+        slack_thread: createSlackInboundResponseAdapter({
+          slack: this.slack,
+          store: this.channelInbound,
+          logger,
+        }),
+      },
+    });
     this.settings = new OperatorSettingsStore(database);
     this.requestAudits = new RequestAuditStore(database);
     this.mcpAudit = new McpAuditStore(database);
@@ -1250,43 +1262,8 @@ export class HttpServer {
           this.json(res, 202, { requestId, status: "ignored" });
           return;
         }
-        let progressReporter: SlackProgressReporter | undefined;
         const routed = this.inboundRouter.routeAsync(message, {
-          beforeRun: async (record) => {
-            if (record.responseTarget?.type === "slack_thread") {
-              progressReporter = new SlackProgressReporter({
-                slack: this.slack,
-                store: this.channelInbound,
-                recordId: record.id,
-                target: record.responseTarget,
-              });
-              await progressReporter.queued();
-            }
-          },
-          onEvent: async (event) => {
-            await progressReporter?.onEvent(event);
-          },
-          onComplete: async (record) => {
-            if (
-              record.responseTarget?.type === "slack_thread" &&
-              record.outputText
-            ) {
-              await progressReporter?.completed(record.outputText);
-            }
-            await this.deliverInboundResponse(record);
-          },
-          onFailure: async (record) => {
-            if (record.responseTarget?.type === "slack_thread") {
-              await progressReporter?.failed(
-                record.errorMessage ?? "Inbound channel run failed"
-              );
-            }
-            this.logger.error("inbound_channel_failed", {
-              inboundEventId: record.id,
-              channelId: record.channelId,
-              error: record.errorMessage ?? "Inbound channel run failed",
-            });
-          },
+          ...this.inboundResponses.callbacks(),
         });
         this.json(res, 202, {
           requestId,
@@ -1762,61 +1739,6 @@ export class HttpServer {
       actor: rolledBackBy,
     });
     return { proposal: updatedProposal, mutation };
-  }
-
-  private async deliverInboundResponse(record: {
-    id: string;
-    responseTarget?: InboundResponseTarget;
-    outputText?: string;
-  }): Promise<void> {
-    const target = record.responseTarget;
-    const outputText = record.outputText;
-    if (!target || !outputText) {
-      return;
-    }
-    if (target.type === "slack_thread") {
-      try {
-        const delivered = await this.slack.sendMessage({
-          channel: target.channel,
-          text: outputText,
-          threadTs: target.threadTs,
-          blocks: slackFeedbackBlocks(record.id),
-        });
-        this.channelInbound.recordSlackResponseMessage(
-          record.id,
-          delivered.result.ts
-        );
-      } catch (error) {
-        if (this.shouldIgnoreInboundResponseDeliveryError(error)) {
-          this.logger.warn("inbound_response_delivery_skipped", {
-            channelId: "slack",
-            reason:
-              error instanceof Error
-                ? error.message
-                : "Slack delivery unavailable",
-          });
-          return;
-        }
-        throw error;
-      }
-    }
-  }
-
-  private shouldIgnoreInboundResponseDeliveryError(error: unknown): boolean {
-    if (
-      error instanceof HttpError &&
-      (error.status === 409 || error.status === 412)
-    ) {
-      return true;
-    }
-    const message = error instanceof Error ? error.message.toLowerCase() : "";
-    return (
-      message.includes("slack_bot_token") ||
-      message.includes("bot token") ||
-      message.includes("slack channel is not enabled") ||
-      message.includes("channel disabled") ||
-      message.includes("disabled channel")
-    );
   }
 
   private async requireWebChatSession(sessionId: string) {

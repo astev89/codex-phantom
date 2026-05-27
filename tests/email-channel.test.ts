@@ -9,6 +9,10 @@ import type {
 } from "../src/channels/email-types.ts";
 import { EmailChannelService } from "../src/channels/email.ts";
 import {
+  InboundResponseDispatcher,
+  createEmailInboundResponseAdapter,
+} from "../src/channels/inbound-response-dispatcher.ts";
+import {
   ImapEmailPollTransport,
   SmtpEmailSendTransport,
   parseEmailMessage,
@@ -273,6 +277,18 @@ async function withEmailChannelService(
     hideSeenMessages: options.hideSeenMessages,
   });
   const sendTransport = new RecordingSendTransport();
+  const logger = new Logger("error");
+  const responseDispatcher = new InboundResponseDispatcher({
+    logger,
+    adapters: {
+      email_reply: createEmailInboundResponseAdapter({
+        config,
+        deliveries,
+        sendTransport,
+        logger,
+      }),
+    },
+  });
   const inboundRouter = new StubInboundRouter(options.routerBehavior, {
     invokeCompletionCallbacks: options.invokeCompletionCallbacks,
   });
@@ -280,10 +296,10 @@ async function withEmailChannelService(
     config,
     channels,
     inboundRouter: inboundRouter as never,
-    deliveries,
+    responseDispatcher,
     pollTransport,
     sendTransport,
-    logger: new Logger("error"),
+    logger,
   });
 
   try {

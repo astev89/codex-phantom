@@ -52,6 +52,10 @@ _Avoid_: Manual-only integration, notification helper
 A channel module interface that owns channel metadata, configuration requirements, readiness, diagnostics, and optional lifecycle hooks while leaving persisted enabled state in channel storage.
 _Avoid_: Channel row, route special case
 
+**Inbound response dispatcher**:
+A channel module interface that owns completed and failed inbound run side effects, dispatching replies, progress, audit, retry, and failure isolation through target-specific adapters.
+_Avoid_: Route callback, channel reply helper
+
 **Email thread identity**:
 The conversation identity for an email exchange, derived from RFC message threading headers when available and from sender plus normalized subject only as a fallback.
 _Avoid_: Subject-only thread, mailbox folder identity
@@ -86,6 +90,7 @@ _Avoid_: Implemented feature, feature complete
 - **Email channel parity** is part of **Channel parity** because Phantom ships a built-in Email channel.
 - **Email channel parity** requires Email to be a **First-class runtime channel**, not a manual-only SMTP notifier.
 - A **First-class runtime channel** is described by a **Runtime channel capability** so channel semantics stay local instead of leaking across startup, readiness, diagnostics, and HTTP routes.
+- A **First-class runtime channel** uses the **Inbound response dispatcher** so inbound run completion behavior stays local to channel reply adapters instead of leaking into HTTP routes or polling loops.
 - **Email channel parity** treats inbound IMAP and outbound SMTP as one all-or-nothing enabled capability; partial inbound-only or outbound-only modes are not parity-complete.
 - **Email thread identity** uses message headers first so replies remain attached to the correct exchange across subject edits and multi-party threads.
 - **Email attachment parity** prioritizes metadata and safe bounded text extraction before raw binary storage or outbound attachment generation.
@@ -129,6 +134,9 @@ _Avoid_: Implemented feature, feature complete
 >
 > **Dev:** "Where should channel config and lifecycle rules live?"
 > **Domain expert:** "In the **Runtime channel capability**. The registry stores enabled state; the capability owns channel semantics."
+>
+> **Dev:** "Where should Slack and Email final reply behavior live?"
+> **Domain expert:** "In the **Inbound response dispatcher**. HTTP and polling should route inbound events; channel adapters should own replies, progress, retry, and audit."
 >
 > **Dev:** "Can we enable Email with only SMTP configured?"
 > **Domain expert:** "No — **Email channel parity** is all-or-nothing: an enabled Email channel must have both IMAP inbound and SMTP outbound configured."

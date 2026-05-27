@@ -4,7 +4,7 @@ This is the living status ledger for `codex-phantom`. Update it at the end of ea
 
 Last updated: 2026-05-27
 Branch: `jarvis/gitnexus-skills-refresh`
-Latest verified implementation commit: current `refactor(channels): introduce runtime channel capabilities` commit
+Latest verified implementation commit: current `refactor(channels): introduce inbound response dispatcher` commit
 
 ## Current State
 
@@ -13,6 +13,23 @@ Latest verified implementation commit: current `refactor(channels): introduce ru
 The project is now past its first serious production-hardening pass. It is not yet equivalent to the original Phantom project, but the core runtime is materially safer to run: request sizes are bounded, secrets are rejected in production when defaults are used, outbound model calls have timeouts, scheduler jobs recover deterministically after restarts, MCP events are durably audited, external webhooks are signed, Slack sends retry transient failures, operator-console workflows have browser coverage, and the Docker image runs compiled JavaScript instead of stripped TypeScript.
 
 ## Just Completed
+
+Inbound response dispatcher wave completed locally on 2026-05-27:
+
+- Introduced an inbound response dispatcher module that owns completed and failed inbound run side effects through target-specific Slack and Email adapters.
+- Moved Slack progress/final replies and Email SMTP reply audit/retry behavior out of HTTP and Email polling loops while preserving public response shapes and delivery rows.
+- Added focused dispatcher coverage for Slack progress/final delivery, skipped Slack delivery, Email threaded replies, retry/failure outcomes, and no-op targets.
+
+Verification from this wave:
+
+```bash
+node --experimental-strip-types --test tests/inbound-response-dispatcher.test.ts tests/email-channel.test.ts tests/server.test.ts
+npm run typecheck
+npm test
+npm run build
+git diff --check
+GitNexus detect_changes(scope="staged")
+```
 
 Runtime channel capability wave completed locally on 2026-05-27:
 
