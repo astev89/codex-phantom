@@ -11,10 +11,10 @@ import { modelAdapterMode } from "../config.ts";
 import type { JsonValue } from "../shared/types.ts";
 import { createId } from "../shared/ids.ts";
 import { validateWebhookSecret } from "../channels/webhook.ts";
+import { RuntimeChannelCapabilities } from "../channels/capabilities.ts";
 import { ChannelRegistry } from "../channels/registry.ts";
 import { ChannelDeliveryStore } from "../channels/delivery-log.ts";
 import type { ChannelDeliveryRecord } from "../channels/delivery-log.ts";
-import type { EmailChannelStatus } from "../channels/email.ts";
 import {
   InboundChannelEventStore,
   InboundChannelRouter,
@@ -105,12 +105,6 @@ import {
 
 const DEFAULT_MAX_BODY_BYTES = 1_048_576;
 
-type EmailStatusProvider = {
-  status(): EmailChannelStatus;
-  start(): Promise<void>;
-  stop(): Promise<void>;
-};
-
 export class HttpServer {
   private readonly server: Server;
   private readonly config: AppConfig;
@@ -140,7 +134,7 @@ export class HttpServer {
   private readonly settings: OperatorSettingsStore;
   private readonly requestAudits: RequestAuditStore;
   private readonly mcpAudit: McpAuditStore;
-  private readonly emailStatusProvider?: EmailStatusProvider;
+  private readonly runtimeChannels: RuntimeChannelCapabilities;
   private readonly operatorTokenHash: Buffer;
   private readonly mcpTokenHash: Buffer;
   private readonly mcpRateLimiter = new SimpleRateLimiter(12, 60_000);
@@ -161,7 +155,7 @@ export class HttpServer {
     governance: ToolGovernanceService,
     slackTransport?: SlackTransport,
     memoryMaintenance?: MemoryMaintenanceService,
-    emailStatusProvider?: EmailStatusProvider
+    runtimeChannels = new RuntimeChannelCapabilities()
   ) {
     this.config = config;
     this.orchestration = orchestration;
@@ -199,7 +193,7 @@ export class HttpServer {
     this.settings = new OperatorSettingsStore(database);
     this.requestAudits = new RequestAuditStore(database);
     this.mcpAudit = new McpAuditStore(database);
-    this.emailStatusProvider = emailStatusProvider;
+    this.runtimeChannels = runtimeChannels;
     this.operatorTokenHash = hashToken(config.operatorBearerToken);
     this.mcpTokenHash = hashToken(config.mcpBearerToken);
     this.server = createServer((req, res) => {
@@ -479,13 +473,10 @@ export class HttpServer {
           parseJsonBody(await readTextBody(req))
         );
         const channel = this.channels.upsert(body);
-        if (channel.id === "email") {
-          if (channel.enabled) {
-            await this.emailStatusProvider?.start();
-          } else {
-            await this.emailStatusProvider?.stop();
-          }
-        }
+        await this.runtimeChannels.applyRuntimeState(
+          channel.id,
+          channel.enabled
+        );
         this.json(res, 200, { requestId, channel });
         return;
       }
@@ -1885,7 +1876,7 @@ export class HttpServer {
       this.config,
       memoryStatus,
       channels,
-      this.emailStatusProvider?.status(),
+      this.runtimeChannels.emailStatus(),
       this.listRecentFailedDeliveries("email"),
       setupReadiness,
       this.orchestration.getRolePolicyStatus()

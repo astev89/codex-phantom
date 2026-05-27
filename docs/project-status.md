@@ -2,9 +2,9 @@
 
 This is the living status ledger for `codex-phantom`. Update it at the end of each development wave, after tests pass and before handing off or opening a PR.
 
-Last updated: 2026-05-23
+Last updated: 2026-05-27
 Branch: `jarvis/gitnexus-skills-refresh`
-Latest verified implementation commit: `e7b4f443aead9fe7af902f779a3434be479b5425`
+Latest verified implementation commit: current `refactor(channels): introduce runtime channel capabilities` commit
 
 ## Current State
 
@@ -13,6 +13,23 @@ Latest verified implementation commit: `e7b4f443aead9fe7af902f779a3434be479b5425
 The project is now past its first serious production-hardening pass. It is not yet equivalent to the original Phantom project, but the core runtime is materially safer to run: request sizes are bounded, secrets are rejected in production when defaults are used, outbound model calls have timeouts, scheduler jobs recover deterministically after restarts, MCP events are durably audited, external webhooks are signed, Slack sends retry transient failures, operator-console workflows have browser coverage, and the Docker image runs compiled JavaScript instead of stripped TypeScript.
 
 ## Just Completed
+
+Runtime channel capability wave completed locally on 2026-05-27:
+
+- Introduced a runtime channel capability module as the source of channel metadata, config requirements, readiness inputs, diagnostics inputs, and optional lifecycle hooks.
+- Refactored channel seeding, secret presence checks, setup readiness, startup diagnostics, and admin channel toggles to consume channel capabilities instead of duplicating channel semantics.
+- Preserved Email as disabled-by-default and all-or-nothing for IMAP plus SMTP, while moving Email poller start/stop behind the generic runtime lifecycle seam.
+
+Verification from this wave:
+
+```bash
+node --experimental-strip-types --test tests/channel-capabilities.test.ts tests/readiness.test.ts tests/server.test.ts
+npm run typecheck
+npm test
+npm run build
+git diff --check
+GitNexus detect_changes(scope="all")
+```
 
 Email parity wave completed locally on 2026-05-23:
 

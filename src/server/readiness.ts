@@ -2,6 +2,7 @@ import { accessSync, constants, readFileSync } from "node:fs";
 import { parse } from "yaml";
 import type { AppConfig } from "../config.ts";
 import { defaultSecrets, modelAdapterMode } from "../config.ts";
+import { requiredEnvVarsForChannel } from "../channels/capabilities.ts";
 import type { ChannelRecord } from "../channels/registry.ts";
 import type { MemoryStatus } from "../memory/types.ts";
 
@@ -236,8 +237,9 @@ function channelChecks(
 }
 
 function channelRequiredEnvVars(channel: ChannelRecord): string | undefined {
-  return Array.isArray(channel.config.requiredSecretEnvVars)
-    ? channel.config.requiredSecretEnvVars.join(", ")
+  const requiredEnvVars = requiredEnvVarsForChannel(channel);
+  return requiredEnvVars.length > 0
+    ? requiredEnvVars.join(", ")
     : channel.secretEnvVar;
 }
 

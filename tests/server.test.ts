@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AppConfig } from "../src/config.ts";
 import { AgentRuntime } from "../src/agent/runtime.ts";
+import { RuntimeChannelCapabilities } from "../src/channels/capabilities.ts";
 import { ChannelRegistry } from "../src/channels/registry.ts";
 import { InboundChannelEventStore } from "../src/channels/inbound.ts";
 import type { EmailChannelStatus } from "../src/channels/email.ts";
@@ -531,6 +532,8 @@ test("admin email visibility surfaces channel status, readiness gaps, inbound, d
       skippedAutoReplyCount: 1,
     },
   });
+  const runtimeChannels = new RuntimeChannelCapabilities();
+  runtimeChannels.registerLifecycle("email", emailStatus);
   const server = new HttpServer(
     config,
     orchestration,
@@ -547,7 +550,7 @@ test("admin email visibility surfaces channel status, readiness gaps, inbound, d
     governance,
     new FakeSlackTransport(),
     undefined,
-    emailStatus
+    runtimeChannels
   );
 
   const inboundRecord = inbound.recordReceived({
@@ -629,6 +632,27 @@ test("admin email visibility surfaces channel status, readiness gaps, inbound, d
       }
     );
     assert.equal(enableEmailResponse.status, 200);
+    assert.equal(emailStatus.stopCount, 1);
+    assert.equal(emailStatus.startCount, 1);
+
+    const disableSchedulerResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/channels`,
+      {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ id: "scheduler", enabled: false }),
+      }
+    );
+    assert.equal(disableSchedulerResponse.status, 200);
+    const enableSchedulerResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/channels`,
+      {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ id: "scheduler", enabled: true }),
+      }
+    );
+    assert.equal(enableSchedulerResponse.status, 200);
     assert.equal(emailStatus.stopCount, 1);
     assert.equal(emailStatus.startCount, 1);
 

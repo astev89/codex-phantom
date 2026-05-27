@@ -1,6 +1,7 @@
 import { loadConfig } from "./config.ts";
 import { SessionStore } from "./chat/session-store.ts";
 import { ChannelDeliveryStore } from "./channels/delivery-log.ts";
+import { RuntimeChannelCapabilities } from "./channels/capabilities.ts";
 import { EmailChannelService } from "./channels/email.ts";
 import {
   ImapEmailPollTransport,
@@ -143,6 +144,8 @@ const email = new EmailChannelService({
   }),
   logger,
 });
+const runtimeChannels = new RuntimeChannelCapabilities();
+runtimeChannels.registerLifecycle("email", email);
 const server = new HttpServer(
   config,
   orchestration,
@@ -159,7 +162,7 @@ const server = new HttpServer(
   governance,
   undefined,
   memoryMaintenance,
-  email
+  runtimeChannels
 );
 
 await memory.backfillEmbeddings();
