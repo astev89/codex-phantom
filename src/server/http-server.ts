@@ -61,14 +61,15 @@ import type { MemoryMaintenanceService } from "../memory/maintenance.ts";
 import { DynamicToolRegistry } from "../tools/dynamic-registry.ts";
 import { ToolGovernanceService } from "../tools/governance.ts";
 import { ToolBundleImportStore } from "../tools/bundles.ts";
+import { SelfEvolutionProposalStore } from "../self-evolution/proposals.ts";
 import {
-  SelfEvolutionProposalStore,
-  type SelfEvolutionMutationRecord,
-  type SelfEvolutionProposalRecord,
-} from "../self-evolution/proposals.ts";
+  SelfEvolutionMutationError,
+  SelfEvolutionMutationService,
+  createOperatorSettingsMutationAdapter,
+} from "../self-evolution/mutations.ts";
 import { renderOperatorConsole } from "./ui.ts";
 import { renderChatApp } from "./chat-ui.ts";
-import { OperatorSettingsStore, type OperatorSettings } from "./settings.ts";
+import { OperatorSettingsStore } from "./settings.ts";
 import { RequestAuditStore } from "./request-audit.ts";
 import { buildStartupDiagnostics } from "./diagnostics.ts";
 import { buildSetupReadiness } from "./readiness.ts";
@@ -120,6 +121,7 @@ export class HttpServer {
   private readonly chatArtifacts: ChatArtifactService;
   private readonly governance: ToolGovernanceService;
   private readonly selfEvolution: SelfEvolutionProposalStore;
+  private readonly selfEvolutionMutations: SelfEvolutionMutationService;
   private readonly slack: SlackChannel;
   private readonly settings: OperatorSettingsStore;
   private readonly requestAudits: RequestAuditStore;
@@ -178,6 +180,11 @@ export class HttpServer {
     });
     this.governance = governance;
     this.selfEvolution = new SelfEvolutionProposalStore(database);
+    this.settings = new OperatorSettingsStore(database);
+    this.selfEvolutionMutations = new SelfEvolutionMutationService({
+      proposals: this.selfEvolution,
+      adapters: [createOperatorSettingsMutationAdapter(this.settings)],
+    });
     this.slack = new SlackChannel(
       config,
       channels,
@@ -194,7 +201,6 @@ export class HttpServer {
         }),
       },
     });
-    this.settings = new OperatorSettingsStore(database);
     this.requestAudits = new RequestAuditStore(database);
     this.mcpAudit = new McpAuditStore(database);
     this.runtimeChannels = runtimeChannels;
@@ -673,10 +679,8 @@ export class HttpServer {
           const body = validateSelfEvolutionApplyBody(
             parseJsonBody(await readTextBody(req))
           );
-          const { proposal, mutation } = this.applySelfEvolutionProposal(
-            proposalId,
-            body
-          );
+          const { proposal, mutation } =
+            this.selfEvolutionMutations.applyProposal(proposalId, body);
           this.json(res, 200, { requestId, proposal, mutation });
           return;
         }
@@ -684,10 +688,11 @@ export class HttpServer {
           const body = validateSelfEvolutionRollbackBody(
             parseJsonBody(await readTextBody(req))
           );
-          const { proposal, mutation } = this.rollbackSelfEvolutionProposal(
-            proposalId,
-            body.rolledBackBy
-          );
+          const { proposal, mutation } =
+            this.selfEvolutionMutations.rollbackProposal(
+              proposalId,
+              body.rolledBackBy
+            );
           this.json(res, 200, { requestId, proposal, mutation });
           return;
         }
@@ -1389,14 +1394,18 @@ export class HttpServer {
 
       throw new HttpError(404, "Not found");
     } catch (error) {
-      const status = error instanceof HttpError ? error.status : 500;
+      const normalizedError = normalizeHttpError(error);
+      const status =
+        normalizedError instanceof HttpError ? normalizedError.status : 500;
       const message =
-        error instanceof Error ? error.message : "Internal Server Error";
+        normalizedError instanceof Error
+          ? normalizedError.message
+          : "Internal Server Error";
       requestLogger.error("request_failed", {
         status,
         error: message,
       });
-      if (error instanceof OperatorAuthError) {
+      if (normalizedError instanceof OperatorAuthError) {
         res.setHeader(
           "WWW-Authenticate",
           'Basic realm="codex-phantom operator"'
@@ -1575,100 +1584,6 @@ export class HttpServer {
     return this.toolBundles.markUninstalled(importId, actor, notes);
   }
 
-  private applySelfEvolutionProposal(
-    proposalId: string,
-    input: { appliedBy: string; confirmHighRisk?: boolean }
-  ): {
-    proposal: SelfEvolutionProposalRecord;
-    mutation: SelfEvolutionMutationRecord;
-  } {
-    const proposal = this.selfEvolution.get(proposalId);
-    if (!proposal) {
-      throw new HttpError(404, "Self-evolution proposal not found");
-    }
-    if (proposal.status !== "approved") {
-      throw new HttpError(
-        409,
-        "Self-evolution proposal must be approved first"
-      );
-    }
-    if (
-      (proposal.riskClass === "high" || proposal.riskClass === "critical") &&
-      input.confirmHighRisk !== true
-    ) {
-      throw new HttpError(
-        409,
-        "High-risk self-evolution proposal requires explicit confirmation"
-      );
-    }
-
-    try {
-      const patch = extractOperatorSettingsPatch(proposal);
-      const before = this.settings.get();
-      const after = this.settings.update(patch);
-      const mutation = this.selfEvolution.recordApplySuccess({
-        proposalId: proposal.id,
-        target: proposal.target,
-        mutationType: "operator_settings",
-        before: before as unknown as JsonValue,
-        after: after as unknown as JsonValue,
-        rollback: { operatorSettings: before },
-        actor: input.appliedBy,
-      });
-      return {
-        proposal: this.selfEvolution.get(proposal.id) ?? proposal,
-        mutation,
-      };
-    } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : "Failed to apply self-evolution proposal";
-      const mutation = this.selfEvolution.recordApplyFailure({
-        proposalId: proposal.id,
-        target: proposal.target,
-        mutationType: "operator_settings",
-        actor: input.appliedBy,
-        errorMessage: message,
-      });
-      throw new HttpError(400, message, mutation as unknown as JsonValue);
-    }
-  }
-
-  private rollbackSelfEvolutionProposal(
-    proposalId: string,
-    rolledBackBy: string
-  ): {
-    proposal: SelfEvolutionProposalRecord;
-    mutation: SelfEvolutionMutationRecord;
-  } {
-    const proposal = this.selfEvolution.get(proposalId);
-    if (!proposal) {
-      throw new HttpError(404, "Self-evolution proposal not found");
-    }
-    if (proposal.status !== "applied") {
-      throw new HttpError(409, "Only applied proposals can be rolled back");
-    }
-    const mutation = this.selfEvolution
-      .listMutations(proposalId, 1)
-      .find((item) => item.status === "applied");
-    if (!mutation) {
-      throw new HttpError(409, "No applied mutation is available to roll back");
-    }
-    const rollback = asJsonObject(mutation.rollback, "rollback");
-    const operatorSettings = asJsonObject(
-      rollback.operatorSettings,
-      "rollback.operatorSettings"
-    );
-    this.settings.update(toOperatorSettingsPatch(operatorSettings));
-    const updatedProposal = this.selfEvolution.recordRollback({
-      proposalId,
-      mutationId: mutation.id,
-      actor: rolledBackBy,
-    });
-    return { proposal: updatedProposal, mutation };
-  }
-
   private async requireWebChatSession(sessionId: string) {
     const session = await this.sessions.get(sessionId);
     if (!session || session.channelId !== "web") {
@@ -1771,6 +1686,32 @@ class OperatorAuthError extends HttpError {
   constructor() {
     super(401, "Unauthorized");
   }
+}
+
+function normalizeHttpError(error: unknown): unknown {
+  if (error instanceof SelfEvolutionMutationError) {
+    return toSelfEvolutionHttpError(error);
+  }
+  return error;
+}
+
+function toSelfEvolutionHttpError(
+  error: SelfEvolutionMutationError
+): HttpError {
+  if (error.code === "not_found") {
+    return new HttpError(404, error.message);
+  }
+  if (
+    error.code === "invalid_state" ||
+    error.code === "confirmation_required"
+  ) {
+    return new HttpError(409, error.message);
+  }
+  return new HttpError(
+    400,
+    error.message,
+    error.mutation as unknown as JsonValue | undefined
+  );
 }
 
 class SimpleRateLimiter {
@@ -2016,72 +1957,6 @@ function extractBundleTools(manifest: JsonValue): Array<{
       responseTemplate: tool.responseTemplate,
     };
   });
-}
-
-function extractOperatorSettingsPatch(
-  proposal: SelfEvolutionProposalRecord
-): Partial<OperatorSettings> {
-  if (proposal.target !== "configuration") {
-    throw new Error(
-      "Only configuration proposals can be applied in this slice"
-    );
-  }
-  const proposedChange = asJsonObject(
-    proposal.proposedChange,
-    "proposedChange"
-  );
-  const operatorSettings = asJsonObject(
-    proposedChange.operatorSettings,
-    "proposedChange.operatorSettings"
-  );
-  return toOperatorSettingsPatch(operatorSettings);
-}
-
-function toOperatorSettingsPatch(
-  value: Record<string, JsonValue>
-): Partial<OperatorSettings> {
-  const patch: Partial<OperatorSettings> = {};
-  if (value.dashboardRefreshSeconds !== undefined) {
-    if (
-      typeof value.dashboardRefreshSeconds !== "number" ||
-      !Number.isInteger(value.dashboardRefreshSeconds) ||
-      value.dashboardRefreshSeconds <= 0
-    ) {
-      throw new Error(
-        "operatorSettings.dashboardRefreshSeconds must be a positive integer"
-      );
-    }
-    patch.dashboardRefreshSeconds = value.dashboardRefreshSeconds;
-  }
-  if (value.chatDefaultConversationId !== undefined) {
-    if (
-      typeof value.chatDefaultConversationId !== "string" ||
-      value.chatDefaultConversationId.trim() === ""
-    ) {
-      throw new Error(
-        "operatorSettings.chatDefaultConversationId must be a non-empty string"
-      );
-    }
-    patch.chatDefaultConversationId = value.chatDefaultConversationId.trim();
-  }
-  if (value.memoryTimelineLimit !== undefined) {
-    if (
-      typeof value.memoryTimelineLimit !== "number" ||
-      !Number.isInteger(value.memoryTimelineLimit) ||
-      value.memoryTimelineLimit <= 0
-    ) {
-      throw new Error(
-        "operatorSettings.memoryTimelineLimit must be a positive integer"
-      );
-    }
-    patch.memoryTimelineLimit = value.memoryTimelineLimit;
-  }
-  if (Object.keys(patch).length === 0) {
-    throw new Error(
-      "operatorSettings must contain at least one supported field"
-    );
-  }
-  return patch;
 }
 
 function asJsonObject(

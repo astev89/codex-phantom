@@ -3012,10 +3012,12 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     );
     const rollbackJson = (await rollbackResponse.json()) as {
       proposal: { status: string; rolledBackBy: string };
+      mutation: { status: string };
     };
     assert.equal(rollbackResponse.status, 200);
     assert.equal(rollbackJson.proposal.status, "rolled_back");
     assert.equal(rollbackJson.proposal.rolledBackBy, "operator");
+    assert.equal(rollbackJson.mutation.status, "rolled_back");
 
     const rolledBackSettingsResponse = await fetch(
       `http://127.0.0.1:${port}/admin/settings`,

@@ -20,6 +20,10 @@ _Avoid_: Outbound-only Slack, basic Slack inbound
 Agent-proposed or agent-applied changes to its own behavior, memory, tools, prompts, or configuration under explicit policy, audit, approval, and rollback controls.
 _Avoid_: Unrestricted self-mutation
 
+**Self-evolution mutation module**:
+A governed self-evolution module interface that owns approved proposal execution, target-specific mutation adapters, before/after/rollback payloads, apply failure recording, and rollback effects while HTTP remains an adapter and proposal storage remains persistence.
+_Avoid_: Route mutation helper, proposal store side effect
+
 **Internal tool parity**:
 Phantom plugin capability reduced to internal, governed tool bundles and dynamic tools without a public marketplace.
 _Avoid_: Plugin marketplace, public marketplace
@@ -94,6 +98,7 @@ _Avoid_: Implemented feature, feature complete
 - **Slack parity** treats feedback buttons and reaction feedback as required parity features that can trail progressive updates and status reactions.
 - **Governed self-evolution** is part of **Production-level parity**.
 - **Governed self-evolution** excludes unrestricted mutation of prompts, tools, auth, channel policy, runtime config, or filesystem state.
+- **Governed self-evolution** uses the **Self-evolution mutation module** so approved apply and rollback behavior stays behind target-specific adapters instead of living in HTTP routes.
 - **Internal tool parity** is part of **Production-level parity**.
 - **Internal tool parity** excludes Phantom's public marketplace model because `codex-phantom` is an internal project.
 - **Operator onboarding parity** is part of **Production-level parity**.
