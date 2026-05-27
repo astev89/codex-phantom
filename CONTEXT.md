@@ -32,6 +32,14 @@ _Avoid_: Magic-link parity
 Matching Phantom's advanced memory lifecycle, including contradiction handling, supersession, scheduled consolidation, promote/prune behavior, decay, reinforcement, and hybrid retrieval.
 _Avoid_: Smarter memory, advanced memory
 
+**Memory lifecycle module**:
+A memory module interface that owns lifecycle links, active/inactive state transitions, reinforcement events, retrieval access effects, episodic compaction, and active-row pruning while storage remains in SQLite.
+_Avoid_: Store helper, maintenance side effect
+
+**Memory retrieval policy**:
+A memory module interface that owns active-row filtering, hybrid ranking, decay calculation, vector-score blending, and bounded context envelope shaping.
+_Avoid_: Query helper, scoring formula in storage
+
 **Production proof**:
 Executable evidence that production claims hold in a real deployment-like environment, separate from Phantom feature parity.
 _Avoid_: Parity feature, feature gap
@@ -92,6 +100,8 @@ _Avoid_: Implemented feature, feature complete
 - **Operator onboarding parity** includes YAML-first roles/config and first-run setup checks, but does not require Phantom's magic-link auth.
 - **Managed memory parity** is part of **Production-level parity**.
 - **Managed memory parity** prioritizes contradiction/supersession and scheduled consolidation before retrieval tuning.
+- **Managed memory parity** uses the **Memory lifecycle module** for durable lifecycle mutation, reinforcement, compaction, and pruning.
+- **Managed memory parity** uses the **Memory retrieval policy** for bounded hybrid ranking and decay without making storage own scoring rules.
 - **Production proof** validates **Production-level parity** but is not itself a Phantom feature.
 - **Channel parity** is part of **Production-level parity**.
 - **Channel parity** explicitly excludes Telegram and defaults future discovered Phantom channels to in scope unless carved out.
@@ -129,6 +139,9 @@ _Avoid_: Implemented feature, feature complete
 >
 > **Dev:** "Is Qdrant-backed recall enough for memory parity?"
 > **Domain expert:** "No — **Managed memory parity** also needs contradiction/supersession, lifecycle consolidation, decay, and reinforcement."
+>
+> **Dev:** "Should memory retrieval scoring live in the store because the store queries rows?"
+> **Domain expert:** "No — keep `MemoryStore` as the facade, but put scoring and context shaping in the **Memory retrieval policy** and state changes in the **Memory lifecycle module**."
 >
 > **Dev:** "Is running the Docker smoke script a parity feature?"
 > **Domain expert:** "No — it is **Production proof** that the production-safe implementation actually works."

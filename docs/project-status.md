@@ -4,7 +4,7 @@ This is the living status ledger for `codex-phantom`. Update it at the end of ea
 
 Last updated: 2026-05-27
 Branch: `jarvis/gitnexus-skills-refresh`
-Latest verified implementation commit: current `refactor(chat): deepen artifact workflow module` commit
+Latest verified implementation commit: current `refactor(memory): split lifecycle and retrieval policy` commit
 
 ## Current State
 
@@ -13,6 +13,24 @@ Latest verified implementation commit: current `refactor(chat): deepen artifact 
 The project is now past its first serious production-hardening pass. It is not yet equivalent to the original Phantom project, but the core runtime is materially safer to run: request sizes are bounded, secrets are rejected in production when defaults are used, outbound model calls have timeouts, scheduler jobs recover deterministically after restarts, MCP events are durably audited, external webhooks are signed, Slack sends retry transient failures, operator-console workflows have browser coverage, and the Docker image runs compiled JavaScript instead of stripped TypeScript.
 
 ## Just Completed
+
+Managed memory module split wave completed locally on 2026-05-27:
+
+- Kept `MemoryStore` as the public facade while extracting shared memory row helpers, lifecycle behavior, and retrieval ranking into focused modules.
+- Moved lifecycle links, active-only reinforcement, retrieval access effects, decay persistence, episodic compaction, and active-row pruning behind a memory lifecycle module.
+- Moved active filtering, hybrid ranking, vector-score blending, decay calculation, and bounded context envelope shaping behind a memory retrieval policy.
+- Added direct lifecycle and retrieval-policy coverage while preserving existing memory, maintenance, and server integration behavior.
+
+Verification from this wave:
+
+```bash
+node --experimental-strip-types --test tests/memory-lifecycle.test.ts tests/memory-retrieval-policy.test.ts tests/memory.test.ts tests/memory-maintenance.test.ts tests/server.test.ts
+npm run typecheck
+npm test
+npm run build
+git diff --check
+GitNexus detect_changes(scope="staged")
+```
 
 Chat artifact module wave completed locally on 2026-05-27:
 
