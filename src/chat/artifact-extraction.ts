@@ -1,9 +1,14 @@
 import type { AgentRunEvent } from "../agent/types.ts";
 import type { ChatArtifactKind } from "./artifact-store.ts";
 import type { JsonValue } from "../shared/types.ts";
+import {
+  extractedArtifactContentBuffer,
+  MAX_EXTRACTED_ARTIFACT_BYTES,
+  MAX_EXTRACTED_ARTIFACTS_PER_RUN,
+  normalizeExtractedArtifactContentType,
+} from "./content-policy.ts";
 
-export const MAX_EXTRACTED_ARTIFACTS_PER_RUN = 5;
-export const MAX_EXTRACTED_ARTIFACT_BYTES = 1_000_000;
+export { MAX_EXTRACTED_ARTIFACT_BYTES, MAX_EXTRACTED_ARTIFACTS_PER_RUN };
 
 export type ExtractedArtifactDraft = {
   title: string;
@@ -66,9 +71,11 @@ function extractArtifactDrafts(
     source: ArtifactSourceMetadata;
   }
 ): ExtractedArtifactDraft[] {
-  const candidates = artifactCandidates(value).slice(0, options.remaining);
   const drafts: ExtractedArtifactDraft[] = [];
-  for (const candidate of candidates) {
+  for (const candidate of artifactCandidates(value)) {
+    if (drafts.length >= options.remaining) {
+      break;
+    }
     const draft = toArtifactDraft(candidate, options.source);
     if (draft) {
       drafts.push(draft);
@@ -108,11 +115,14 @@ function toArtifactDraft(
   if (!title || !kind || value.content === undefined) {
     return undefined;
   }
-  const contentType = normalizeContentType(value.contentType, kind);
+  const contentType = normalizeExtractedArtifactContentType(
+    value.contentType,
+    kind
+  );
   if (!contentType) {
     return undefined;
   }
-  const content = artifactContent(kind, value.content);
+  const content = extractedArtifactContentBuffer(kind, value.content);
   if (!content || content.byteLength > MAX_EXTRACTED_ARTIFACT_BYTES) {
     return undefined;
   }
@@ -132,19 +142,6 @@ function toArtifactDraft(
   };
 }
 
-function artifactContent(
-  kind: ChatArtifactKind,
-  content: JsonValue
-): Buffer | undefined {
-  if (kind === "json") {
-    return Buffer.from(JSON.stringify(content, null, 2), "utf8");
-  }
-  if (typeof content !== "string") {
-    return undefined;
-  }
-  return Buffer.from(content, "utf8");
-}
-
 function normalizeTitle(value: JsonValue | undefined): string | undefined {
   if (typeof value !== "string") {
     return undefined;
@@ -160,33 +157,6 @@ function normalizeKind(
     return value;
   }
   return undefined;
-}
-
-function normalizeContentType(
-  value: JsonValue | undefined,
-  kind: ChatArtifactKind
-): string | undefined {
-  const contentType =
-    typeof value === "string" ? value.trim().toLowerCase() : "";
-  if (kind === "json") {
-    return contentType === "application/json" || contentType.endsWith("+json")
-      ? contentType
-      : "application/json";
-  }
-  const resolved = contentType || "text/plain";
-  return isSafeExtractedContentType(resolved) ? resolved : undefined;
-}
-
-function isSafeExtractedContentType(contentType: string): boolean {
-  return (
-    contentType.startsWith("text/") ||
-    contentType === "application/json" ||
-    contentType.endsWith("+json") ||
-    contentType === "application/markdown" ||
-    contentType === "application/x-ndjson" ||
-    contentType === "application/yaml" ||
-    contentType === "application/x-yaml"
-  );
 }
 
 function parseJsonValue(value: string): JsonValue | undefined {

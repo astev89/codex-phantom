@@ -4,7 +4,7 @@ This is the living status ledger for `codex-phantom`. Update it at the end of ea
 
 Last updated: 2026-05-27
 Branch: `jarvis/gitnexus-skills-refresh`
-Latest verified implementation commit: current `refactor(channels): introduce inbound response dispatcher` commit
+Latest verified implementation commit: current `refactor(chat): deepen artifact workflow module` commit
 
 ## Current State
 
@@ -13,6 +13,24 @@ Latest verified implementation commit: current `refactor(channels): introduce in
 The project is now past its first serious production-hardening pass. It is not yet equivalent to the original Phantom project, but the core runtime is materially safer to run: request sizes are bounded, secrets are rejected in production when defaults are used, outbound model calls have timeouts, scheduler jobs recover deterministically after restarts, MCP events are durably audited, external webhooks are signed, Slack sends retry transient failures, operator-console workflows have browser coverage, and the Docker image runs compiled JavaScript instead of stripped TypeScript.
 
 ## Just Completed
+
+Chat artifact module wave completed locally on 2026-05-27:
+
+- Introduced a chat artifact service that owns attachment upload, safe text indexing, artifact creation, automatic extraction persistence, search, session summaries, export collection, and download handles.
+- Centralized artifact and attachment content policy for byte limits, safe text/JSON indexing and extraction, content-to-buffer conversion, generated filenames, and safe download names.
+- Refactored HTTP routes back into adapter shape while preserving `/chat/attachments/:id`, `/chat/artifacts/:id`, session artifact summaries, SSE `run.completed.artifacts`, and chat export response shapes.
+- Added focused service and policy coverage for upload/index/search/download behavior, manual artifacts, extracted artifacts, and no-op unsafe content outcomes.
+
+Verification from this wave:
+
+```bash
+node --experimental-strip-types --test tests/chat-artifacts.test.ts tests/artifact-extraction.test.ts tests/server.test.ts
+npm run typecheck
+npm test
+npm run build
+git diff --check
+GitNexus detect_changes(scope="staged")
+```
 
 Inbound response dispatcher wave completed locally on 2026-05-27:
 

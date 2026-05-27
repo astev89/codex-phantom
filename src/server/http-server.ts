@@ -9,7 +9,6 @@ import { Buffer } from "node:buffer";
 import type { AppConfig } from "../config.ts";
 import { modelAdapterMode } from "../config.ts";
 import type { JsonValue } from "../shared/types.ts";
-import { createId } from "../shared/ids.ts";
 import { validateWebhookSecret } from "../channels/webhook.ts";
 import { RuntimeChannelCapabilities } from "../channels/capabilities.ts";
 import { ChannelRegistry } from "../channels/registry.ts";
@@ -37,21 +36,12 @@ import type { SlackTransport } from "../channels/slack.ts";
 import { SlackChannel } from "../channels/slack.ts";
 import { OrchestrationService } from "../orchestration/service.ts";
 import { SchedulerService } from "../scheduler/service.ts";
-import {
-  SessionStore,
-  type ChatAttachmentRecord,
-} from "../chat/session-store.ts";
+import { SessionStore } from "../chat/session-store.ts";
 import { ChatBlobStore } from "../chat/blob-store.ts";
-import {
-  ChatArtifactStore,
-  type ChatArtifactRecord,
-  type ChatArtifactKind,
-} from "../chat/artifact-store.ts";
-import {
-  AttachmentTextIndexStore,
-  type AttachmentTextIndexRecord,
-  type AttachmentTextSearchResult,
-} from "../chat/attachment-text-index.ts";
+import { ChatArtifactStore } from "../chat/artifact-store.ts";
+import { AttachmentTextIndexStore } from "../chat/attachment-text-index.ts";
+import { ChatArtifactService } from "../chat/artifacts.ts";
+import { safeDownloadName } from "../chat/content-policy.ts";
 import {
   extractArtifactDraftsFromEvent,
   extractArtifactDraftsFromOutputText,
@@ -127,9 +117,7 @@ export class HttpServer {
   private readonly slackFeedback: SlackFeedbackStore;
   private readonly inboundRouter: InboundChannelRouter;
   private readonly inboundResponses: InboundResponseDispatcher;
-  private readonly chatBlobs: ChatBlobStore;
-  private readonly chatArtifacts: ChatArtifactStore;
-  private readonly attachmentTextIndex: AttachmentTextIndexStore;
+  private readonly chatArtifacts: ChatArtifactService;
   private readonly governance: ToolGovernanceService;
   private readonly selfEvolution: SelfEvolutionProposalStore;
   private readonly slack: SlackChannel;
@@ -181,9 +169,13 @@ export class HttpServer {
       this.channelInbound,
       orchestration
     );
-    this.chatBlobs = new ChatBlobStore(config.dataDir);
-    this.chatArtifacts = new ChatArtifactStore(database);
-    this.attachmentTextIndex = new AttachmentTextIndexStore(database);
+    this.chatArtifacts = new ChatArtifactService({
+      sessions,
+      runs,
+      blobs: new ChatBlobStore(config.dataDir),
+      artifacts: new ChatArtifactStore(database),
+      attachmentTextIndexes: new AttachmentTextIndexStore(database),
+    });
     this.governance = governance;
     this.selfEvolution = new SelfEvolutionProposalStore(database);
     this.slack = new SlackChannel(
@@ -853,35 +845,14 @@ export class HttpServer {
         const files = multipart.files.filter(
           (file) => file.fieldName === "file"
         );
-        if (files.length === 0) {
-          throw new HttpError(400, "At least one file is required");
-        }
-        if (files.length > 10) {
-          throw new HttpError(400, "file must contain 10 or fewer items");
-        }
-        const attachments = [];
-        for (const file of files) {
-          if (file.content.byteLength > 25_000_000) {
-            throw new HttpError(413, "Attachment exceeds 25000000 bytes");
-          }
-          const id = createId("att");
-          const blob = await this.chatBlobs.write(id, file.content);
-          const attachment = await this.sessions.recordUploadedAttachment({
-            id,
-            sessionId: session.sessionId,
-            runId,
-            name: file.fileName,
-            contentType: file.contentType || "application/octet-stream",
-            sizeBytes: blob.sizeBytes,
-            storagePath: blob.storagePath,
-            sha256: blob.sha256,
-          });
-          this.attachmentTextIndex.indexAttachment(attachment, file.content);
-          attachments.push(attachment);
-        }
+        const attachments = await this.chatArtifacts.uploadAttachments({
+          sessionId: session.sessionId,
+          runId,
+          files,
+        });
         this.json(res, 201, {
           requestId,
-          attachments: attachments.map(toAttachmentSummary),
+          attachments,
         });
         return;
       }
@@ -893,14 +864,14 @@ export class HttpServer {
           throw new HttpError(400, "q is required");
         }
         const limit = url.searchParams.get("limit");
-        const matches = this.attachmentTextIndex.search(
+        const matches = this.chatArtifacts.searchAttachmentText({
           query,
-          limit ? Number.parseInt(limit, 10) : 25
-        );
+          limit: limit ? Number.parseInt(limit, 10) : 25,
+        });
         this.json(res, 200, {
           requestId,
           query,
-          matches: matches.map(toAttachmentTextSearchSummary),
+          matches,
         });
         return;
       }
@@ -913,18 +884,14 @@ export class HttpServer {
         const attachmentId = decodeURIComponent(
           url.pathname.replace("/chat/attachments/", "")
         );
-        const attachment = await this.sessions.getAttachment(attachmentId);
-        if (!attachment?.storagePath) {
-          throw new HttpError(404, "Attachment not found");
-        }
-        await this.requireWebChatSession(attachment.sessionId);
-        const content = await this.chatBlobs.read(attachment.storagePath);
+        const download =
+          await this.chatArtifacts.getAttachmentDownload(attachmentId);
         res.writeHead(200, {
-          "Content-Type": attachment.contentType,
-          "Content-Length": content.byteLength,
-          "Content-Disposition": `attachment; filename="${safeDownloadName(attachment.name)}"`,
+          "Content-Type": download.contentType,
+          "Content-Length": download.content.byteLength,
+          "Content-Disposition": `attachment; filename="${download.fileName}"`,
         });
-        res.end(content);
+        res.end(download.content);
         return;
       }
 
@@ -937,24 +904,18 @@ export class HttpServer {
         if (body.runId) {
           await this.requireSessionRun(session, body.runId);
         }
-        const content = artifactContentBuffer(body.kind, body.content);
-        const id = createId("art");
-        const blob = await this.chatBlobs.write(id, content);
-        const artifact = await this.chatArtifacts.create({
-          id,
+        const artifact = await this.chatArtifacts.createArtifact({
           sessionId: session.sessionId,
           runId: body.runId,
           title: body.title,
           kind: body.kind,
           contentType: body.contentType,
-          sizeBytes: blob.sizeBytes,
-          storagePath: blob.storagePath,
-          sha256: blob.sha256,
+          content: body.content,
           metadata: body.metadata ?? null,
         });
         this.json(res, 201, {
           requestId,
-          artifact: toArtifactSummary(artifact),
+          artifact,
         });
         return;
       }
@@ -964,18 +925,14 @@ export class HttpServer {
         const artifactId = decodeURIComponent(
           url.pathname.replace("/chat/artifacts/", "")
         );
-        const artifact = await this.chatArtifacts.get(artifactId);
-        if (!artifact) {
-          throw new HttpError(404, "Artifact not found");
-        }
-        await this.requireWebChatSession(artifact.sessionId);
-        const content = await this.chatBlobs.read(artifact.storagePath);
+        const download =
+          await this.chatArtifacts.getArtifactDownload(artifactId);
         res.writeHead(200, {
-          "Content-Type": artifact.contentType,
-          "Content-Length": content.byteLength,
-          "Content-Disposition": `attachment; filename="${safeDownloadName(artifactFileName(artifact))}"`,
+          "Content-Type": download.contentType,
+          "Content-Length": download.content.byteLength,
+          "Content-Disposition": `attachment; filename="${download.fileName}"`,
         });
-        res.end(content);
+        res.end(download.content);
         return;
       }
 
@@ -993,23 +950,13 @@ export class HttpServer {
             persistedRunIds.map((runId) => this.runs.get(runId))
           )
         ).filter((run) => run !== null);
-        const attachments = await this.sessions.listAttachments(
-          session.sessionId
-        );
-        const artifacts = await this.chatArtifacts.listForSession(
-          session.sessionId
-        );
-        const attachmentTextIndexes = this.attachmentTextIndex.listForSession(
+        const artifactState = await this.chatArtifacts.listSessionArtifactState(
           session.sessionId
         );
         this.json(res, 200, {
           session,
           runs,
-          attachments: attachments.map(toAttachmentSummary),
-          artifacts: artifacts.map(toArtifactSummary),
-          attachmentTextIndexes: attachmentTextIndexes.map(
-            toAttachmentTextIndexSummary
-          ),
+          ...artifactState,
         });
         return;
       }
@@ -1089,23 +1036,18 @@ export class HttpServer {
             }
           }
           if (body.attachmentIds && body.attachmentIds.length > 0) {
-            await this.sessions.linkAttachmentsToRun(
-              result.sessionId,
-              result.runId,
-              body.attachmentIds
-            );
-            this.attachmentTextIndex.updateRunForAttachments(
-              result.sessionId,
-              result.runId,
-              body.attachmentIds
-            );
+            await this.chatArtifacts.linkAttachmentsToRun({
+              sessionId: result.sessionId,
+              runId: result.runId,
+              attachmentIds: body.attachmentIds,
+            });
           }
           if (body.attachments && body.attachments.length > 0) {
-            await this.sessions.recordAttachments(
-              result.sessionId,
-              result.runId,
-              body.attachments
-            );
+            await this.chatArtifacts.recordMessageAttachments({
+              sessionId: result.sessionId,
+              runId: result.runId,
+              attachments: body.attachments,
+            });
           }
           collectExtractedArtifacts(
             extractArtifactDraftsFromOutputText(
@@ -1113,11 +1055,12 @@ export class HttpServer {
               MAX_EXTRACTED_ARTIFACTS_PER_RUN - extractedArtifacts.length
             )
           );
-          const persistedArtifacts = await this.persistExtractedArtifacts(
-            result.sessionId,
-            result.runId,
-            extractedArtifacts
-          );
+          const persistedArtifacts =
+            await this.chatArtifacts.persistExtractedArtifacts({
+              sessionId: result.sessionId,
+              runId: result.runId,
+              drafts: extractedArtifacts,
+            });
           emit({
             type: "final",
             runId: result.runId,
@@ -1127,7 +1070,7 @@ export class HttpServer {
             "run.completed",
             {
               outputText: result.outputText,
-              artifacts: persistedArtifacts.map(toArtifactSummary),
+              artifacts: persistedArtifacts,
             },
             {
               sessionId: result.sessionId,
@@ -1534,22 +1477,7 @@ export class HttpServer {
         };
       case "chat":
         return {
-          items: [
-            ...(await this.sessions.listStoredAttachments(250)).map(
-              (attachment) => ({
-                ...toAttachmentSummary(attachment),
-                kind: "attachment",
-              })
-            ),
-            ...(await this.chatArtifacts.list(250)).map((artifact) => ({
-              ...toArtifactSummary(artifact),
-              kind: "artifact",
-            })),
-            ...this.attachmentTextIndex.list(250).map((record) => ({
-              ...toAttachmentTextIndexSummary(record),
-              kind: "attachment_text_index",
-            })),
-          ],
+          items: await this.chatArtifacts.listChatExportItems(250),
         };
       case "timeline":
       default:
@@ -1760,33 +1688,6 @@ export class HttpServer {
     if (!run) {
       throw new HttpError(404, "Run not found for chat session");
     }
-  }
-
-  private async persistExtractedArtifacts(
-    sessionId: string,
-    runId: string,
-    drafts: ExtractedArtifactDraft[]
-  ): Promise<ChatArtifactRecord[]> {
-    const artifacts: ChatArtifactRecord[] = [];
-    for (const draft of drafts) {
-      const id = createId("art");
-      const blob = await this.chatBlobs.write(id, draft.content);
-      artifacts.push(
-        await this.chatArtifacts.create({
-          id,
-          sessionId,
-          runId,
-          title: draft.title,
-          kind: draft.kind,
-          contentType: draft.contentType,
-          sizeBytes: blob.sizeBytes,
-          storagePath: blob.storagePath,
-          sha256: blob.sha256,
-          metadata: draft.metadata,
-        })
-      );
-    }
-    return artifacts;
   }
 
   private buildDiagnostics(
@@ -2049,93 +1950,6 @@ function optionalMultipartField(
   return value || undefined;
 }
 
-function toAttachmentSummary(
-  attachment: ChatAttachmentRecord
-): Record<string, JsonValue> {
-  return removeUndefined({
-    id: attachment.id,
-    sessionId: attachment.sessionId,
-    runId: attachment.runId,
-    name: attachment.name,
-    contentType: attachment.contentType,
-    sizeBytes: attachment.sizeBytes,
-    description: attachment.description,
-    sha256: attachment.sha256,
-    downloadUrl: attachment.storagePath
-      ? `/chat/attachments/${attachment.id}`
-      : undefined,
-    createdAt: attachment.createdAt,
-  });
-}
-
-function toAttachmentTextIndexSummary(
-  record: AttachmentTextIndexRecord
-): Record<string, JsonValue> {
-  return removeUndefined({
-    attachmentId: record.attachmentId,
-    sessionId: record.sessionId,
-    runId: record.runId,
-    contentType: record.contentType,
-    indexedBytes: record.indexedBytes,
-    skippedReason: record.skippedReason,
-    createdAt: record.createdAt,
-    updatedAt: record.updatedAt,
-  });
-}
-
-function toAttachmentTextSearchSummary(
-  result: AttachmentTextSearchResult
-): Record<string, JsonValue> {
-  return removeUndefined({
-    ...toAttachmentTextIndexSummary(result),
-    name: result.name,
-    sizeBytes: result.sizeBytes,
-    sha256: result.sha256,
-    downloadUrl: result.downloadUrl,
-    excerpt: result.excerpt,
-  });
-}
-
-function toArtifactSummary(
-  artifact: ChatArtifactRecord
-): Record<string, JsonValue> {
-  return removeUndefined({
-    id: artifact.id,
-    sessionId: artifact.sessionId,
-    runId: artifact.runId,
-    title: artifact.title,
-    kind: artifact.kind,
-    contentType: artifact.contentType,
-    sizeBytes: artifact.sizeBytes,
-    sha256: artifact.sha256,
-    metadata: artifact.metadata,
-    downloadUrl: `/chat/artifacts/${artifact.id}`,
-    createdAt: artifact.createdAt,
-    updatedAt: artifact.updatedAt,
-  });
-}
-
-function removeUndefined(
-  record: Record<string, JsonValue | undefined>
-): Record<string, JsonValue> {
-  return Object.fromEntries(
-    Object.entries(record).filter(([, value]) => value !== undefined)
-  ) as Record<string, JsonValue>;
-}
-
-function artifactContentBuffer(
-  kind: ChatArtifactKind,
-  content: JsonValue
-): Buffer {
-  if (kind === "json") {
-    return Buffer.from(JSON.stringify(content, null, 2), "utf8");
-  }
-  if (typeof content !== "string") {
-    throw new HttpError(400, "content must be a string");
-  }
-  return Buffer.from(content, "utf8");
-}
-
 function parseSelfEvolutionActionPath(pathname: string): {
   proposalId: string;
   action: string;
@@ -2278,25 +2092,4 @@ function asJsonObject(
     throw new Error(`${field} must be a JSON object`);
   }
   return value;
-}
-
-function artifactFileName(artifact: ChatArtifactRecord): string {
-  return `${artifact.title}${extensionForContentType(artifact.contentType)}`;
-}
-
-function extensionForContentType(contentType: string): string {
-  switch (contentType.toLowerCase()) {
-    case "text/markdown":
-      return ".md";
-    case "application/json":
-      return ".json";
-    case "text/plain":
-      return ".txt";
-    default:
-      return "";
-  }
-}
-
-function safeDownloadName(name: string): string {
-  return name.replace(/[\\/\r\n"]/g, "_").trim() || "download";
 }

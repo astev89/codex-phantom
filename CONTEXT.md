@@ -56,6 +56,14 @@ _Avoid_: Channel row, route special case
 A channel module interface that owns completed and failed inbound run side effects, dispatching replies, progress, audit, retry, and failure isolation through target-specific adapters.
 _Avoid_: Route callback, channel reply helper
 
+**Chat artifact module**:
+A chat module interface that owns attachment upload, text indexing, artifact persistence, automatic extraction persistence, search, session artifact summaries, and download handles while HTTP remains only an adapter.
+_Avoid_: Storage helper, route workflow
+
+**Artifact content policy**:
+A central chat policy module that owns artifact and attachment byte limits, safe searchable content types, extracted-artifact content rules, download names, and file-name generation.
+_Avoid_: Per-route content checks, duplicated MIME allowlist
+
 **Email thread identity**:
 The conversation identity for an email exchange, derived from RFC message threading headers when available and from sender plus normalized subject only as a fallback.
 _Avoid_: Subject-only thread, mailbox folder identity
@@ -91,6 +99,8 @@ _Avoid_: Implemented feature, feature complete
 - **Email channel parity** requires Email to be a **First-class runtime channel**, not a manual-only SMTP notifier.
 - A **First-class runtime channel** is described by a **Runtime channel capability** so channel semantics stay local instead of leaking across startup, readiness, diagnostics, and HTTP routes.
 - A **First-class runtime channel** uses the **Inbound response dispatcher** so inbound run completion behavior stays local to channel reply adapters instead of leaking into HTTP routes or polling loops.
+- **Web Chat parity** uses the **Chat artifact module** so attachment continuity, artifact persistence, search, downloads, and extraction side effects stay local to chat instead of leaking into HTTP routes.
+- The **Chat artifact module** depends on the **Artifact content policy** for byte limits, safe text indexing, extracted-artifact content rules, and download names.
 - **Email channel parity** treats inbound IMAP and outbound SMTP as one all-or-nothing enabled capability; partial inbound-only or outbound-only modes are not parity-complete.
 - **Email thread identity** uses message headers first so replies remain attached to the correct exchange across subject edits and multi-party threads.
 - **Email attachment parity** prioritizes metadata and safe bounded text extraction before raw binary storage or outbound attachment generation.
@@ -137,6 +147,9 @@ _Avoid_: Implemented feature, feature complete
 >
 > **Dev:** "Where should Slack and Email final reply behavior live?"
 > **Domain expert:** "In the **Inbound response dispatcher**. HTTP and polling should route inbound events; channel adapters should own replies, progress, retry, and audit."
+>
+> **Dev:** "Should chat attachment indexing and artifact downloads live in HTTP because routes expose them?"
+> **Domain expert:** "No — HTTP is the adapter. The **Chat artifact module** owns the workflow, and the **Artifact content policy** owns limits and safe content rules."
 >
 > **Dev:** "Can we enable Email with only SMTP configured?"
 > **Domain expert:** "No — **Email channel parity** is all-or-nothing: an enabled Email channel must have both IMAP inbound and SMTP outbound configured."

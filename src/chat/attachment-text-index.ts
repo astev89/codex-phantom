@@ -1,7 +1,6 @@
 import type { AppDatabase } from "../platform/database.ts";
 import type { ChatAttachmentRecord } from "./session-store.ts";
-
-export const MAX_ATTACHMENT_TEXT_INDEX_BYTES = 200_000;
+import { extractSearchableAttachmentText } from "./content-policy.ts";
 
 type AttachmentTextIndexRow = {
   attachment_id: string;
@@ -54,7 +53,10 @@ export class AttachmentTextIndexStore {
     content: Buffer
   ): AttachmentTextIndexRecord {
     const now = new Date().toISOString();
-    const extracted = extractSearchableText(attachment.contentType, content);
+    const extracted = extractSearchableAttachmentText(
+      attachment.contentType,
+      content
+    );
     const record: AttachmentTextIndexRecord = {
       attachmentId: attachment.id,
       sessionId: attachment.sessionId,
@@ -155,34 +157,6 @@ export class AttachmentTextIndexStore {
       )
       .map((row) => toSearchResult(row, normalized));
   }
-}
-
-function extractSearchableText(
-  contentType: string,
-  content: Buffer
-): { text?: string; bytes: number; skippedReason?: string } {
-  if (!isSafeTextContentType(contentType)) {
-    return { bytes: 0, skippedReason: "unsafe_content_type" };
-  }
-  const bounded = content.subarray(0, MAX_ATTACHMENT_TEXT_INDEX_BYTES);
-  const text = bounded.toString("utf8").replace(/\u0000/g, "");
-  if (!text.trim()) {
-    return { bytes: 0, skippedReason: "empty_text" };
-  }
-  return { text, bytes: bounded.byteLength };
-}
-
-function isSafeTextContentType(contentType: string): boolean {
-  const normalized = contentType.toLowerCase().split(";")[0]?.trim() ?? "";
-  return (
-    normalized.startsWith("text/") ||
-    normalized === "application/json" ||
-    normalized.endsWith("+json") ||
-    normalized === "application/markdown" ||
-    normalized === "application/x-ndjson" ||
-    normalized === "application/yaml" ||
-    normalized === "application/x-yaml"
-  );
 }
 
 function toIndexRecord(row: AttachmentTextIndexRow): AttachmentTextIndexRecord {
