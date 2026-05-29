@@ -93,9 +93,6 @@ export class InboundResponseDispatcher {
   }
 
   async onComplete(record: InboundChannelEventRecord): Promise<void> {
-    if (!record.outputText) {
-      return;
-    }
     await this.runAdapter(record, "onComplete", (adapter) =>
       adapter.onComplete?.(record)
     );
@@ -170,11 +167,11 @@ export function createSlackInboundResponseAdapter(input: {
     },
     async onComplete(record) {
       const target = targetFor(record);
-      if (!target || !record.outputText) {
-        return;
-      }
-      await progressReporters.get(record.id)?.completed(record.outputText);
       try {
+        if (!target || !record.outputText) {
+          return;
+        }
+        await progressReporters.get(record.id)?.completed(record.outputText);
         const delivered = await input.slack.sendMessage({
           channel: target.channel,
           text: record.outputText,

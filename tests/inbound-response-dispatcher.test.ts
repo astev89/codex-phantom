@@ -244,6 +244,68 @@ test("dispatcher skips disabled Slack final delivery without failing completion"
   );
 });
 
+test("dispatcher releases Slack progress when completion has no output", async () => {
+  await withStores(
+    "dispatcher-slack-empty-complete",
+    async ({ channels, deliveries, inbound }) => {
+      channels.upsert({ id: "slack", enabled: true });
+      const config = makeConfig("/tmp", { slackBotToken: "xoxb-test-token" });
+      const transport = new RecordingSlackTransport();
+      const slack = new SlackChannel(config, channels, deliveries, transport);
+      const dispatcher = new InboundResponseDispatcher({
+        logger: new Logger("error"),
+        adapters: {
+          slack_thread: createSlackInboundResponseAdapter({
+            slack,
+            store: inbound,
+            logger: new Logger("error"),
+          }),
+        },
+      });
+      const received = inbound.recordReceived({
+        channelId: "slack",
+        providerEventId: "slack-empty-output",
+        conversationId: "C123:T123",
+        senderId: "U123",
+        message: "hello",
+        threadId: "T123",
+        responseTarget: {
+          type: "slack_thread",
+          channel: "C123",
+          threadTs: "T123",
+          messageTs: "M123",
+        },
+        rawPayload: { source: "test" },
+      });
+      const running = inbound.markRunning(received.record.id);
+      const completed = inbound.markCompleted(running.id, {
+        sessionId: "session_1",
+        runId: "run_1",
+        outputText: "assistant:hello",
+      });
+
+      await dispatcher.beforeRun(running);
+      await dispatcher.onComplete({ ...completed, outputText: undefined });
+      await dispatcher.onEvent(completed, {
+        type: "tool_call_started",
+        runId: "run_1",
+        toolCallId: "tool_1",
+        toolName: "memory.query",
+      });
+
+      assert.deepEqual(
+        transport.sent.map((message) => message.text),
+        ["Queued..."]
+      );
+      assert.equal(transport.updated.length, 0);
+      assert.deepEqual(
+        transport.reactions.map((reaction) => reaction.name),
+        ["hourglass"]
+      );
+    }
+  );
+});
+
 test("dispatcher sends threaded Email replies and records delivery audit", async () => {
   const dataDir = await mkdtemp(
     join(tmpdir(), "codex-phantom-dispatcher-email-")
