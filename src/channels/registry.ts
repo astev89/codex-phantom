@@ -1,6 +1,10 @@
-import { hasConfiguredValue, type AppConfig } from "../config.ts";
+import type { AppConfig } from "../config.ts";
 import type { AppDatabase } from "../platform/database.ts";
 import { decodeJson, encodeJson } from "../platform/database.ts";
+import {
+  runtimeChannelDefinitions,
+  runtimeChannelEnvPresent,
+} from "./capabilities.ts";
 
 type ChannelRow = {
   id: string;
@@ -28,82 +32,6 @@ export type ChannelRecord = {
   createdAt: string;
   updatedAt: string;
 };
-
-const DEFAULT_CHANNELS = [
-  {
-    id: "web",
-    kind: "operator_ui",
-    displayName: "Web Console",
-    description:
-      "Direct operator chat surface served by the local HTTP console.",
-    enabled: true,
-    config: { transport: "http" },
-  },
-  {
-    id: "webhook",
-    kind: "webhook",
-    displayName: "Webhook",
-    description: "Inbound signed webhook channel for external integrations.",
-    enabled: true,
-    secretEnvVar: "EXTERNAL_CHANNEL_SECRET",
-    webhookPath: "/channels/webhook",
-    config: { transport: "http" },
-  },
-  {
-    id: "scheduler",
-    kind: "internal",
-    displayName: "Scheduler",
-    description: "Internal scheduled jobs that enqueue coordinator runs.",
-    enabled: true,
-    config: { transport: "internal" },
-  },
-  {
-    id: "slack",
-    kind: "external_chat",
-    displayName: "Slack",
-    description:
-      "Slack channel with outbound delivery and signed inbound Events API ingestion.",
-    enabled: false,
-    secretEnvVar: "SLACK_BOT_TOKEN",
-    config: {
-      transport: "slack",
-      status: "available",
-      requiredSecretEnvVars: ["SLACK_BOT_TOKEN", "SLACK_SIGNING_SECRET"],
-      optionalSecretEnvVars: ["SLACK_BOT_USER_ID"],
-    },
-  },
-  {
-    id: "email",
-    kind: "external_chat",
-    displayName: "Email",
-    description: "Email channel with bounded IMAP polling and SMTP replies.",
-    enabled: false,
-    secretEnvVar: "EMAIL_IMAP_PASSWORD",
-    config: {
-      transport: "email",
-      status: "available",
-      requiredSecretEnvVars: [
-        "EMAIL_IMAP_HOST",
-        "EMAIL_IMAP_USERNAME",
-        "EMAIL_IMAP_PASSWORD",
-        "EMAIL_SMTP_HOST",
-        "EMAIL_SMTP_USERNAME",
-        "EMAIL_SMTP_PASSWORD",
-        "EMAIL_FROM_ADDRESS",
-      ],
-      optionalSecretEnvVars: ["EMAIL_FROM_NAME"],
-    },
-  },
-] as Array<{
-  id: string;
-  kind: string;
-  displayName: string;
-  description: string;
-  enabled: boolean;
-  secretEnvVar?: string;
-  webhookPath?: string;
-  config: Record<string, unknown>;
-}>;
 
 export class ChannelRegistry {
   private readonly database: AppDatabase;
@@ -198,7 +126,7 @@ export class ChannelRegistry {
   private seedDefaults(): void {
     const now = new Date().toISOString();
     this.database.transaction(() => {
-      for (const channel of DEFAULT_CHANNELS) {
+      for (const channel of runtimeChannelDefinitions()) {
         this.database.run(
           `
             INSERT INTO channels (
@@ -241,49 +169,16 @@ export class ChannelRegistry {
       secretPresent:
         requiredSecrets.length > 0
           ? requiredSecrets.every((secretEnvVar) =>
-              this.resolveSecretPresence(secretEnvVar)
+              runtimeChannelEnvPresent(this.config, secretEnvVar)
             )
           : row.secret_env_var
-            ? this.resolveSecretPresence(row.secret_env_var)
+            ? runtimeChannelEnvPresent(this.config, row.secret_env_var)
             : true,
       webhookPath: row.webhook_path ?? undefined,
       config,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
-  }
-
-  private resolveSecretPresence(secretEnvVar: string): boolean {
-    switch (secretEnvVar) {
-      case "SLACK_BOT_TOKEN":
-        return Boolean(this.config.slackBotToken);
-      case "SLACK_APP_TOKEN":
-        return Boolean(this.config.slackAppToken);
-      case "SLACK_SIGNING_SECRET":
-        return Boolean(this.config.slackSigningSecret);
-      case "SLACK_BOT_USER_ID":
-        return Boolean(this.config.slackBotUserId);
-      case "EMAIL_IMAP_HOST":
-        return hasConfiguredValue(this.config.emailImapHost);
-      case "EMAIL_IMAP_USERNAME":
-        return hasConfiguredValue(this.config.emailImapUsername);
-      case "EMAIL_IMAP_PASSWORD":
-        return hasConfiguredValue(this.config.emailImapPassword);
-      case "EMAIL_SMTP_HOST":
-        return hasConfiguredValue(this.config.emailSmtpHost);
-      case "EMAIL_SMTP_USERNAME":
-        return hasConfiguredValue(this.config.emailSmtpUsername);
-      case "EMAIL_SMTP_PASSWORD":
-        return hasConfiguredValue(this.config.emailSmtpPassword);
-      case "EMAIL_FROM_ADDRESS":
-        return hasConfiguredValue(this.config.emailFromAddress);
-      case "EMAIL_FROM_NAME":
-        return hasConfiguredValue(this.config.emailFromName);
-      case "EXTERNAL_CHANNEL_SECRET":
-        return Boolean(this.config.externalChannelSecret);
-      default:
-        return Boolean(process.env[secretEnvVar]);
-    }
   }
 }
 

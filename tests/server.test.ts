@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AppConfig } from "../src/config.ts";
 import { AgentRuntime } from "../src/agent/runtime.ts";
+import { RuntimeChannelCapabilities } from "../src/channels/capabilities.ts";
 import { ChannelRegistry } from "../src/channels/registry.ts";
 import { InboundChannelEventStore } from "../src/channels/inbound.ts";
 import type { EmailChannelStatus } from "../src/channels/email.ts";
@@ -28,7 +29,6 @@ import { McpAuditStore } from "../src/mcp/audit.ts";
 import { McpServer } from "../src/mcp/server.ts";
 import { renderChatApp } from "../src/server/chat-ui.ts";
 import { HttpServer } from "../src/server/http-server.ts";
-import { buildJsonExport, buildNdjsonExport } from "../src/server/export.ts";
 import { AppDatabase } from "../src/platform/database.ts";
 import { Logger } from "../src/platform/logger.ts";
 import { MetricsStore } from "../src/platform/metrics.ts";
@@ -332,65 +332,6 @@ async function eventually<T>(
   return latest;
 }
 
-test("buildJsonExport wraps records in an operator-friendly envelope", () => {
-  const payload = buildJsonExport({
-    scope: "requests",
-    exportedAt: "2026-04-23T12:00:00.000Z",
-    meta: { requestedBy: "operator-console" },
-    items: [
-      {
-        requestId: "req_123",
-        path: "/health",
-        statusCode: 200,
-      },
-    ],
-  });
-
-  assert.deepEqual(payload, {
-    scope: "requests",
-    format: "json",
-    exportedAt: "2026-04-23T12:00:00.000Z",
-    count: 1,
-    meta: { requestedBy: "operator-console" },
-    items: [
-      {
-        requestId: "req_123",
-        path: "/health",
-        statusCode: 200,
-      },
-    ],
-  });
-});
-
-test("buildNdjsonExport emits one serialized record per line", () => {
-  const payload = buildNdjsonExport({
-    scope: "channels",
-    exportedAt: "2026-04-23T12:00:00.000Z",
-    items: [
-      {
-        channelId: "slack",
-        status: "delivered",
-      },
-      {
-        channelId: "webhook",
-        status: "failed",
-      },
-    ],
-  });
-
-  assert.equal(payload.scope, "channels");
-  assert.equal(payload.format, "ndjson");
-  assert.equal(payload.exportedAt, "2026-04-23T12:00:00.000Z");
-  assert.equal(payload.count, 2);
-  assert.equal(
-    payload.body,
-    [
-      '{"channelId":"slack","status":"delivered"}',
-      '{"channelId":"webhook","status":"failed"}',
-    ].join("\n")
-  );
-});
-
 test("renderChatApp preserves fenced code blocks and safely injects title data", () => {
   const html = renderChatApp("Bad </script><script>alert(1)</script>");
 
@@ -531,6 +472,8 @@ test("admin email visibility surfaces channel status, readiness gaps, inbound, d
       skippedAutoReplyCount: 1,
     },
   });
+  const runtimeChannels = new RuntimeChannelCapabilities();
+  runtimeChannels.registerLifecycle("email", emailStatus);
   const server = new HttpServer(
     config,
     orchestration,
@@ -547,7 +490,7 @@ test("admin email visibility surfaces channel status, readiness gaps, inbound, d
     governance,
     new FakeSlackTransport(),
     undefined,
-    emailStatus
+    runtimeChannels
   );
 
   const inboundRecord = inbound.recordReceived({
@@ -629,6 +572,27 @@ test("admin email visibility surfaces channel status, readiness gaps, inbound, d
       }
     );
     assert.equal(enableEmailResponse.status, 200);
+    assert.equal(emailStatus.stopCount, 1);
+    assert.equal(emailStatus.startCount, 1);
+
+    const disableSchedulerResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/channels`,
+      {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ id: "scheduler", enabled: false }),
+      }
+    );
+    assert.equal(disableSchedulerResponse.status, 200);
+    const enableSchedulerResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/channels`,
+      {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ id: "scheduler", enabled: true }),
+      }
+    );
+    assert.equal(enableSchedulerResponse.status, 200);
     assert.equal(emailStatus.stopCount, 1);
     assert.equal(emailStatus.startCount, 1);
 
@@ -2988,10 +2952,12 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     );
     const rollbackJson = (await rollbackResponse.json()) as {
       proposal: { status: string; rolledBackBy: string };
+      mutation: { status: string };
     };
     assert.equal(rollbackResponse.status, 200);
     assert.equal(rollbackJson.proposal.status, "rolled_back");
     assert.equal(rollbackJson.proposal.rolledBackBy, "operator");
+    assert.equal(rollbackJson.mutation.status, "rolled_back");
 
     const rolledBackSettingsResponse = await fetch(
       `http://127.0.0.1:${port}/admin/settings`,

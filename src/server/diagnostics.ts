@@ -1,9 +1,9 @@
 import type { AppConfig } from "../config.ts";
+import { modelAdapterMode } from "../config.ts";
 import {
-  emailConfigComplete,
-  hasConfiguredValue,
-  modelAdapterMode,
-} from "../config.ts";
+  missingRequiredEnvVarsForChannel,
+  runtimeChannelConfigComplete,
+} from "../channels/capabilities.ts";
 import type { ChannelDeliveryRecord } from "../channels/delivery-log.ts";
 import type { MemoryStatus } from "../memory/types.ts";
 import type { ChannelRecord } from "../channels/registry.ts";
@@ -60,41 +60,9 @@ export function buildStartupDiagnostics(
   if (config.qdrantEnabled && !config.qdrantUrl) {
     missingRecommendedEnv.add("QDRANT_URL");
   }
-  if (
-    channels.some((channel) => channel.id === "slack" && channel.enabled) &&
-    !config.slackBotToken
-  ) {
-    missingRecommendedEnv.add("SLACK_BOT_TOKEN");
-  }
-  if (
-    channels.some((channel) => channel.id === "webhook" && channel.enabled) &&
-    !config.externalChannelSecret
-  ) {
-    missingRecommendedEnv.add("EXTERNAL_CHANNEL_SECRET");
-  }
-  if (channels.some((channel) => channel.id === "email" && channel.enabled)) {
-    if (!emailConfigComplete(config)) {
-      if (!hasConfiguredValue(config.emailImapHost)) {
-        missingRecommendedEnv.add("EMAIL_IMAP_HOST");
-      }
-      if (!hasConfiguredValue(config.emailImapUsername)) {
-        missingRecommendedEnv.add("EMAIL_IMAP_USERNAME");
-      }
-      if (!hasConfiguredValue(config.emailImapPassword)) {
-        missingRecommendedEnv.add("EMAIL_IMAP_PASSWORD");
-      }
-      if (!hasConfiguredValue(config.emailSmtpHost)) {
-        missingRecommendedEnv.add("EMAIL_SMTP_HOST");
-      }
-      if (!hasConfiguredValue(config.emailSmtpUsername)) {
-        missingRecommendedEnv.add("EMAIL_SMTP_USERNAME");
-      }
-      if (!hasConfiguredValue(config.emailSmtpPassword)) {
-        missingRecommendedEnv.add("EMAIL_SMTP_PASSWORD");
-      }
-      if (!hasConfiguredValue(config.emailFromAddress)) {
-        missingRecommendedEnv.add("EMAIL_FROM_ADDRESS");
-      }
+  for (const channel of channels) {
+    for (const envVar of missingRequiredEnvVarsForChannel(config, channel)) {
+      missingRecommendedEnv.add(envVar);
     }
   }
 
@@ -104,7 +72,8 @@ export function buildStartupDiagnostics(
         enabled: emailChannel.enabled,
         running: emailChannel.enabled ? (emailStatus?.running ?? false) : false,
         configComplete:
-          emailStatus?.configComplete ?? emailConfigComplete(config),
+          emailStatus?.configComplete ??
+          runtimeChannelConfigComplete(config, "email"),
         ...(emailStatus?.lastPollAt
           ? { lastPollAt: emailStatus.lastPollAt }
           : {}),

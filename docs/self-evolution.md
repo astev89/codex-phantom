@@ -80,6 +80,8 @@ curl -X POST http://localhost:3210/admin/self-evolution/proposals/sep_123/rollba
 
 V1 apply support is intentionally narrow. Only `configuration` proposals with `proposedChange.operatorSettings` can apply. The mutation record captures `before`, `after`, and rollback metadata before the operator settings are changed. Prompt, memory policy, tool, and role proposals remain auditable proposals until a later slice adds safe mutation classes for them.
 
+Apply and rollback execution lives behind the self-evolution mutation module. HTTP routes validate operator requests and serialize responses; target adapters own mutation validation, before/after/rollback payload construction, failure audit, and rollback effects.
+
 ## Agent Tool
 
 The in-process tool `self_evolution.propose` creates the same durable proposal record with `proposedBy: "agent"`. It does not approve, apply, write files, change prompts, update config, or alter tool policy. Apply and rollback remain operator-authenticated HTTP actions.

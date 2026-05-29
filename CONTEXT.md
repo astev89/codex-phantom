@@ -20,6 +20,10 @@ _Avoid_: Outbound-only Slack, basic Slack inbound
 Agent-proposed or agent-applied changes to its own behavior, memory, tools, prompts, or configuration under explicit policy, audit, approval, and rollback controls.
 _Avoid_: Unrestricted self-mutation
 
+**Self-evolution mutation module**:
+A governed self-evolution module interface that owns approved proposal execution, target-specific mutation adapters, before/after/rollback payloads, apply failure recording, and rollback effects while HTTP remains an adapter and proposal storage remains persistence.
+_Avoid_: Route mutation helper, proposal store side effect
+
 **Internal tool parity**:
 Phantom plugin capability reduced to internal, governed tool bundles and dynamic tools without a public marketplace.
 _Avoid_: Plugin marketplace, public marketplace
@@ -31,6 +35,14 @@ _Avoid_: Magic-link parity
 **Managed memory parity**:
 Matching Phantom's advanced memory lifecycle, including contradiction handling, supersession, scheduled consolidation, promote/prune behavior, decay, reinforcement, and hybrid retrieval.
 _Avoid_: Smarter memory, advanced memory
+
+**Memory lifecycle module**:
+A memory module interface that owns lifecycle links, active/inactive state transitions, reinforcement events, retrieval access effects, episodic compaction, and active-row pruning while storage remains in SQLite.
+_Avoid_: Store helper, maintenance side effect
+
+**Memory retrieval policy**:
+A memory module interface that owns active-row filtering, hybrid ranking, decay calculation, vector-score blending, and bounded context envelope shaping.
+_Avoid_: Query helper, scoring formula in storage
 
 **Production proof**:
 Executable evidence that production claims hold in a real deployment-like environment, separate from Phantom feature parity.
@@ -47,6 +59,26 @@ _Avoid_: Newsletter feature, generic email notifications
 **First-class runtime channel**:
 An enabled channel that participates in runtime startup, readiness, inbound routing, outbound delivery, audit, and operator visibility.
 _Avoid_: Manual-only integration, notification helper
+
+**Runtime channel capability**:
+A channel module interface that owns channel metadata, configuration requirements, readiness, diagnostics, and optional lifecycle hooks while leaving persisted enabled state in channel storage.
+_Avoid_: Channel row, route special case
+
+**Inbound response dispatcher**:
+A channel module interface that owns completed and failed inbound run side effects, dispatching replies, progress, audit, retry, and failure isolation through target-specific adapters.
+_Avoid_: Route callback, channel reply helper
+
+**Chat artifact module**:
+A chat module interface that owns attachment upload, text indexing, artifact persistence, automatic extraction persistence, search, session artifact summaries, and download handles while HTTP remains only an adapter.
+_Avoid_: Storage helper, route workflow
+
+**Artifact content policy**:
+A central chat policy module that owns artifact and attachment byte limits, safe searchable content types, extracted-artifact content rules, download names, and file-name generation.
+_Avoid_: Per-route content checks, duplicated MIME allowlist
+
+**Operator export module**:
+An operator module interface that owns export scope collection and formatting across audit, channel, governance, run, MCP, chat, and timeline sources while HTTP remains only auth, query parsing, and response writing.
+_Avoid_: Export formatter, route scope switch
 
 **Email thread identity**:
 The conversation identity for an email exchange, derived from RFC message threading headers when available and from sender plus normalized subject only as a fallback.
@@ -70,17 +102,25 @@ _Avoid_: Implemented feature, feature complete
 - **Slack parity** treats feedback buttons and reaction feedback as required parity features that can trail progressive updates and status reactions.
 - **Governed self-evolution** is part of **Production-level parity**.
 - **Governed self-evolution** excludes unrestricted mutation of prompts, tools, auth, channel policy, runtime config, or filesystem state.
+- **Governed self-evolution** uses the **Self-evolution mutation module** so approved apply and rollback behavior stays behind target-specific adapters instead of living in HTTP routes.
 - **Internal tool parity** is part of **Production-level parity**.
 - **Internal tool parity** excludes Phantom's public marketplace model because `codex-phantom` is an internal project.
 - **Operator onboarding parity** is part of **Production-level parity**.
 - **Operator onboarding parity** includes YAML-first roles/config and first-run setup checks, but does not require Phantom's magic-link auth.
 - **Managed memory parity** is part of **Production-level parity**.
 - **Managed memory parity** prioritizes contradiction/supersession and scheduled consolidation before retrieval tuning.
+- **Managed memory parity** uses the **Memory lifecycle module** for durable lifecycle mutation, reinforcement, compaction, and pruning.
+- **Managed memory parity** uses the **Memory retrieval policy** for bounded hybrid ranking and decay without making storage own scoring rules.
 - **Production proof** validates **Production-level parity** but is not itself a Phantom feature.
 - **Channel parity** is part of **Production-level parity**.
 - **Channel parity** explicitly excludes Telegram and defaults future discovered Phantom channels to in scope unless carved out.
 - **Email channel parity** is part of **Channel parity** because Phantom ships a built-in Email channel.
 - **Email channel parity** requires Email to be a **First-class runtime channel**, not a manual-only SMTP notifier.
+- A **First-class runtime channel** is described by a **Runtime channel capability** so channel semantics stay local instead of leaking across startup, readiness, diagnostics, and HTTP routes.
+- A **First-class runtime channel** uses the **Inbound response dispatcher** so inbound run completion behavior stays local to channel reply adapters instead of leaking into HTTP routes or polling loops.
+- **Web Chat parity** uses the **Chat artifact module** so attachment continuity, artifact persistence, search, downloads, and extraction side effects stay local to chat instead of leaking into HTTP routes.
+- The **Chat artifact module** depends on the **Artifact content policy** for byte limits, safe text indexing, extracted-artifact content rules, and download names.
+- Operator visibility uses the **Operator export module** so export scope collection stays local instead of leaking across HTTP routes.
 - **Email channel parity** treats inbound IMAP and outbound SMTP as one all-or-nothing enabled capability; partial inbound-only or outbound-only modes are not parity-complete.
 - **Email thread identity** uses message headers first so replies remain attached to the correct exchange across subject edits and multi-party threads.
 - **Email attachment parity** prioritizes metadata and safe bounded text extraction before raw binary storage or outbound attachment generation.
@@ -110,6 +150,9 @@ _Avoid_: Implemented feature, feature complete
 > **Dev:** "Is Qdrant-backed recall enough for memory parity?"
 > **Domain expert:** "No — **Managed memory parity** also needs contradiction/supersession, lifecycle consolidation, decay, and reinforcement."
 >
+> **Dev:** "Should memory retrieval scoring live in the store because the store queries rows?"
+> **Domain expert:** "No — keep `MemoryStore` as the facade, but put scoring and context shaping in the **Memory retrieval policy** and state changes in the **Memory lifecycle module**."
+>
 > **Dev:** "Is running the Docker smoke script a parity feature?"
 > **Domain expert:** "No — it is **Production proof** that the production-safe implementation actually works."
 >
@@ -121,6 +164,15 @@ _Avoid_: Implemented feature, feature complete
 >
 > **Dev:** "Can Email parity just send SMTP notifications?"
 > **Domain expert:** "No — **Email channel parity** requires a **First-class runtime channel** with inbound routing, replies, audit, readiness, and operator visibility."
+>
+> **Dev:** "Where should channel config and lifecycle rules live?"
+> **Domain expert:** "In the **Runtime channel capability**. The registry stores enabled state; the capability owns channel semantics."
+>
+> **Dev:** "Where should Slack and Email final reply behavior live?"
+> **Domain expert:** "In the **Inbound response dispatcher**. HTTP and polling should route inbound events; channel adapters should own replies, progress, retry, and audit."
+>
+> **Dev:** "Should chat attachment indexing and artifact downloads live in HTTP because routes expose them?"
+> **Domain expert:** "No — HTTP is the adapter. The **Chat artifact module** owns the workflow, and the **Artifact content policy** owns limits and safe content rules."
 >
 > **Dev:** "Can we enable Email with only SMTP configured?"
 > **Domain expert:** "No — **Email channel parity** is all-or-nothing: an enabled Email channel must have both IMAP inbound and SMTP outbound configured."

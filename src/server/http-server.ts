@@ -9,48 +9,39 @@ import { Buffer } from "node:buffer";
 import type { AppConfig } from "../config.ts";
 import { modelAdapterMode } from "../config.ts";
 import type { JsonValue } from "../shared/types.ts";
-import { createId } from "../shared/ids.ts";
 import { validateWebhookSecret } from "../channels/webhook.ts";
+import { RuntimeChannelCapabilities } from "../channels/capabilities.ts";
 import { ChannelRegistry } from "../channels/registry.ts";
 import { ChannelDeliveryStore } from "../channels/delivery-log.ts";
 import type { ChannelDeliveryRecord } from "../channels/delivery-log.ts";
-import type { EmailChannelStatus } from "../channels/email.ts";
 import {
   InboundChannelEventStore,
   InboundChannelRouter,
-  type InboundResponseTarget,
 } from "../channels/inbound.ts";
 import {
   SlackFeedbackStore,
   mapSlackInteractionFeedback,
   mapSlackReactionFeedback,
-  slackFeedbackBlocks,
 } from "../channels/slack-feedback.ts";
 import {
   mapSlackEventToInboundMessage,
   validateSlackRequest,
   type SlackEventsPayload,
 } from "../channels/slack-events.ts";
-import { SlackProgressReporter } from "../channels/slack-progress.ts";
+import {
+  InboundResponseDispatcher,
+  createSlackInboundResponseAdapter,
+} from "../channels/inbound-response-dispatcher.ts";
 import type { SlackTransport } from "../channels/slack.ts";
 import { SlackChannel } from "../channels/slack.ts";
 import { OrchestrationService } from "../orchestration/service.ts";
 import { SchedulerService } from "../scheduler/service.ts";
-import {
-  SessionStore,
-  type ChatAttachmentRecord,
-} from "../chat/session-store.ts";
+import { SessionStore } from "../chat/session-store.ts";
 import { ChatBlobStore } from "../chat/blob-store.ts";
-import {
-  ChatArtifactStore,
-  type ChatArtifactRecord,
-  type ChatArtifactKind,
-} from "../chat/artifact-store.ts";
-import {
-  AttachmentTextIndexStore,
-  type AttachmentTextIndexRecord,
-  type AttachmentTextSearchResult,
-} from "../chat/attachment-text-index.ts";
+import { ChatArtifactStore } from "../chat/artifact-store.ts";
+import { AttachmentTextIndexStore } from "../chat/attachment-text-index.ts";
+import { ChatArtifactService } from "../chat/artifacts.ts";
+import { safeDownloadName } from "../chat/content-policy.ts";
 import {
   extractArtifactDraftsFromEvent,
   extractArtifactDraftsFromOutputText,
@@ -70,18 +61,19 @@ import type { MemoryMaintenanceService } from "../memory/maintenance.ts";
 import { DynamicToolRegistry } from "../tools/dynamic-registry.ts";
 import { ToolGovernanceService } from "../tools/governance.ts";
 import { ToolBundleImportStore } from "../tools/bundles.ts";
+import { SelfEvolutionProposalStore } from "../self-evolution/proposals.ts";
 import {
-  SelfEvolutionProposalStore,
-  type SelfEvolutionMutationRecord,
-  type SelfEvolutionProposalRecord,
-} from "../self-evolution/proposals.ts";
+  SelfEvolutionMutationError,
+  SelfEvolutionMutationService,
+  createOperatorSettingsMutationAdapter,
+} from "../self-evolution/mutations.ts";
 import { renderOperatorConsole } from "./ui.ts";
 import { renderChatApp } from "./chat-ui.ts";
-import { OperatorSettingsStore, type OperatorSettings } from "./settings.ts";
+import { OperatorSettingsStore } from "./settings.ts";
 import { RequestAuditStore } from "./request-audit.ts";
 import { buildStartupDiagnostics } from "./diagnostics.ts";
 import { buildSetupReadiness } from "./readiness.ts";
-import { buildOperatorExport } from "./export.ts";
+import { OperatorExportService, buildOperatorExport } from "./export.ts";
 import {
   validateChannelUpdateBody,
   validateDynamicToolBody,
@@ -105,12 +97,6 @@ import {
 
 const DEFAULT_MAX_BODY_BYTES = 1_048_576;
 
-type EmailStatusProvider = {
-  status(): EmailChannelStatus;
-  start(): Promise<void>;
-  stop(): Promise<void>;
-};
-
 export class HttpServer {
   private readonly server: Server;
   private readonly config: AppConfig;
@@ -131,16 +117,17 @@ export class HttpServer {
   private readonly channelInbound: InboundChannelEventStore;
   private readonly slackFeedback: SlackFeedbackStore;
   private readonly inboundRouter: InboundChannelRouter;
-  private readonly chatBlobs: ChatBlobStore;
-  private readonly chatArtifacts: ChatArtifactStore;
-  private readonly attachmentTextIndex: AttachmentTextIndexStore;
+  private readonly inboundResponses: InboundResponseDispatcher;
+  private readonly chatArtifacts: ChatArtifactService;
   private readonly governance: ToolGovernanceService;
   private readonly selfEvolution: SelfEvolutionProposalStore;
+  private readonly selfEvolutionMutations: SelfEvolutionMutationService;
   private readonly slack: SlackChannel;
   private readonly settings: OperatorSettingsStore;
   private readonly requestAudits: RequestAuditStore;
   private readonly mcpAudit: McpAuditStore;
-  private readonly emailStatusProvider?: EmailStatusProvider;
+  private readonly operatorExports: OperatorExportService;
+  private readonly runtimeChannels: RuntimeChannelCapabilities;
   private readonly operatorTokenHash: Buffer;
   private readonly mcpTokenHash: Buffer;
   private readonly mcpRateLimiter = new SimpleRateLimiter(12, 60_000);
@@ -161,7 +148,7 @@ export class HttpServer {
     governance: ToolGovernanceService,
     slackTransport?: SlackTransport,
     memoryMaintenance?: MemoryMaintenanceService,
-    emailStatusProvider?: EmailStatusProvider
+    runtimeChannels = new RuntimeChannelCapabilities()
   ) {
     this.config = config;
     this.orchestration = orchestration;
@@ -185,21 +172,52 @@ export class HttpServer {
       this.channelInbound,
       orchestration
     );
-    this.chatBlobs = new ChatBlobStore(config.dataDir);
-    this.chatArtifacts = new ChatArtifactStore(database);
-    this.attachmentTextIndex = new AttachmentTextIndexStore(database);
+    this.chatArtifacts = new ChatArtifactService({
+      sessions,
+      runs,
+      blobs: new ChatBlobStore(config.dataDir),
+      artifacts: new ChatArtifactStore(database),
+      attachmentTextIndexes: new AttachmentTextIndexStore(database),
+    });
     this.governance = governance;
     this.selfEvolution = new SelfEvolutionProposalStore(database);
+    this.settings = new OperatorSettingsStore(database);
+    this.selfEvolutionMutations = new SelfEvolutionMutationService({
+      proposals: this.selfEvolution,
+      adapters: [createOperatorSettingsMutationAdapter(this.settings)],
+    });
     this.slack = new SlackChannel(
       config,
       channels,
       this.channelDeliveries,
       slackTransport
     );
-    this.settings = new OperatorSettingsStore(database);
+    this.inboundResponses = new InboundResponseDispatcher({
+      logger,
+      adapters: {
+        slack_thread: createSlackInboundResponseAdapter({
+          slack: this.slack,
+          store: this.channelInbound,
+          logger,
+        }),
+      },
+    });
     this.requestAudits = new RequestAuditStore(database);
     this.mcpAudit = new McpAuditStore(database);
-    this.emailStatusProvider = emailStatusProvider;
+    this.operatorExports = new OperatorExportService({
+      requestAudits: this.requestAudits,
+      channelDeliveries: this.channelDeliveries,
+      channelInbound: this.channelInbound,
+      slackFeedback: this.slackFeedback,
+      governance: this.governance,
+      selfEvolution: this.selfEvolution,
+      toolBundles: this.toolBundles,
+      mcpAudit: this.mcpAudit,
+      runEvents: this.database,
+      chatArtifacts: this.chatArtifacts,
+      memoryMaintenance: this.memoryMaintenance,
+    });
+    this.runtimeChannels = runtimeChannels;
     this.operatorTokenHash = hashToken(config.operatorBearerToken);
     this.mcpTokenHash = hashToken(config.mcpBearerToken);
     this.server = createServer((req, res) => {
@@ -410,7 +428,7 @@ export class HttpServer {
         const scope = url.searchParams.get("scope") ?? "timeline";
         const format =
           url.searchParams.get("format") === "ndjson" ? "ndjson" : "json";
-        const payload = await this.buildExportPayload(scope);
+        const payload = await this.operatorExports.collect(scope);
         const exportPayload = buildOperatorExport(format, {
           scope,
           items: payload.items,
@@ -479,13 +497,10 @@ export class HttpServer {
           parseJsonBody(await readTextBody(req))
         );
         const channel = this.channels.upsert(body);
-        if (channel.id === "email") {
-          if (channel.enabled) {
-            await this.emailStatusProvider?.start();
-          } else {
-            await this.emailStatusProvider?.stop();
-          }
-        }
+        await this.runtimeChannels.applyRuntimeState(
+          channel.id,
+          channel.enabled
+        );
         this.json(res, 200, { requestId, channel });
         return;
       }
@@ -678,10 +693,8 @@ export class HttpServer {
           const body = validateSelfEvolutionApplyBody(
             parseJsonBody(await readTextBody(req))
           );
-          const { proposal, mutation } = this.applySelfEvolutionProposal(
-            proposalId,
-            body
-          );
+          const { proposal, mutation } =
+            this.selfEvolutionMutations.applyProposal(proposalId, body);
           this.json(res, 200, { requestId, proposal, mutation });
           return;
         }
@@ -689,10 +702,11 @@ export class HttpServer {
           const body = validateSelfEvolutionRollbackBody(
             parseJsonBody(await readTextBody(req))
           );
-          const { proposal, mutation } = this.rollbackSelfEvolutionProposal(
-            proposalId,
-            body.rolledBackBy
-          );
+          const { proposal, mutation } =
+            this.selfEvolutionMutations.rollbackProposal(
+              proposalId,
+              body.rolledBackBy
+            );
           this.json(res, 200, { requestId, proposal, mutation });
           return;
         }
@@ -850,35 +864,14 @@ export class HttpServer {
         const files = multipart.files.filter(
           (file) => file.fieldName === "file"
         );
-        if (files.length === 0) {
-          throw new HttpError(400, "At least one file is required");
-        }
-        if (files.length > 10) {
-          throw new HttpError(400, "file must contain 10 or fewer items");
-        }
-        const attachments = [];
-        for (const file of files) {
-          if (file.content.byteLength > 25_000_000) {
-            throw new HttpError(413, "Attachment exceeds 25000000 bytes");
-          }
-          const id = createId("att");
-          const blob = await this.chatBlobs.write(id, file.content);
-          const attachment = await this.sessions.recordUploadedAttachment({
-            id,
-            sessionId: session.sessionId,
-            runId,
-            name: file.fileName,
-            contentType: file.contentType || "application/octet-stream",
-            sizeBytes: blob.sizeBytes,
-            storagePath: blob.storagePath,
-            sha256: blob.sha256,
-          });
-          this.attachmentTextIndex.indexAttachment(attachment, file.content);
-          attachments.push(attachment);
-        }
+        const attachments = await this.chatArtifacts.uploadAttachments({
+          sessionId: session.sessionId,
+          runId,
+          files,
+        });
         this.json(res, 201, {
           requestId,
-          attachments: attachments.map(toAttachmentSummary),
+          attachments,
         });
         return;
       }
@@ -890,14 +883,14 @@ export class HttpServer {
           throw new HttpError(400, "q is required");
         }
         const limit = url.searchParams.get("limit");
-        const matches = this.attachmentTextIndex.search(
+        const matches = this.chatArtifacts.searchAttachmentText({
           query,
-          limit ? Number.parseInt(limit, 10) : 25
-        );
+          limit: limit ? Number.parseInt(limit, 10) : 25,
+        });
         this.json(res, 200, {
           requestId,
           query,
-          matches: matches.map(toAttachmentTextSearchSummary),
+          matches,
         });
         return;
       }
@@ -910,18 +903,14 @@ export class HttpServer {
         const attachmentId = decodeURIComponent(
           url.pathname.replace("/chat/attachments/", "")
         );
-        const attachment = await this.sessions.getAttachment(attachmentId);
-        if (!attachment?.storagePath) {
-          throw new HttpError(404, "Attachment not found");
-        }
-        await this.requireWebChatSession(attachment.sessionId);
-        const content = await this.chatBlobs.read(attachment.storagePath);
+        const download =
+          await this.chatArtifacts.getAttachmentDownload(attachmentId);
         res.writeHead(200, {
-          "Content-Type": attachment.contentType,
-          "Content-Length": content.byteLength,
-          "Content-Disposition": `attachment; filename="${safeDownloadName(attachment.name)}"`,
+          "Content-Type": download.contentType,
+          "Content-Length": download.content.byteLength,
+          "Content-Disposition": `attachment; filename="${download.fileName}"`,
         });
-        res.end(content);
+        res.end(download.content);
         return;
       }
 
@@ -934,24 +923,18 @@ export class HttpServer {
         if (body.runId) {
           await this.requireSessionRun(session, body.runId);
         }
-        const content = artifactContentBuffer(body.kind, body.content);
-        const id = createId("art");
-        const blob = await this.chatBlobs.write(id, content);
-        const artifact = await this.chatArtifacts.create({
-          id,
+        const artifact = await this.chatArtifacts.createArtifact({
           sessionId: session.sessionId,
           runId: body.runId,
           title: body.title,
           kind: body.kind,
           contentType: body.contentType,
-          sizeBytes: blob.sizeBytes,
-          storagePath: blob.storagePath,
-          sha256: blob.sha256,
+          content: body.content,
           metadata: body.metadata ?? null,
         });
         this.json(res, 201, {
           requestId,
-          artifact: toArtifactSummary(artifact),
+          artifact,
         });
         return;
       }
@@ -961,18 +944,14 @@ export class HttpServer {
         const artifactId = decodeURIComponent(
           url.pathname.replace("/chat/artifacts/", "")
         );
-        const artifact = await this.chatArtifacts.get(artifactId);
-        if (!artifact) {
-          throw new HttpError(404, "Artifact not found");
-        }
-        await this.requireWebChatSession(artifact.sessionId);
-        const content = await this.chatBlobs.read(artifact.storagePath);
+        const download =
+          await this.chatArtifacts.getArtifactDownload(artifactId);
         res.writeHead(200, {
-          "Content-Type": artifact.contentType,
-          "Content-Length": content.byteLength,
-          "Content-Disposition": `attachment; filename="${safeDownloadName(artifactFileName(artifact))}"`,
+          "Content-Type": download.contentType,
+          "Content-Length": download.content.byteLength,
+          "Content-Disposition": `attachment; filename="${download.fileName}"`,
         });
-        res.end(content);
+        res.end(download.content);
         return;
       }
 
@@ -990,23 +969,13 @@ export class HttpServer {
             persistedRunIds.map((runId) => this.runs.get(runId))
           )
         ).filter((run) => run !== null);
-        const attachments = await this.sessions.listAttachments(
-          session.sessionId
-        );
-        const artifacts = await this.chatArtifacts.listForSession(
-          session.sessionId
-        );
-        const attachmentTextIndexes = this.attachmentTextIndex.listForSession(
+        const artifactState = await this.chatArtifacts.listSessionArtifactState(
           session.sessionId
         );
         this.json(res, 200, {
           session,
           runs,
-          attachments: attachments.map(toAttachmentSummary),
-          artifacts: artifacts.map(toArtifactSummary),
-          attachmentTextIndexes: attachmentTextIndexes.map(
-            toAttachmentTextIndexSummary
-          ),
+          ...artifactState,
         });
         return;
       }
@@ -1086,23 +1055,18 @@ export class HttpServer {
             }
           }
           if (body.attachmentIds && body.attachmentIds.length > 0) {
-            await this.sessions.linkAttachmentsToRun(
-              result.sessionId,
-              result.runId,
-              body.attachmentIds
-            );
-            this.attachmentTextIndex.updateRunForAttachments(
-              result.sessionId,
-              result.runId,
-              body.attachmentIds
-            );
+            await this.chatArtifacts.linkAttachmentsToRun({
+              sessionId: result.sessionId,
+              runId: result.runId,
+              attachmentIds: body.attachmentIds,
+            });
           }
           if (body.attachments && body.attachments.length > 0) {
-            await this.sessions.recordAttachments(
-              result.sessionId,
-              result.runId,
-              body.attachments
-            );
+            await this.chatArtifacts.recordMessageAttachments({
+              sessionId: result.sessionId,
+              runId: result.runId,
+              attachments: body.attachments,
+            });
           }
           collectExtractedArtifacts(
             extractArtifactDraftsFromOutputText(
@@ -1110,11 +1074,12 @@ export class HttpServer {
               MAX_EXTRACTED_ARTIFACTS_PER_RUN - extractedArtifacts.length
             )
           );
-          const persistedArtifacts = await this.persistExtractedArtifacts(
-            result.sessionId,
-            result.runId,
-            extractedArtifacts
-          );
+          const persistedArtifacts =
+            await this.chatArtifacts.persistExtractedArtifacts({
+              sessionId: result.sessionId,
+              runId: result.runId,
+              drafts: extractedArtifacts,
+            });
           emit({
             type: "final",
             runId: result.runId,
@@ -1124,7 +1089,7 @@ export class HttpServer {
             "run.completed",
             {
               outputText: result.outputText,
-              artifacts: persistedArtifacts.map(toArtifactSummary),
+              artifacts: persistedArtifacts,
             },
             {
               sessionId: result.sessionId,
@@ -1259,43 +1224,8 @@ export class HttpServer {
           this.json(res, 202, { requestId, status: "ignored" });
           return;
         }
-        let progressReporter: SlackProgressReporter | undefined;
         const routed = this.inboundRouter.routeAsync(message, {
-          beforeRun: async (record) => {
-            if (record.responseTarget?.type === "slack_thread") {
-              progressReporter = new SlackProgressReporter({
-                slack: this.slack,
-                store: this.channelInbound,
-                recordId: record.id,
-                target: record.responseTarget,
-              });
-              await progressReporter.queued();
-            }
-          },
-          onEvent: async (event) => {
-            await progressReporter?.onEvent(event);
-          },
-          onComplete: async (record) => {
-            if (
-              record.responseTarget?.type === "slack_thread" &&
-              record.outputText
-            ) {
-              await progressReporter?.completed(record.outputText);
-            }
-            await this.deliverInboundResponse(record);
-          },
-          onFailure: async (record) => {
-            if (record.responseTarget?.type === "slack_thread") {
-              await progressReporter?.failed(
-                record.errorMessage ?? "Inbound channel run failed"
-              );
-            }
-            this.logger.error("inbound_channel_failed", {
-              inboundEventId: record.id,
-              channelId: record.channelId,
-              error: record.errorMessage ?? "Inbound channel run failed",
-            });
-          },
+          ...this.inboundResponses.callbacks(),
         });
         this.json(res, 202, {
           requestId,
@@ -1478,14 +1408,18 @@ export class HttpServer {
 
       throw new HttpError(404, "Not found");
     } catch (error) {
-      const status = error instanceof HttpError ? error.status : 500;
+      const normalizedError = normalizeHttpError(error);
+      const status =
+        normalizedError instanceof HttpError ? normalizedError.status : 500;
       const message =
-        error instanceof Error ? error.message : "Internal Server Error";
+        normalizedError instanceof Error
+          ? normalizedError.message
+          : "Internal Server Error";
       requestLogger.error("request_failed", {
         status,
         error: message,
       });
-      if (error instanceof OperatorAuthError) {
+      if (normalizedError instanceof OperatorAuthError) {
         res.setHeader(
           "WWW-Authenticate",
           'Basic realm="codex-phantom operator"'
@@ -1519,96 +1453,6 @@ export class HttpServer {
         `http.${req.method?.toLowerCase() ?? "unknown"}.${url.pathname}`
       );
       this.metrics.observe("http.request.duration_ms", Date.now() - startedAt);
-    }
-  }
-
-  private async buildExportPayload(
-    scope: string
-  ): Promise<{ items: Array<Record<string, JsonValue>> }> {
-    switch (scope) {
-      case "requests":
-        return { items: this.requestAudits.list(250) };
-      case "channels":
-        return {
-          items: [
-            ...this.channelDeliveries.list(undefined, 250),
-            ...this.channelInbound.list({ limit: 250 }),
-            ...this.slackFeedback.list(250),
-          ],
-        };
-      case "governance":
-        return {
-          items: [
-            ...this.governance.listAudit(250),
-            ...this.selfEvolution.list(250).map((proposal) => ({
-              ...proposal,
-              kind: "self_evolution_proposal",
-            })),
-            ...this.selfEvolution
-              .listMutations(undefined, 250)
-              .map((mutation) => ({
-                ...mutation,
-                kind: "self_evolution_mutation",
-              })),
-            ...this.toolBundles.list(250).map((importRecord) => ({
-              ...importRecord,
-              kind: "tool_bundle_import",
-            })),
-          ],
-        };
-      case "mcp":
-        return { items: this.mcpAudit.list(250) };
-      case "runs":
-        return {
-          items: this.database.all(
-            "SELECT * FROM run_events ORDER BY created_at DESC LIMIT 250"
-          ),
-        };
-      case "chat":
-        return {
-          items: [
-            ...(await this.sessions.listStoredAttachments(250)).map(
-              (attachment) => ({
-                ...toAttachmentSummary(attachment),
-                kind: "attachment",
-              })
-            ),
-            ...(await this.chatArtifacts.list(250)).map((artifact) => ({
-              ...toArtifactSummary(artifact),
-              kind: "artifact",
-            })),
-            ...this.attachmentTextIndex.list(250).map((record) => ({
-              ...toAttachmentTextIndexSummary(record),
-              kind: "attachment_text_index",
-            })),
-          ],
-        };
-      case "timeline":
-      default:
-        return {
-          items: [
-            ...this.requestAudits.list(50),
-            ...this.channelDeliveries.list(undefined, 50),
-            ...this.channelInbound.list({ limit: 50 }),
-            ...this.slackFeedback.list(50),
-            ...(this.memoryMaintenance?.list(50) ?? []),
-            ...this.governance.listAudit(50),
-            ...this.selfEvolution.list(50).map((proposal) => ({
-              ...proposal,
-              kind: "self_evolution_proposal",
-            })),
-            ...this.selfEvolution
-              .listMutations(undefined, 50)
-              .map((mutation) => ({
-                ...mutation,
-                kind: "self_evolution_mutation",
-              })),
-            ...this.toolBundles.list(50).map((importRecord) => ({
-              ...importRecord,
-              kind: "tool_bundle_import",
-            })),
-          ],
-        };
     }
   }
 
@@ -1679,155 +1523,6 @@ export class HttpServer {
     return this.toolBundles.markUninstalled(importId, actor, notes);
   }
 
-  private applySelfEvolutionProposal(
-    proposalId: string,
-    input: { appliedBy: string; confirmHighRisk?: boolean }
-  ): {
-    proposal: SelfEvolutionProposalRecord;
-    mutation: SelfEvolutionMutationRecord;
-  } {
-    const proposal = this.selfEvolution.get(proposalId);
-    if (!proposal) {
-      throw new HttpError(404, "Self-evolution proposal not found");
-    }
-    if (proposal.status !== "approved") {
-      throw new HttpError(
-        409,
-        "Self-evolution proposal must be approved first"
-      );
-    }
-    if (
-      (proposal.riskClass === "high" || proposal.riskClass === "critical") &&
-      input.confirmHighRisk !== true
-    ) {
-      throw new HttpError(
-        409,
-        "High-risk self-evolution proposal requires explicit confirmation"
-      );
-    }
-
-    try {
-      const patch = extractOperatorSettingsPatch(proposal);
-      const before = this.settings.get();
-      const after = this.settings.update(patch);
-      const mutation = this.selfEvolution.recordApplySuccess({
-        proposalId: proposal.id,
-        target: proposal.target,
-        mutationType: "operator_settings",
-        before: before as unknown as JsonValue,
-        after: after as unknown as JsonValue,
-        rollback: { operatorSettings: before },
-        actor: input.appliedBy,
-      });
-      return {
-        proposal: this.selfEvolution.get(proposal.id) ?? proposal,
-        mutation,
-      };
-    } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : "Failed to apply self-evolution proposal";
-      const mutation = this.selfEvolution.recordApplyFailure({
-        proposalId: proposal.id,
-        target: proposal.target,
-        mutationType: "operator_settings",
-        actor: input.appliedBy,
-        errorMessage: message,
-      });
-      throw new HttpError(400, message, mutation as unknown as JsonValue);
-    }
-  }
-
-  private rollbackSelfEvolutionProposal(
-    proposalId: string,
-    rolledBackBy: string
-  ): {
-    proposal: SelfEvolutionProposalRecord;
-    mutation: SelfEvolutionMutationRecord;
-  } {
-    const proposal = this.selfEvolution.get(proposalId);
-    if (!proposal) {
-      throw new HttpError(404, "Self-evolution proposal not found");
-    }
-    if (proposal.status !== "applied") {
-      throw new HttpError(409, "Only applied proposals can be rolled back");
-    }
-    const mutation = this.selfEvolution
-      .listMutations(proposalId, 1)
-      .find((item) => item.status === "applied");
-    if (!mutation) {
-      throw new HttpError(409, "No applied mutation is available to roll back");
-    }
-    const rollback = asJsonObject(mutation.rollback, "rollback");
-    const operatorSettings = asJsonObject(
-      rollback.operatorSettings,
-      "rollback.operatorSettings"
-    );
-    this.settings.update(toOperatorSettingsPatch(operatorSettings));
-    const updatedProposal = this.selfEvolution.recordRollback({
-      proposalId,
-      mutationId: mutation.id,
-      actor: rolledBackBy,
-    });
-    return { proposal: updatedProposal, mutation };
-  }
-
-  private async deliverInboundResponse(record: {
-    id: string;
-    responseTarget?: InboundResponseTarget;
-    outputText?: string;
-  }): Promise<void> {
-    const target = record.responseTarget;
-    const outputText = record.outputText;
-    if (!target || !outputText) {
-      return;
-    }
-    if (target.type === "slack_thread") {
-      try {
-        const delivered = await this.slack.sendMessage({
-          channel: target.channel,
-          text: outputText,
-          threadTs: target.threadTs,
-          blocks: slackFeedbackBlocks(record.id),
-        });
-        this.channelInbound.recordSlackResponseMessage(
-          record.id,
-          delivered.result.ts
-        );
-      } catch (error) {
-        if (this.shouldIgnoreInboundResponseDeliveryError(error)) {
-          this.logger.warn("inbound_response_delivery_skipped", {
-            channelId: "slack",
-            reason:
-              error instanceof Error
-                ? error.message
-                : "Slack delivery unavailable",
-          });
-          return;
-        }
-        throw error;
-      }
-    }
-  }
-
-  private shouldIgnoreInboundResponseDeliveryError(error: unknown): boolean {
-    if (
-      error instanceof HttpError &&
-      (error.status === 409 || error.status === 412)
-    ) {
-      return true;
-    }
-    const message = error instanceof Error ? error.message.toLowerCase() : "";
-    return (
-      message.includes("slack_bot_token") ||
-      message.includes("bot token") ||
-      message.includes("slack channel is not enabled") ||
-      message.includes("channel disabled") ||
-      message.includes("disabled channel")
-    );
-  }
-
   private async requireWebChatSession(sessionId: string) {
     const session = await this.sessions.get(sessionId);
     if (!session || session.channelId !== "web") {
@@ -1849,33 +1544,6 @@ export class HttpServer {
     }
   }
 
-  private async persistExtractedArtifacts(
-    sessionId: string,
-    runId: string,
-    drafts: ExtractedArtifactDraft[]
-  ): Promise<ChatArtifactRecord[]> {
-    const artifacts: ChatArtifactRecord[] = [];
-    for (const draft of drafts) {
-      const id = createId("art");
-      const blob = await this.chatBlobs.write(id, draft.content);
-      artifacts.push(
-        await this.chatArtifacts.create({
-          id,
-          sessionId,
-          runId,
-          title: draft.title,
-          kind: draft.kind,
-          contentType: draft.contentType,
-          sizeBytes: blob.sizeBytes,
-          storagePath: blob.storagePath,
-          sha256: blob.sha256,
-          metadata: draft.metadata,
-        })
-      );
-    }
-    return artifacts;
-  }
-
   private buildDiagnostics(
     memoryStatus: ReturnType<MemoryStore["getStatus"]>,
     channels: ReturnType<ChannelRegistry["list"]>,
@@ -1885,7 +1553,7 @@ export class HttpServer {
       this.config,
       memoryStatus,
       channels,
-      this.emailStatusProvider?.status(),
+      this.runtimeChannels.emailStatus(),
       this.listRecentFailedDeliveries("email"),
       setupReadiness,
       this.orchestration.getRolePolicyStatus()
@@ -1957,6 +1625,32 @@ class OperatorAuthError extends HttpError {
   constructor() {
     super(401, "Unauthorized");
   }
+}
+
+function normalizeHttpError(error: unknown): unknown {
+  if (error instanceof SelfEvolutionMutationError) {
+    return toSelfEvolutionHttpError(error);
+  }
+  return error;
+}
+
+function toSelfEvolutionHttpError(
+  error: SelfEvolutionMutationError
+): HttpError {
+  if (error.code === "not_found") {
+    return new HttpError(404, error.message);
+  }
+  if (
+    error.code === "invalid_state" ||
+    error.code === "confirmation_required"
+  ) {
+    return new HttpError(409, error.message);
+  }
+  return new HttpError(
+    400,
+    error.message,
+    error.mutation as unknown as JsonValue | undefined
+  );
 }
 
 class SimpleRateLimiter {
@@ -2136,93 +1830,6 @@ function optionalMultipartField(
   return value || undefined;
 }
 
-function toAttachmentSummary(
-  attachment: ChatAttachmentRecord
-): Record<string, JsonValue> {
-  return removeUndefined({
-    id: attachment.id,
-    sessionId: attachment.sessionId,
-    runId: attachment.runId,
-    name: attachment.name,
-    contentType: attachment.contentType,
-    sizeBytes: attachment.sizeBytes,
-    description: attachment.description,
-    sha256: attachment.sha256,
-    downloadUrl: attachment.storagePath
-      ? `/chat/attachments/${attachment.id}`
-      : undefined,
-    createdAt: attachment.createdAt,
-  });
-}
-
-function toAttachmentTextIndexSummary(
-  record: AttachmentTextIndexRecord
-): Record<string, JsonValue> {
-  return removeUndefined({
-    attachmentId: record.attachmentId,
-    sessionId: record.sessionId,
-    runId: record.runId,
-    contentType: record.contentType,
-    indexedBytes: record.indexedBytes,
-    skippedReason: record.skippedReason,
-    createdAt: record.createdAt,
-    updatedAt: record.updatedAt,
-  });
-}
-
-function toAttachmentTextSearchSummary(
-  result: AttachmentTextSearchResult
-): Record<string, JsonValue> {
-  return removeUndefined({
-    ...toAttachmentTextIndexSummary(result),
-    name: result.name,
-    sizeBytes: result.sizeBytes,
-    sha256: result.sha256,
-    downloadUrl: result.downloadUrl,
-    excerpt: result.excerpt,
-  });
-}
-
-function toArtifactSummary(
-  artifact: ChatArtifactRecord
-): Record<string, JsonValue> {
-  return removeUndefined({
-    id: artifact.id,
-    sessionId: artifact.sessionId,
-    runId: artifact.runId,
-    title: artifact.title,
-    kind: artifact.kind,
-    contentType: artifact.contentType,
-    sizeBytes: artifact.sizeBytes,
-    sha256: artifact.sha256,
-    metadata: artifact.metadata,
-    downloadUrl: `/chat/artifacts/${artifact.id}`,
-    createdAt: artifact.createdAt,
-    updatedAt: artifact.updatedAt,
-  });
-}
-
-function removeUndefined(
-  record: Record<string, JsonValue | undefined>
-): Record<string, JsonValue> {
-  return Object.fromEntries(
-    Object.entries(record).filter(([, value]) => value !== undefined)
-  ) as Record<string, JsonValue>;
-}
-
-function artifactContentBuffer(
-  kind: ChatArtifactKind,
-  content: JsonValue
-): Buffer {
-  if (kind === "json") {
-    return Buffer.from(JSON.stringify(content, null, 2), "utf8");
-  }
-  if (typeof content !== "string") {
-    throw new HttpError(400, "content must be a string");
-  }
-  return Buffer.from(content, "utf8");
-}
-
 function parseSelfEvolutionActionPath(pathname: string): {
   proposalId: string;
   action: string;
@@ -2291,72 +1898,6 @@ function extractBundleTools(manifest: JsonValue): Array<{
   });
 }
 
-function extractOperatorSettingsPatch(
-  proposal: SelfEvolutionProposalRecord
-): Partial<OperatorSettings> {
-  if (proposal.target !== "configuration") {
-    throw new Error(
-      "Only configuration proposals can be applied in this slice"
-    );
-  }
-  const proposedChange = asJsonObject(
-    proposal.proposedChange,
-    "proposedChange"
-  );
-  const operatorSettings = asJsonObject(
-    proposedChange.operatorSettings,
-    "proposedChange.operatorSettings"
-  );
-  return toOperatorSettingsPatch(operatorSettings);
-}
-
-function toOperatorSettingsPatch(
-  value: Record<string, JsonValue>
-): Partial<OperatorSettings> {
-  const patch: Partial<OperatorSettings> = {};
-  if (value.dashboardRefreshSeconds !== undefined) {
-    if (
-      typeof value.dashboardRefreshSeconds !== "number" ||
-      !Number.isInteger(value.dashboardRefreshSeconds) ||
-      value.dashboardRefreshSeconds <= 0
-    ) {
-      throw new Error(
-        "operatorSettings.dashboardRefreshSeconds must be a positive integer"
-      );
-    }
-    patch.dashboardRefreshSeconds = value.dashboardRefreshSeconds;
-  }
-  if (value.chatDefaultConversationId !== undefined) {
-    if (
-      typeof value.chatDefaultConversationId !== "string" ||
-      value.chatDefaultConversationId.trim() === ""
-    ) {
-      throw new Error(
-        "operatorSettings.chatDefaultConversationId must be a non-empty string"
-      );
-    }
-    patch.chatDefaultConversationId = value.chatDefaultConversationId.trim();
-  }
-  if (value.memoryTimelineLimit !== undefined) {
-    if (
-      typeof value.memoryTimelineLimit !== "number" ||
-      !Number.isInteger(value.memoryTimelineLimit) ||
-      value.memoryTimelineLimit <= 0
-    ) {
-      throw new Error(
-        "operatorSettings.memoryTimelineLimit must be a positive integer"
-      );
-    }
-    patch.memoryTimelineLimit = value.memoryTimelineLimit;
-  }
-  if (Object.keys(patch).length === 0) {
-    throw new Error(
-      "operatorSettings must contain at least one supported field"
-    );
-  }
-  return patch;
-}
-
 function asJsonObject(
   value: JsonValue | undefined,
   field: string
@@ -2365,25 +1906,4 @@ function asJsonObject(
     throw new Error(`${field} must be a JSON object`);
   }
   return value;
-}
-
-function artifactFileName(artifact: ChatArtifactRecord): string {
-  return `${artifact.title}${extensionForContentType(artifact.contentType)}`;
-}
-
-function extensionForContentType(contentType: string): string {
-  switch (contentType.toLowerCase()) {
-    case "text/markdown":
-      return ".md";
-    case "application/json":
-      return ".json";
-    case "text/plain":
-      return ".txt";
-    default:
-      return "";
-  }
-}
-
-function safeDownloadName(name: string): string {
-  return name.replace(/[\\/\r\n"]/g, "_").trim() || "download";
 }

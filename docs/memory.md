@@ -2,6 +2,8 @@
 
 `codex-phantom` stores long-term memory in SQLite and can sync embeddings to Qdrant when semantic retrieval is enabled. Memory maintenance is restart-safe and records every scheduled, manual, completed, interrupted, or failed run in `memory_maintenance_runs`.
 
+`MemoryStore` is the compatibility facade for runtime callers. Lifecycle side effects live in `MemoryLifecycleService`, retrieval ranking lives in the memory retrieval policy, and shared row mapping/vector payload helpers live with memory record helpers.
+
 ## Lifecycle States
 
 Memory entries are active by default. Newer entries can supersede or contradict older entries through `memory_lifecycle_links`. Superseded and contradicted entries remain auditable, but retrieval and duplicate detection exclude them so stale facts do not re-enter prompts.

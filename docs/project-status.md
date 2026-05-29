@@ -2,17 +2,123 @@
 
 This is the living status ledger for `codex-phantom`. Update it at the end of each development wave, after tests pass and before handing off or opening a PR.
 
-Last updated: 2026-05-23
+Last updated: 2026-05-27
 Branch: `jarvis/gitnexus-skills-refresh`
-Latest verified implementation commit: `e7b4f443aead9fe7af902f779a3434be479b5425`
+Latest verified implementation commit: current `refactor(server): deepen operator export module` commit
 
 ## Current State
 
-`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, a Codex-native `/chat` product surface with durable/searchable attachment continuity, explicit artifacts, and bounded automatic artifact extraction, hybrid long-term memory with Qdrant-backed vector recall, SQLite fallback, lifecycle controls, restart-safe maintenance, decay/reinforcement-aware ranking, governed self-evolution proposals with operator-approved apply/rollback for settings changes, governed internal tool bundles with preview, approval, enable, disable, and uninstall lifecycle, and a disabled-by-default Email runtime channel with bounded IMAP polling and audited SMTP replies.
+`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, module-backed operator exports, a Codex-native `/chat` product surface with durable/searchable attachment continuity, explicit artifacts, and bounded automatic artifact extraction, hybrid long-term memory with Qdrant-backed vector recall, SQLite fallback, lifecycle controls, restart-safe maintenance, decay/reinforcement-aware ranking, governed self-evolution proposals with mutation module-backed operator-approved apply/rollback for settings changes, governed internal tool bundles with preview, approval, enable, disable, and uninstall lifecycle, and a disabled-by-default Email runtime channel with bounded IMAP polling and audited SMTP replies.
 
 The project is now past its first serious production-hardening pass. It is not yet equivalent to the original Phantom project, but the core runtime is materially safer to run: request sizes are bounded, secrets are rejected in production when defaults are used, outbound model calls have timeouts, scheduler jobs recover deterministically after restarts, MCP events are durably audited, external webhooks are signed, Slack sends retry transient failures, operator-console workflows have browser coverage, and the Docker image runs compiled JavaScript instead of stripped TypeScript.
 
 ## Just Completed
+
+Operator export module wave completed locally on 2026-05-27:
+
+- Expanded the operator export module from formatter-only into scope collection plus JSON/NDJSON formatting.
+- Moved request, channel, governance, MCP, run, chat, and timeline export source collection out of HTTP while preserving existing limits and response shapes.
+- Kept `/admin/export` as the authenticated HTTP adapter for query parsing, content type selection, and response writing.
+- Added focused operator export service coverage for scope routing, source limits, governance kind tags, timeline fallback, and formatter envelopes.
+
+Verification from this wave:
+
+```bash
+node --experimental-strip-types --test tests/operator-export.test.ts tests/server.test.ts
+npm run typecheck
+npm test
+npm run build
+git diff --check
+GitNexus detect_changes(scope="staged")
+```
+
+Self-evolution mutation module wave completed locally on 2026-05-27:
+
+- Extracted governed apply and rollback behavior into a self-evolution mutation service with target-specific adapters.
+- Kept `SelfEvolutionProposalStore` focused on persistence while the mutation module owns risk confirmation, operator settings validation, before/after/rollback payloads, failure audit, and rollback effects.
+- Refactored HTTP self-evolution apply and rollback routes back into adapter shape while preserving proposal, mutation, summary, timeline, and export visibility.
+- Added focused mutation service coverage for successful apply, high-risk confirmation, failed apply audit, and rollback behavior.
+
+Verification from this wave:
+
+```bash
+node --experimental-strip-types --test tests/self-evolution-mutations.test.ts tests/self-evolution.test.ts tests/server.test.ts
+npm run typecheck
+npm test
+npm run build
+git diff --check
+GitNexus detect_changes(scope="staged")
+```
+
+Managed memory module split wave completed locally on 2026-05-27:
+
+- Kept `MemoryStore` as the public facade while extracting shared memory row helpers, lifecycle behavior, and retrieval ranking into focused modules.
+- Moved lifecycle links, active-only reinforcement, retrieval access effects, decay persistence, episodic compaction, and active-row pruning behind a memory lifecycle module.
+- Moved active filtering, hybrid ranking, vector-score blending, decay calculation, and bounded context envelope shaping behind a memory retrieval policy.
+- Added direct lifecycle and retrieval-policy coverage while preserving existing memory, maintenance, and server integration behavior.
+
+Verification from this wave:
+
+```bash
+node --experimental-strip-types --test tests/memory-lifecycle.test.ts tests/memory-retrieval-policy.test.ts tests/memory.test.ts tests/memory-maintenance.test.ts tests/server.test.ts
+npm run typecheck
+npm test
+npm run build
+git diff --check
+GitNexus detect_changes(scope="staged")
+```
+
+Chat artifact module wave completed locally on 2026-05-27:
+
+- Introduced a chat artifact service that owns attachment upload, safe text indexing, artifact creation, automatic extraction persistence, search, session summaries, export collection, and download handles.
+- Centralized artifact and attachment content policy for byte limits, safe text/JSON indexing and extraction, content-to-buffer conversion, generated filenames, and safe download names.
+- Refactored HTTP routes back into adapter shape while preserving `/chat/attachments/:id`, `/chat/artifacts/:id`, session artifact summaries, SSE `run.completed.artifacts`, and chat export response shapes.
+- Added focused service and policy coverage for upload/index/search/download behavior, manual artifacts, extracted artifacts, and no-op unsafe content outcomes.
+
+Verification from this wave:
+
+```bash
+node --experimental-strip-types --test tests/chat-artifacts.test.ts tests/artifact-extraction.test.ts tests/server.test.ts
+npm run typecheck
+npm test
+npm run build
+git diff --check
+GitNexus detect_changes(scope="staged")
+```
+
+Inbound response dispatcher wave completed locally on 2026-05-27:
+
+- Introduced an inbound response dispatcher module that owns completed and failed inbound run side effects through target-specific Slack and Email adapters.
+- Moved Slack progress/final replies and Email SMTP reply audit/retry behavior out of HTTP and Email polling loops while preserving public response shapes and delivery rows.
+- Added focused dispatcher coverage for Slack progress/final delivery, skipped Slack delivery, Email threaded replies, retry/failure outcomes, and no-op targets.
+
+Verification from this wave:
+
+```bash
+node --experimental-strip-types --test tests/inbound-response-dispatcher.test.ts tests/email-channel.test.ts tests/server.test.ts
+npm run typecheck
+npm test
+npm run build
+git diff --check
+GitNexus detect_changes(scope="staged")
+```
+
+Runtime channel capability wave completed locally on 2026-05-27:
+
+- Introduced a runtime channel capability module as the source of channel metadata, config requirements, readiness inputs, diagnostics inputs, and optional lifecycle hooks.
+- Refactored channel seeding, secret presence checks, setup readiness, startup diagnostics, and admin channel toggles to consume channel capabilities instead of duplicating channel semantics.
+- Preserved Email as disabled-by-default and all-or-nothing for IMAP plus SMTP, while moving Email poller start/stop behind the generic runtime lifecycle seam.
+
+Verification from this wave:
+
+```bash
+node --experimental-strip-types --test tests/channel-capabilities.test.ts tests/readiness.test.ts tests/server.test.ts
+npm run typecheck
+npm test
+npm run build
+git diff --check
+GitNexus detect_changes(scope="all")
+```
 
 Email parity wave completed locally on 2026-05-23:
 
