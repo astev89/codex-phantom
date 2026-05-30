@@ -9,12 +9,17 @@ services:
       - path: .env
         required: false
     environment:
-      OPERATOR_BEARER_TOKEN: ${OPERATOR_BEARER_TOKEN:?Set OPERATOR_BEARER_TOKEN}
-      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:?Set MCP_BEARER_TOKEN}
-      EXTERNAL_CHANNEL_SECRET: ${EXTERNAL_CHANNEL_SECRET:?Set EXTERNAL_CHANNEL_SECRET}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:?Set OPENAI_API_KEY}
+      APP_ENV: ${APP_ENV:-development}
+      CODEX_PHANTOM_DATA_DIR: /app/data
+      CODEX_PHANTOM_DATABASE_PATH: /app/data/codex-phantom.sqlite
+      OPERATOR_BEARER_TOKEN: ${OPERATOR_BEARER_TOKEN:-local-dev-operator-token}
+      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:-local-dev-mcp-token}
+      EXTERNAL_CHANNEL_SECRET: ${EXTERNAL_CHANNEL_SECRET:-local-dev-channel-secret}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       QDRANT_ENABLED: "true"
       QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION_NAME: ${QDRANT_COLLECTION_NAME:-codex-phantom-memory}
+      QDRANT_TIMEOUT_MS: ${QDRANT_TIMEOUT_MS:-5000}
     volumes:
       - codex-phantom-data:/app/data
     restart: unless-stopped

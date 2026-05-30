@@ -2,9 +2,9 @@
 
 This is the living status ledger for `codex-phantom`. Update it at the end of each development wave, after tests pass and before handing off or opening a PR.
 
-Last updated: 2026-05-27
-Branch: `jarvis/gitnexus-skills-refresh`
-Latest verified implementation commit: current `refactor(server): deepen operator export module` commit
+Last updated: 2026-05-29
+Branch: `jarvis/docker-dev-qdrant`
+Latest verified implementation commit: current `chore(ops): configure compose dev stack` commit
 
 ## Current State
 
@@ -13,6 +13,28 @@ Latest verified implementation commit: current `refactor(server): deepen operato
 The project is now past its first serious production-hardening pass. It is not yet equivalent to the original Phantom project, but the core runtime is materially safer to run: request sizes are bounded, secrets are rejected in production when defaults are used, outbound model calls have timeouts, scheduler jobs recover deterministically after restarts, MCP events are durably audited, external webhooks are signed, Slack sends retry transient failures, operator-console workflows have browser coverage, and the Docker image runs compiled JavaScript instead of stripped TypeScript.
 
 ## Just Completed
+
+Docker Compose local dev stack wave completed locally on 2026-05-29:
+
+- Updated the existing Compose stack to default to a development runtime for local live testing.
+- Made SQLite persistence explicit with `CODEX_PHANTOM_DATA_DIR=/app/data` and `CODEX_PHANTOM_DATABASE_PATH=/app/data/codex-phantom.sqlite` on the persistent `codex-phantom-data` volume.
+- Kept Qdrant enabled by default in Compose with `QDRANT_URL=http://qdrant:6333` and persistent `codex-phantom-qdrant-data` storage.
+- Added local-only fallback operator, MCP, and external webhook secrets so OpenAI/Slack-only `.env` files can boot the stack while production-like smoke runs can still override with explicit secrets and `APP_ENV=production`.
+- Documented the local Compose defaults and the production-smoke override requirement.
+
+Verification from this wave:
+
+```bash
+docker compose config --quiet
+node --experimental-strip-types --test tests/deployment.test.ts tests/config.test.ts
+npm run typecheck
+npm run build
+git diff --check
+docker compose up -d --build
+curl -sS http://127.0.0.1:3210/health
+curl -sS -H 'Authorization: Bearer local-dev-operator-token' http://127.0.0.1:3210/admin/readiness
+curl -sS http://127.0.0.1:6333/readyz
+```
 
 Operator export module wave completed locally on 2026-05-27:
 

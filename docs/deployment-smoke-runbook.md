@@ -11,7 +11,7 @@ Use this runbook after deployment, Docker, persistence, auth, scheduler, MCP, or
 
 ## Required Environment
 
-Set production-like, non-default values before running either script:
+`docker-compose.yml` defaults to `APP_ENV=development` for local live testing. Set production-like, non-default values before running either smoke script:
 
 ```bash
 export APP_ENV=production

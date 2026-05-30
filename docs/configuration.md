@@ -59,6 +59,32 @@
 | `DEFAULT_RUN_TIMEOUT_MS`       | `30000`                                          | optional                 | Positive integer fallback run timeout.                                                           |
 | `DEFAULT_MAX_TOOL_CALLS`       | `6`                                              | optional                 | Positive integer fallback tool-call cap.                                                         |
 
+## Docker Compose Local Development
+
+`docker-compose.yml` defaults to a development runtime so the stack can be used for local live testing:
+
+- `APP_ENV=development`
+- `CODEX_PHANTOM_DATA_DIR=/app/data`
+- `CODEX_PHANTOM_DATABASE_PATH=/app/data/codex-phantom.sqlite`
+- `QDRANT_ENABLED=true`
+- `QDRANT_URL=http://qdrant:6333`
+
+SQLite runs embedded in the `codex-phantom` container and persists its database file in the `codex-phantom-data` Docker volume. Qdrant runs as a separate `qdrant/qdrant` service and persists vector data in the `codex-phantom-qdrant-data` Docker volume.
+
+For local testing, `.env` may provide OpenAI and channel credentials. If operator/MCP/webhook secrets are omitted, Compose supplies local-only non-default values so the app can boot:
+
+- `local-dev-operator-token`
+- `local-dev-mcp-token`
+- `local-dev-channel-secret`
+
+Run the local stack with:
+
+```bash
+docker compose up --build
+```
+
+For production-like smoke testing, export explicit non-default secrets and set `APP_ENV=production` before invoking the smoke scripts.
+
 ## Failure Behavior
 
 Startup fails fast when integer fields are non-positive, role/config paths are blank, required secrets are blank, `QDRANT_ENABLED=true` lacks `QDRANT_URL`, production lacks `OPENAI_API_KEY`, or production/default-secret rejection finds `replace-me` or development defaults.

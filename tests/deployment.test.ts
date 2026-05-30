@@ -36,19 +36,22 @@ test("Dockerfile runs as a non-root service with a healthcheck and writable data
   assert.match(dockerfile, /CMD \["node", "dist\/index\.js"\]/);
 });
 
-test("docker compose defines restart and persistence settings for local production proof", async () => {
+test("docker compose defines local dev runtime with persistent SQLite and Qdrant", async () => {
   const compose = await readFile("docker-compose.yml", "utf8");
 
   assert.match(compose, /restart: unless-stopped/);
   assert.match(compose, /required: false/);
+  assert.match(compose, /APP_ENV: \$\{APP_ENV:-development\}/);
+  assert.match(compose, /CODEX_PHANTOM_DATA_DIR: \/app\/data/);
   assert.match(
     compose,
-    /OPERATOR_BEARER_TOKEN: \$\{OPERATOR_BEARER_TOKEN:\?Set OPERATOR_BEARER_TOKEN\}/
+    /CODEX_PHANTOM_DATABASE_PATH: \/app\/data\/codex-phantom\.sqlite/
   );
   assert.match(
     compose,
-    /OPENAI_API_KEY: \$\{OPENAI_API_KEY:\?Set OPENAI_API_KEY\}/
+    /OPERATOR_BEARER_TOKEN: \$\{OPERATOR_BEARER_TOKEN:-local-dev-operator-token\}/
   );
+  assert.match(compose, /OPENAI_API_KEY: \$\{OPENAI_API_KEY:-\}/);
   assert.match(compose, /QDRANT_ENABLED: "true"/);
   assert.match(compose, /QDRANT_URL: http:\/\/qdrant:6333/);
   assert.match(compose, /codex-phantom-data:\/app\/data/);
