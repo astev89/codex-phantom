@@ -4,7 +4,7 @@ This is the living status ledger for `codex-phantom`. Update it at the end of ea
 
 Last updated: 2026-05-29
 Branch: `jarvis/docker-dev-qdrant`
-Latest verified implementation commit: current `fix(agent): sanitize OpenAI tool names` commit
+Latest verified implementation commit: current `chore(ops): parameterize slack tunnel smoke` commit
 
 ## Current State
 
@@ -20,6 +20,7 @@ OpenAI tool-name adapter and Slack tunnel live-test wave completed locally on 20
 - Added regression coverage proving dotted runtime IDs such as `memory.query` are sent to OpenAI as valid function names and restored before runtime tool dispatch.
 - Verified a Cloudflare Quick Tunnel can expose the local Compose app to Slack Event Subscriptions.
 - Proved signed Slack URL verification and a synthetic signed Slack `app_mention` event through the tunnel complete through the coordinator and post a Slack thread reply.
+- Added a parameterized Slack tunnel smoke script so ephemeral Cloudflare Quick Tunnel URLs stay runtime input instead of repo constants.
 
 Verification from this wave:
 
@@ -30,9 +31,9 @@ npm test
 npm run build
 git diff --check
 docker compose up -d --build codex-phantom
-curl --max-time 8 -sS https://joint-painting-weapon-tuner.trycloudflare.com/health
+curl --max-time 8 -sS "$PUBLIC_TUNNEL_URL/health"
 Signed Slack url_verification through /channels/slack/events
-Signed Slack app_mention through /channels/slack/events
+BASE_URL="$PUBLIC_TUNNEL_URL" SLACK_SMOKE_CHANNEL_ID="$SLACK_CHANNEL_ID" node scripts/slack-tunnel-smoke.mjs
 GitNexus detect_changes(scope="staged")
 ```
 

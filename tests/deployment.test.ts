@@ -64,6 +64,10 @@ test("deployment smoke scripts and docs cover boot, restart persistence, and bac
     "scripts/backup-restore-smoke.sh",
     "utf8"
   );
+  const slackTunnelScript = await readFile(
+    "scripts/slack-tunnel-smoke.mjs",
+    "utf8"
+  );
   const seedScript = await readFile("scripts/restore-smoke-seed.mjs", "utf8");
   const readme = await readFile("README.md", "utf8");
   const parity = await readFile("docs/phantom-parity.md", "utf8");
@@ -81,6 +85,17 @@ test("deployment smoke scripts and docs cover boot, restart persistence, and bac
   assert.match(script, /MCP_BEARER_TOKEN/);
   assert.match(script, /EXTERNAL_CHANNEL_SECRET/);
   assert.match(script, /OPENAI_API_KEY/);
+  assert.match(slackTunnelScript, /^#!\/usr\/bin\/env node/);
+  assert.match(slackTunnelScript, /BASE_URL/);
+  assert.match(slackTunnelScript, /SLACK_SMOKE_CHANNEL_ID/);
+  assert.match(slackTunnelScript, /SLACK_SIGNING_SECRET/);
+  assert.match(slackTunnelScript, /OPERATOR_BEARER_TOKEN/);
+  assert.match(slackTunnelScript, /\/channels\/slack\/events/);
+  assert.match(
+    slackTunnelScript,
+    /\/admin\/channels\/inbound\?channelId=slack/
+  );
+  assert.doesNotMatch(slackTunnelScript, /trycloudflare\.com/);
   assert.match(restoreScript, /docker volume rm codex-phantom-data/);
   assert.match(restoreScript, /docker volume create codex-phantom-data/);
   assert.match(restoreScript, /codex-phantom-data\.tgz/);
