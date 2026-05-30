@@ -4,7 +4,7 @@ This is the living status ledger for `codex-phantom`. Update it at the end of ea
 
 Last updated: 2026-05-29
 Branch: `jarvis/docker-dev-qdrant`
-Latest verified implementation commit: current `chore(ops): parameterize slack tunnel smoke` commit
+Latest verified implementation commit: current `chore(config): make OpenAI reasoning configurable` commit
 
 ## Current State
 
@@ -13,6 +13,26 @@ Latest verified implementation commit: current `chore(ops): parameterize slack t
 The project is now past its first serious production-hardening pass. It is not yet equivalent to the original Phantom project, but the core runtime is materially safer to run: request sizes are bounded, secrets are rejected in production when defaults are used, outbound model calls have timeouts, scheduler jobs recover deterministically after restarts, MCP events are durably audited, external webhooks are signed, Slack sends retry transient failures, operator-console workflows have browser coverage, and the Docker image runs compiled JavaScript instead of stripped TypeScript.
 
 ## Just Completed
+
+OpenAI model and reasoning config wave completed locally on 2026-05-29:
+
+- Kept `OPENAI_MODEL` explicit across config, `.env.example`, and the Compose dev stack with a `gpt-5` default.
+- Added `OPENAI_REASONING_EFFORT` for normal agent/coordinator Responses calls, defaulting to `medium`.
+- Added `OPENAI_MEMORY_REASONING_EFFORT` for background memory insight extraction, defaulting to `low`.
+- Validated reasoning effort values as `low`, `medium`, or `high`, and surfaced the configured model/reasoning values in startup diagnostics.
+- Replaced hardcoded runtime reasoning values with the configured defaults while preserving existing behavior unless env overrides are supplied.
+
+Verification from this wave:
+
+```bash
+node --experimental-strip-types --test tests/config.test.ts tests/orchestration.test.ts tests/deployment.test.ts tests/server.test.ts
+npm run typecheck
+npm test
+npm run build
+docker compose config --quiet
+git diff --check
+GitNexus detect_changes(scope="staged")
+```
 
 OpenAI tool-name adapter and Slack tunnel live-test wave completed locally on 2026-05-29:
 

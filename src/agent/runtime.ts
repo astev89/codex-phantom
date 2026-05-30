@@ -5,9 +5,19 @@ import type { MemoryInsightSet, MemoryTurnRecord } from "../memory/types.ts";
 import { assemblePrompt } from "../prompts/assembler.ts";
 import { toJsonValue } from "../platform/database.ts";
 import { createId } from "../shared/ids.ts";
-import type { ChatMessage, PermissionPolicy, SessionRecord, ToolCapabilityDescriptor } from "../shared/types.ts";
+import type {
+  ChatMessage,
+  PermissionPolicy,
+  SessionRecord,
+  ToolCapabilityDescriptor,
+} from "../shared/types.ts";
 import { ToolRegistry } from "../tools/registry.ts";
-import type { AgentAdapter, AgentRunEvent, AgentRunRequest, AgentRunResult } from "./types.ts";
+import type {
+  AgentAdapter,
+  AgentRunEvent,
+  AgentRunRequest,
+  AgentRunResult,
+} from "./types.ts";
 
 export class AgentRuntime {
   private readonly config: AppConfig;
@@ -50,14 +60,21 @@ export class AgentRuntime {
       sessionId,
       channelId: input.channelId,
       conversationId: input.conversationId,
-      resumability: { supportsResume: this.adapter.capabilities.supportsResume },
+      resumability: {
+        supportsResume: this.adapter.capabilities.supportsResume,
+      },
       createdAt: now,
       updatedAt: now,
-      runIds: []
+      runIds: [],
     };
 
-    if (!this.adapter.capabilities.supportsResume && session.previousResponseId) {
-      throw new Error("Adapter does not support resume, but session attempted a resumed run");
+    if (
+      !this.adapter.capabilities.supportsResume &&
+      session.previousResponseId
+    ) {
+      throw new Error(
+        "Adapter does not support resume, but session attempted a resumed run"
+      );
     }
 
     const runId = createId("run");
@@ -65,7 +82,10 @@ export class AgentRuntime {
     const memory = await this.memory.query(memoryQueryText);
     const abortController = new AbortController();
     const timeoutMs = input.timeoutMs ?? this.config.defaultRunTimeoutMs;
-    const timeout = setTimeout(() => abortController.abort(new Error("Run timed out")), timeoutMs);
+    const timeout = setTimeout(
+      () => abortController.abort(new Error("Run timed out")),
+      timeoutMs
+    );
 
     let requestMessages = [...input.messages];
     let previousResponseId = session.previousResponseId;
@@ -85,17 +105,19 @@ export class AgentRuntime {
           toolCapabilities: input.toolCapabilities,
           permissionPolicy: input.permissionPolicy,
           model: this.config.model,
-          reasoningEffort: "medium",
+          reasoningEffort: this.config.openAiReasoningEffort,
           providerSessionId,
           previousResponseId,
           signal: abortController.signal,
           timeoutMs,
-          maxToolCalls: this.config.defaultMaxToolCalls
+          maxToolCalls: this.config.defaultMaxToolCalls,
         };
 
         const iterationResult = await this.adapter.run(request, onEvent);
-        previousResponseId = iterationResult.previousResponseId ?? previousResponseId;
-        providerSessionId = iterationResult.providerSessionId ?? providerSessionId;
+        previousResponseId =
+          iterationResult.previousResponseId ?? previousResponseId;
+        providerSessionId =
+          iterationResult.providerSessionId ?? providerSessionId;
         finalResult = iterationResult;
 
         if (iterationResult.toolCalls.length === 0) {
@@ -105,7 +127,9 @@ export class AgentRuntime {
         for (const toolCall of iterationResult.toolCalls) {
           toolCallsExecuted += 1;
           if (toolCallsExecuted > this.config.defaultMaxToolCalls) {
-            throw new Error(`Run exceeded max tool calls (${this.config.defaultMaxToolCalls})`);
+            throw new Error(
+              `Run exceeded max tool calls (${this.config.defaultMaxToolCalls})`
+            );
           }
 
           await onEvent({
@@ -113,7 +137,7 @@ export class AgentRuntime {
             runId,
             sessionId,
             toolCallId: toolCall.toolCallId,
-            toolName: toolCall.toolName
+            toolName: toolCall.toolName,
           });
 
           try {
@@ -130,7 +154,7 @@ export class AgentRuntime {
               sessionId,
               toolCallId: toolCall.toolCallId,
               toolName: toolCall.toolName,
-              output: outputText
+              output: outputText,
             });
 
             const toolMessage: ChatMessage = {
@@ -138,8 +162,8 @@ export class AgentRuntime {
               content: JSON.stringify({
                 toolName: toolCall.toolName,
                 toolCallId: toolCall.toolCallId,
-                output
-              })
+                output,
+              }),
             };
             requestMessages = [...iterationResult.transcript, toolMessage];
             await onEvent({
@@ -148,17 +172,18 @@ export class AgentRuntime {
               sessionId,
               toolCallId: toolCall.toolCallId,
               toolName: toolCall.toolName,
-              content: toolMessage.content
+              content: toolMessage.content,
             });
           } catch (error) {
-            const message = error instanceof Error ? error.message : "Tool call failed";
+            const message =
+              error instanceof Error ? error.message : "Tool call failed";
             await onEvent({
               type: "tool_call_failed",
               runId,
               sessionId,
               toolCallId: toolCall.toolCallId,
               toolName: toolCall.toolName,
-              message
+              message,
             });
             throw new Error(`Tool ${toolCall.toolName} failed: ${message}`);
           }
@@ -176,9 +201,10 @@ export class AgentRuntime {
       ...session,
       providerSessionId,
       previousResponseId,
-      lastEventCursor: previousResponseId ?? providerSessionId ?? session.lastEventCursor,
+      lastEventCursor:
+        previousResponseId ?? providerSessionId ?? session.lastEventCursor,
       updatedAt: new Date().toISOString(),
-      runIds: [...session.runIds, finalResult.runId]
+      runIds: [...session.runIds, finalResult.runId],
     };
     await this.sessions.upsert(updated);
     const turnRecord: MemoryTurnRecord = {
@@ -186,16 +212,22 @@ export class AgentRuntime {
       runId,
       queryText: memoryQueryText,
       recentMessagesText: buildConversationTranscript(input.messages),
-      userInput: input.messages.filter((message) => message.role === "user").at(-1)?.content ?? "",
-      assistantOutput: finalResult.outputText
+      userInput:
+        input.messages.filter((message) => message.role === "user").at(-1)
+          ?.content ?? "",
+      assistantOutput: finalResult.outputText,
     };
     await this.memory.recordTurn(turnRecord);
-    await this.memory.consolidate(turnRecord, async (record) => this.generateMemoryInsights(record));
+    await this.memory.consolidate(turnRecord, async (record) =>
+      this.generateMemoryInsights(record)
+    );
 
     return { session: updated, result: finalResult };
   }
 
-  private async generateMemoryInsights(record: MemoryTurnRecord): Promise<MemoryInsightSet> {
+  private async generateMemoryInsights(
+    record: MemoryTurnRecord
+  ): Promise<MemoryInsightSet> {
     if (!this.config.openAiApiKey) {
       return heuristicInsights(record);
     }
@@ -210,7 +242,7 @@ export class AgentRuntime {
           "Return strict JSON with keys semanticFacts, proceduralNotes, summary.",
           "semanticFacts: stable truths learned from the exchange.",
           "proceduralNotes: reusable operating guidance only when clearly established.",
-          "summary: one compact episodic summary sentence."
+          "summary: one compact episodic summary sentence.",
         ].join("\n"),
         messages: [
           {
@@ -218,9 +250,9 @@ export class AgentRuntime {
             content: JSON.stringify({
               recentMessagesText: record.recentMessagesText,
               userInput: record.userInput,
-              assistantOutput: record.assistantOutput
-            })
-          }
+              assistantOutput: record.assistantOutput,
+            }),
+          },
         ],
         memory: { episodic: [], semantic: [], procedural: [], summaries: [] },
         toolCapabilities: [],
@@ -228,10 +260,10 @@ export class AgentRuntime {
           mode: "read_only",
           fileGlobs: [],
           allowedToolIds: [],
-          allowedMcpServers: []
+          allowedMcpServers: [],
         },
         model: this.config.model,
-        reasoningEffort: "low"
+        reasoningEffort: this.config.openAiMemoryReasoningEffort,
       };
 
       const result = await this.adapter.run(request, async () => {});
@@ -263,13 +295,23 @@ function buildConversationTranscript(messages: ChatMessage[]): string {
     .join("\n");
 }
 
-function parseInsights(outputText: string, record: MemoryTurnRecord): MemoryInsightSet {
+function parseInsights(
+  outputText: string,
+  record: MemoryTurnRecord
+): MemoryInsightSet {
   try {
     const parsed = JSON.parse(outputText) as Partial<MemoryInsightSet>;
     return {
-      semanticFacts: Array.isArray(parsed.semanticFacts) ? parsed.semanticFacts.filter(isString) : [],
-      proceduralNotes: Array.isArray(parsed.proceduralNotes) ? parsed.proceduralNotes.filter(isString) : [],
-      summary: typeof parsed.summary === "string" ? parsed.summary : heuristicInsights(record).summary
+      semanticFacts: Array.isArray(parsed.semanticFacts)
+        ? parsed.semanticFacts.filter(isString)
+        : [],
+      proceduralNotes: Array.isArray(parsed.proceduralNotes)
+        ? parsed.proceduralNotes.filter(isString)
+        : [],
+      summary:
+        typeof parsed.summary === "string"
+          ? parsed.summary
+          : heuristicInsights(record).summary,
     };
   } catch {
     return heuristicInsights(record);
@@ -282,8 +324,14 @@ function heuristicInsights(record: MemoryTurnRecord): MemoryInsightSet {
   const normalizedUser = record.userInput.toLowerCase();
   const normalizedAssistant = record.assistantOutput.toLowerCase();
 
-  if (normalizedUser.includes("remember") || normalizedAssistant.includes("always") || normalizedAssistant.includes("prefer")) {
-    semanticFacts.push(`User preference or standing context: ${trimInsight(record.userInput || record.assistantOutput)}`);
+  if (
+    normalizedUser.includes("remember") ||
+    normalizedAssistant.includes("always") ||
+    normalizedAssistant.includes("prefer")
+  ) {
+    semanticFacts.push(
+      `User preference or standing context: ${trimInsight(record.userInput || record.assistantOutput)}`
+    );
   }
   if (
     normalizedUser.includes("how do") ||
@@ -291,7 +339,9 @@ function heuristicInsights(record: MemoryTurnRecord): MemoryInsightSet {
     normalizedAssistant.includes("procedure") ||
     normalizedAssistant.includes("first")
   ) {
-    proceduralNotes.push(`Procedure guidance: ${trimInsight(record.assistantOutput)}`);
+    proceduralNotes.push(
+      `Procedure guidance: ${trimInsight(record.assistantOutput)}`
+    );
   }
   if (semanticFacts.length === 0 && normalizedAssistant.includes("is ")) {
     semanticFacts.push(`Learned fact: ${trimInsight(record.assistantOutput)}`);
@@ -300,7 +350,7 @@ function heuristicInsights(record: MemoryTurnRecord): MemoryInsightSet {
   return {
     semanticFacts,
     proceduralNotes,
-    summary: `Summary: ${trimInsight(`${record.userInput} -> ${record.assistantOutput}`)}`
+    summary: `Summary: ${trimInsight(`${record.userInput} -> ${record.assistantOutput}`)}`,
   };
 }
 

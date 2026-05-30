@@ -3279,6 +3279,11 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       diagnostics: {
         appEnv: string;
         modelAdapter: string;
+        model: {
+          name: string;
+          reasoningEffort: string;
+          memoryReasoningEffort: string;
+        };
         missingRecommendedEnv: string[];
         rolePolicy: { source: string; valid: boolean };
         channelReadiness: Array<{
@@ -3290,6 +3295,11 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     };
     assert.equal(diagnosticsJson.diagnostics.appEnv, "test");
     assert.equal(diagnosticsJson.diagnostics.modelAdapter, "fallback");
+    assert.deepEqual(diagnosticsJson.diagnostics.model, {
+      name: "gpt-5",
+      reasoningEffort: "medium",
+      memoryReasoningEffort: "low",
+    });
     assert.equal(
       diagnosticsJson.diagnostics.rolePolicy.source,
       "compiled_fallback"

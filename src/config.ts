@@ -2,6 +2,7 @@ import { join } from "node:path";
 
 export type AppEnvironment = "development" | "test" | "production";
 export type LogLevel = "debug" | "info" | "warn" | "error";
+export type OpenAiReasoningEffort = "low" | "medium" | "high";
 
 export type AppConfig = {
   appEnv: AppEnvironment;
@@ -10,6 +11,8 @@ export type AppConfig = {
   dataDir: string;
   datastorePath: string;
   model: string;
+  openAiReasoningEffort: OpenAiReasoningEffort;
+  openAiMemoryReasoningEffort: OpenAiReasoningEffort;
   agentName: string;
   roleConfigPath: string;
   operatorConfigPath: string;
@@ -81,6 +84,16 @@ export function loadConfig(): AppConfig {
     dataDir,
     datastorePath,
     model: process.env.OPENAI_MODEL ?? "gpt-5",
+    openAiReasoningEffort: parseReasoningEffort(
+      process.env.OPENAI_REASONING_EFFORT,
+      "medium",
+      "OPENAI_REASONING_EFFORT"
+    ),
+    openAiMemoryReasoningEffort: parseReasoningEffort(
+      process.env.OPENAI_MEMORY_REASONING_EFFORT,
+      "low",
+      "OPENAI_MEMORY_REASONING_EFFORT"
+    ),
     agentName: process.env.AGENT_NAME ?? "Codex Phantom",
     roleConfigPath:
       process.env.ROLE_CONFIG_PATH ?? join(cwd, "config", "roles.yaml"),
@@ -310,6 +323,20 @@ function parsePositiveInteger(
     throw new Error(`${field} must be a positive integer`);
   }
   return value;
+}
+
+function parseReasoningEffort(
+  raw: string | undefined,
+  fallback: OpenAiReasoningEffort,
+  field: string
+): OpenAiReasoningEffort {
+  if (!raw) {
+    return fallback;
+  }
+  if (raw === "low" || raw === "medium" || raw === "high") {
+    return raw;
+  }
+  throw new Error(`${field} must be low, medium, or high`);
 }
 
 function validateConfig(config: AppConfig): void {

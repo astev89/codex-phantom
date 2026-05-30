@@ -17,6 +17,8 @@ export function makeConfig(
     dataDir,
     datastorePath: `${dataDir}/test.sqlite`,
     model: "gpt-5",
+    openAiReasoningEffort: "medium",
+    openAiMemoryReasoningEffort: "low",
     agentName: "Test Codex Phantom",
     roleConfigPath: "config/roles.yaml",
     operatorConfigPath: "config/operator.yaml",

@@ -52,6 +52,15 @@ test("docker compose defines local dev runtime with persistent SQLite and Qdrant
     /OPERATOR_BEARER_TOKEN: \$\{OPERATOR_BEARER_TOKEN:-local-dev-operator-token\}/
   );
   assert.match(compose, /OPENAI_API_KEY: \$\{OPENAI_API_KEY:-\}/);
+  assert.match(compose, /OPENAI_MODEL: \$\{OPENAI_MODEL:-gpt-5\}/);
+  assert.match(
+    compose,
+    /OPENAI_REASONING_EFFORT: \$\{OPENAI_REASONING_EFFORT:-medium\}/
+  );
+  assert.match(
+    compose,
+    /OPENAI_MEMORY_REASONING_EFFORT: \$\{OPENAI_MEMORY_REASONING_EFFORT:-low\}/
+  );
   assert.match(compose, /QDRANT_ENABLED: "true"/);
   assert.match(compose, /QDRANT_URL: http:\/\/qdrant:6333/);
   assert.match(compose, /codex-phantom-data:\/app\/data/);
