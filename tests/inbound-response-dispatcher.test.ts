@@ -197,6 +197,12 @@ test("dispatcher sends Slack progress, final reply, and response timestamp", asy
       assert.equal(transport.sent[0]?.text, "Queued...");
       assert.equal(transport.sent.at(-1)?.text, "assistant:hello");
       assert.equal(transport.sent.at(-1)?.threadTs, "T123");
+      assert.equal(transport.sent.at(-1)?.blocks?.[0]?.type, "section");
+      assert.equal(
+        ((transport.sent.at(-1)?.blocks?.[0]?.text as { text?: string }) ?? {})
+          .text,
+        "assistant:hello"
+      );
       assert.ok(
         transport.sent
           .at(-1)

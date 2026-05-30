@@ -13,6 +13,7 @@ import type {
 } from "./inbound.ts";
 import { slackFeedbackBlocks } from "./slack-feedback.ts";
 import { SlackProgressReporter } from "./slack-progress.ts";
+import type { SlackBlock } from "./slack.ts";
 import type { SlackChannel } from "./slack.ts";
 
 export type InboundResponseAdapter = {
@@ -176,7 +177,7 @@ export function createSlackInboundResponseAdapter(input: {
           channel: target.channel,
           text: record.outputText,
           threadTs: target.threadTs,
-          blocks: slackFeedbackBlocks(record.id),
+          blocks: slackResponseBlocks(record.outputText, record.id),
         });
         input.store.recordSlackResponseMessage(record.id, delivered.result.ts);
       } catch (error) {
@@ -211,6 +212,48 @@ export function createSlackInboundResponseAdapter(input: {
       progressReporters.delete(record.id);
     },
   };
+}
+
+const SLACK_SECTION_TEXT_LIMIT = 3000;
+const SLACK_RESPONSE_BLOCK_LIMIT = 10;
+
+function slackResponseBlocks(
+  outputText: string,
+  inboundEventId: string
+): SlackBlock[] {
+  const chunks = chunkSlackText(outputText);
+  return [
+    ...chunks.map((chunk) => ({
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: chunk,
+      },
+    })),
+    ...slackFeedbackBlocks(inboundEventId),
+  ];
+}
+
+function chunkSlackText(outputText: string): string[] {
+  const chunks: string[] = [];
+  for (
+    let index = 0;
+    index < outputText.length && chunks.length < SLACK_RESPONSE_BLOCK_LIMIT;
+    index += SLACK_SECTION_TEXT_LIMIT
+  ) {
+    chunks.push(outputText.slice(index, index + SLACK_SECTION_TEXT_LIMIT));
+  }
+  if (chunks.length === 0) {
+    return [];
+  }
+  if (
+    outputText.length >
+    SLACK_SECTION_TEXT_LIMIT * SLACK_RESPONSE_BLOCK_LIMIT
+  ) {
+    const lastIndex = chunks.length - 1;
+    chunks[lastIndex] = `${chunks[lastIndex].slice(0, -4)} ...`;
+  }
+  return chunks;
 }
 
 export function createEmailInboundResponseAdapter(input: {
