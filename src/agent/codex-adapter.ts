@@ -1,7 +1,14 @@
 import type { AppConfig } from "../config.ts";
 import { fetchWithTimeout } from "../platform/outbound.ts";
 import type { ChatMessage } from "../shared/types.ts";
-import type { AgentAdapter, AgentAdapterMode, AgentRunEvent, AgentRunRequest, AgentRunResult, AgentToolCall } from "./types.ts";
+import type {
+  AgentAdapter,
+  AgentAdapterMode,
+  AgentRunEvent,
+  AgentRunRequest,
+  AgentRunResult,
+  AgentToolCall,
+} from "./types.ts";
 
 type ResponsesStreamEvent = {
   type: string;
@@ -26,13 +33,16 @@ type ResponsesStreamEvent = {
 type OpenAiTransport = (
   request: AgentRunRequest,
   body: Record<string, unknown>
-) => AsyncIterable<ResponsesStreamEvent> | Promise<AsyncIterable<ResponsesStreamEvent>>;
+) =>
+  | AsyncIterable<ResponsesStreamEvent>
+  | Promise<AsyncIterable<ResponsesStreamEvent>>;
 
 type NormalizerState = {
   outputText: string;
   messageId?: string;
   providerResponseId?: string;
   toolCalls: Map<string, { name: string; argumentsText: string }>;
+  toolNameAliases?: Map<string, string>;
   usage?: AgentRunResult["usage"];
 };
 
@@ -49,7 +59,7 @@ export class CodexAdapter implements AgentAdapter {
     supportsToolStreaming: true,
     supportsStructuredOutput: true,
     supportsParallelToolCalls: true,
-    supportsReasoningEffort: true
+    supportsReasoningEffort: true,
   };
 
   readonly config: AppConfig;
@@ -60,7 +70,10 @@ export class CodexAdapter implements AgentAdapter {
     this.options = options;
   }
 
-  async run(request: AgentRunRequest, onEvent: (event: AgentRunEvent) => Promise<void> | void): Promise<AgentRunResult> {
+  async run(
+    request: AgentRunRequest,
+    onEvent: (event: AgentRunEvent) => Promise<void> | void
+  ): Promise<AgentRunResult> {
     const mode = resolveMode(this.options.mode ?? "auto", this.config);
     if (mode === "fallback") {
       return this.runFallback(request, onEvent);
@@ -77,14 +90,14 @@ export class CodexAdapter implements AgentAdapter {
       "Fallback mode engaged.",
       `Role: ${request.role}`,
       `Input: ${userText || "none"}`,
-      `Tools available: ${request.toolCapabilities.length}`
+      `Tools available: ${request.toolCapabilities.length}`,
     ].join("\n");
 
     await onEvent({
       type: "init",
       runId: request.runId,
       sessionId: request.sessionId,
-      model: `${request.model ?? this.config.model}-fallback`
+      model: `${request.model ?? this.config.model}-fallback`,
     });
 
     for (const chunk of outputText.match(/.{1,32}/g) ?? []) {
@@ -93,7 +106,7 @@ export class CodexAdapter implements AgentAdapter {
         runId: request.runId,
         sessionId: request.sessionId,
         messageId: "fallback-message",
-        delta: chunk
+        delta: chunk,
       });
     }
 
@@ -102,12 +115,12 @@ export class CodexAdapter implements AgentAdapter {
       runId: request.runId,
       sessionId: request.sessionId,
       messageId: "fallback-message",
-      content: outputText
+      content: outputText,
     });
     await onEvent({
       type: "structured_message",
       runId: request.runId,
-      message: { role: "assistant", content: outputText }
+      message: { role: "assistant", content: outputText },
     });
 
     const result = buildResult(request, outputText, {
@@ -116,24 +129,26 @@ export class CodexAdapter implements AgentAdapter {
       usage: {
         inputTokens: estimateTokens(request.systemPrompt + userText),
         outputTokens: estimateTokens(outputText),
-        totalTokens: estimateTokens(request.systemPrompt + userText + outputText)
+        totalTokens: estimateTokens(
+          request.systemPrompt + userText + outputText
+        ),
       },
       usedFallback: true,
-      toolCalls: []
+      toolCalls: [],
     });
 
     await onEvent({
       type: "final_result",
       runId: request.runId,
       sessionId: request.sessionId,
-      result
+      result,
     });
     await onEvent({
       type: "final",
       runId: request.runId,
       outputText: result.outputText,
       previousResponseId: result.previousResponseId,
-      providerSessionId: result.providerSessionId
+      providerSessionId: result.providerSessionId,
     });
 
     return result;
@@ -143,37 +158,52 @@ export class CodexAdapter implements AgentAdapter {
     request: AgentRunRequest,
     onEvent: (event: AgentRunEvent) => Promise<void> | void
   ): Promise<AgentRunResult> {
-    const transport = this.options.transport ?? defaultOpenAiTransport(this.config);
+    const transport =
+      this.options.transport ?? defaultOpenAiTransport(this.config);
+    const toolNameAliases = new Map<string, string>();
+    const usedToolNames = new Set<string>();
     const body: Record<string, unknown> = {
       model: request.model ?? this.config.model,
       input: [
         { role: "system", content: request.systemPrompt },
-        ...request.messages.map((message) => ({ role: message.role, content: message.content }))
+        ...request.messages.map((message) => ({
+          role: message.role,
+          content: message.content,
+        })),
       ],
       stream: true,
-      tools: request.toolCapabilities.map((tool) => ({
-        type: "function",
-        name: tool.name ?? tool.id,
-        description: tool.description,
-        parameters:
-          tool.inputSchema && typeof tool.inputSchema === "object"
-            ? tool.inputSchema
-            : { type: "object", additionalProperties: true }
-      }))
+      tools: request.toolCapabilities.map((tool) => {
+        const runtimeName = tool.name ?? tool.id;
+        const openAiName = toOpenAiFunctionName(runtimeName, usedToolNames);
+        toolNameAliases.set(openAiName, runtimeName);
+        return {
+          type: "function",
+          name: openAiName,
+          description: tool.description,
+          parameters:
+            tool.inputSchema && typeof tool.inputSchema === "object"
+              ? tool.inputSchema
+              : { type: "object", additionalProperties: true },
+        };
+      }),
     };
 
     if (request.reasoningEffort) {
       body.reasoning = { effort: request.reasoningEffort };
     }
 
-    if (this.config.openAiConversationMode === "previous_response_id" && request.previousResponseId) {
+    if (
+      this.config.openAiConversationMode === "previous_response_id" &&
+      request.previousResponseId
+    ) {
       body.previous_response_id = request.previousResponseId;
     }
 
     const stream = await transport(request, body);
     const state: NormalizerState = {
       outputText: "",
-      toolCalls: new Map()
+      toolCalls: new Map(),
+      toolNameAliases,
     };
 
     for await (const event of stream) {
@@ -183,33 +213,37 @@ export class CodexAdapter implements AgentAdapter {
       }
     }
 
-    const toolCalls = [...state.toolCalls.entries()].map(([toolCallId, value]) => ({
-      toolCallId,
-      toolName: value.name,
-      argumentsText: value.argumentsText
-    }));
+    const toolCalls = [...state.toolCalls.entries()].map(
+      ([toolCallId, value]) => ({
+        toolCallId,
+        toolName: value.name,
+        argumentsText: value.argumentsText,
+      })
+    );
 
     const result = buildResult(request, state.outputText, {
       providerSessionId: state.providerResponseId,
       previousResponseId:
-        this.config.openAiConversationMode === "previous_response_id" ? state.providerResponseId : request.previousResponseId,
+        this.config.openAiConversationMode === "previous_response_id"
+          ? state.providerResponseId
+          : request.previousResponseId,
       usage: state.usage,
       usedFallback: false,
-      toolCalls
+      toolCalls,
     });
 
     await onEvent({
       type: "final_result",
       runId: request.runId,
       sessionId: request.sessionId,
-      result
+      result,
     });
     await onEvent({
       type: "final",
       runId: request.runId,
       outputText: result.outputText,
       previousResponseId: result.previousResponseId,
-      providerSessionId: result.providerSessionId
+      providerSessionId: result.providerSessionId,
     });
 
     return result;
@@ -221,7 +255,7 @@ export function normalizeOpenAiEvent(
   event: ResponsesStreamEvent,
   state: NormalizerState = {
     outputText: "",
-    toolCalls: new Map()
+    toolCalls: new Map(),
   }
 ): AgentRunEvent[] {
   switch (event.type) {
@@ -233,8 +267,8 @@ export function normalizeOpenAiEvent(
           runId: request.runId,
           sessionId: request.sessionId,
           providerSessionId: event.response?.id,
-          model: event.response?.model
-        }
+          model: event.response?.model,
+        },
       ];
     }
 
@@ -250,8 +284,8 @@ export function normalizeOpenAiEvent(
           runId: request.runId,
           sessionId: request.sessionId,
           messageId: event.item_id,
-          delta
-        }
+          delta,
+        },
       ];
     }
 
@@ -262,19 +296,19 @@ export function normalizeOpenAiEvent(
           runId: request.runId,
           sessionId: request.sessionId,
           messageId: state.messageId,
-          content: state.outputText
+          content: state.outputText,
         },
         {
           type: "structured_message",
           runId: request.runId,
-          message: { role: "assistant", content: state.outputText }
-        }
+          message: { role: "assistant", content: state.outputText },
+        },
       ];
     }
 
     case "response.function_call_arguments.delta": {
       const toolCallId = event.item_id ?? event.name ?? "tool";
-      const toolName = event.name ?? toolCallId;
+      const toolName = resolveRuntimeToolName(event.name ?? toolCallId, state);
       const current = state.toolCalls.get(toolCallId);
       if (!current) {
         state.toolCalls.set(toolCallId, { name: toolName, argumentsText: "" });
@@ -290,14 +324,14 @@ export function normalizeOpenAiEvent(
           runId: request.runId,
           sessionId: request.sessionId,
           toolCallId,
-          delta
-        }
+          delta,
+        },
       ];
     }
 
     case "response.function_call_arguments.done": {
       const toolCallId = event.item_id ?? event.name ?? "tool";
-      const toolName = event.name ?? toolCallId;
+      const toolName = resolveRuntimeToolName(event.name ?? toolCallId, state);
       const current = state.toolCalls.get(toolCallId);
       const argumentsText = event.arguments ?? current?.argumentsText ?? "";
       state.toolCalls.set(toolCallId, { name: toolName, argumentsText });
@@ -308,8 +342,8 @@ export function normalizeOpenAiEvent(
           sessionId: request.sessionId,
           toolCallId,
           toolName,
-          argumentsText
-        }
+          argumentsText,
+        },
       ];
     }
 
@@ -319,7 +353,7 @@ export function normalizeOpenAiEvent(
         state.usage = {
           inputTokens: event.response.usage.input_tokens,
           outputTokens: event.response.usage.output_tokens,
-          totalTokens: event.response.usage.total_tokens
+          totalTokens: event.response.usage.total_tokens,
         };
       }
       return [];
@@ -332,8 +366,8 @@ export function normalizeOpenAiEvent(
           runId: request.runId,
           sessionId: request.sessionId,
           message: event.error?.message ?? "Unknown OpenAI stream error",
-          retryable: true
-        }
+          retryable: true,
+        },
       ];
     }
 
@@ -342,7 +376,30 @@ export function normalizeOpenAiEvent(
   }
 }
 
-function resolveMode(mode: AgentAdapterMode, config: AppConfig): Exclude<AgentAdapterMode, "auto"> {
+function resolveRuntimeToolName(
+  openAiName: string,
+  state: Pick<NormalizerState, "toolNameAliases">
+): string {
+  return state.toolNameAliases?.get(openAiName) ?? openAiName;
+}
+
+function toOpenAiFunctionName(runtimeName: string, used: Set<string>): string {
+  const normalized = runtimeName.replace(/[^a-zA-Z0-9_-]/g, "_");
+  const base = /^[a-zA-Z0-9_-]+$/.test(normalized) ? normalized : "tool";
+  let candidate = base;
+  let suffix = 2;
+  while (used.has(candidate)) {
+    candidate = `${base}_${suffix}`;
+    suffix += 1;
+  }
+  used.add(candidate);
+  return candidate;
+}
+
+function resolveMode(
+  mode: AgentAdapterMode,
+  config: AppConfig
+): Exclude<AgentAdapterMode, "auto"> {
   if (mode === "openai" || mode === "fallback") {
     return mode;
   }
@@ -351,16 +408,19 @@ function resolveMode(mode: AgentAdapterMode, config: AppConfig): Exclude<AgentAd
 
 function defaultOpenAiTransport(config: AppConfig): OpenAiTransport {
   return async (request, body) => {
-    const response = await fetchWithTimeout(`${config.openAiBaseUrl ?? "https://api.openai.com/v1"}/responses`, {
-      method: "POST",
-      timeoutMs: config.openAiRequestTimeoutMs ?? 60_000,
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${config.openAiApiKey}`
-      },
-      body: JSON.stringify(body),
-      signal: request.signal
-    });
+    const response = await fetchWithTimeout(
+      `${config.openAiBaseUrl ?? "https://api.openai.com/v1"}/responses`,
+      {
+        method: "POST",
+        timeoutMs: config.openAiRequestTimeoutMs ?? 60_000,
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.openAiApiKey}`,
+        },
+        body: JSON.stringify(body),
+        signal: request.signal,
+      }
+    );
 
     if (!response.ok || !response.body) {
       throw new Error(`OpenAI request failed with status ${response.status}`);
@@ -370,7 +430,9 @@ function defaultOpenAiTransport(config: AppConfig): OpenAiTransport {
   };
 }
 
-async function* decodeSse(stream: ReadableStream<Uint8Array>): AsyncIterable<ResponsesStreamEvent> {
+async function* decodeSse(
+  stream: ReadableStream<Uint8Array>
+): AsyncIterable<ResponsesStreamEvent> {
   const decoder = new TextDecoder();
   let buffer = "";
 
@@ -380,9 +442,7 @@ async function* decodeSse(stream: ReadableStream<Uint8Array>): AsyncIterable<Res
     buffer = frames.pop() ?? "";
 
     for (const frame of frames) {
-      const line = frame
-        .split("\n")
-        .find((item) => item.startsWith("data:"));
+      const line = frame.split("\n").find((item) => item.startsWith("data:"));
       if (!line) {
         continue;
       }
@@ -414,7 +474,7 @@ function buildResult(
     usage: extra.usage,
     usedFallback: extra.usedFallback,
     transcript: [...request.messages, assistantMessage(outputText)],
-    toolCalls: extra.toolCalls
+    toolCalls: extra.toolCalls,
   };
 }
 

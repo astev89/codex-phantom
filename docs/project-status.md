@@ -4,7 +4,7 @@ This is the living status ledger for `codex-phantom`. Update it at the end of ea
 
 Last updated: 2026-05-29
 Branch: `jarvis/docker-dev-qdrant`
-Latest verified implementation commit: current `chore(ops): configure compose dev stack` commit
+Latest verified implementation commit: current `fix(agent): sanitize OpenAI tool names` commit
 
 ## Current State
 
@@ -13,6 +13,28 @@ Latest verified implementation commit: current `chore(ops): configure compose de
 The project is now past its first serious production-hardening pass. It is not yet equivalent to the original Phantom project, but the core runtime is materially safer to run: request sizes are bounded, secrets are rejected in production when defaults are used, outbound model calls have timeouts, scheduler jobs recover deterministically after restarts, MCP events are durably audited, external webhooks are signed, Slack sends retry transient failures, operator-console workflows have browser coverage, and the Docker image runs compiled JavaScript instead of stripped TypeScript.
 
 ## Just Completed
+
+OpenAI tool-name adapter and Slack tunnel live-test wave completed locally on 2026-05-29:
+
+- Sanitized OpenAI function tool names while preserving original runtime tool IDs for local tool execution.
+- Added regression coverage proving dotted runtime IDs such as `memory.query` are sent to OpenAI as valid function names and restored before runtime tool dispatch.
+- Verified a Cloudflare Quick Tunnel can expose the local Compose app to Slack Event Subscriptions.
+- Proved signed Slack URL verification and a synthetic signed Slack `app_mention` event through the tunnel complete through the coordinator and post a Slack thread reply.
+
+Verification from this wave:
+
+```bash
+node --experimental-strip-types --test tests/adapter.test.ts
+npm run typecheck
+npm test
+npm run build
+git diff --check
+docker compose up -d --build codex-phantom
+curl --max-time 8 -sS https://joint-painting-weapon-tuner.trycloudflare.com/health
+Signed Slack url_verification through /channels/slack/events
+Signed Slack app_mention through /channels/slack/events
+GitNexus detect_changes(scope="staged")
+```
 
 Docker Compose local dev stack wave completed locally on 2026-05-29:
 
