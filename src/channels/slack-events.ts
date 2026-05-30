@@ -55,7 +55,7 @@ export function mapSlackEventToInboundMessage(
   }
   const eventType = stringValue(event.type);
   if (eventType === "reaction_added") {
-    return mapReaction(payload.event_id, event);
+    return null;
   }
   if (eventType !== "app_mention" && eventType !== "message") {
     return null;
@@ -86,35 +86,6 @@ export function mapSlackEventToInboundMessage(
     threadId: threadTs,
     responseTarget: { type: "slack_thread", channel, threadTs, messageTs: ts },
     rawPayload: payload as JsonValue,
-  };
-}
-
-function mapReaction(
-  providerEventId: string,
-  event: Record<string, unknown>
-): InboundChannelMessage | null {
-  const user = stringValue(event.user);
-  const reaction = stringValue(event.reaction);
-  const item = recordValue(event.item);
-  const channel = stringValue(item?.channel);
-  const ts = stringValue(item?.ts);
-  if (!reaction || !channel || !ts) {
-    return null;
-  }
-  return {
-    channelId: "slack",
-    providerEventId,
-    conversationId: `slack:${channel}:${ts}`,
-    senderId: user,
-    message: `Slack reaction :${reaction}: from ${user ?? "unknown"}`,
-    threadId: ts,
-    responseTarget: {
-      type: "slack_thread",
-      channel,
-      threadTs: ts,
-      messageTs: ts,
-    },
-    rawPayload: { type: "reaction_added", event } as JsonValue,
   };
 }
 

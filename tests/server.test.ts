@@ -2662,6 +2662,33 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assert.equal(reactionFeedbackJson.feedback.source, "reaction");
     assert.equal(reactionFeedbackJson.feedback.threadTs, "1713900001.000000");
 
+    const statusReactionBody = JSON.stringify({
+      type: "event_callback",
+      event_id: "EvStatusReaction",
+      event: {
+        type: "reaction_added",
+        user: "U0BOT",
+        reaction: "hourglass",
+        item: { channel: "C123456", ts: "1713900001.000000" },
+      },
+    });
+    const statusReactionResponse = await fetch(
+      `http://127.0.0.1:${port}/channels/slack/events`,
+      {
+        method: "POST",
+        headers: signedSlackHeaders(
+          config.slackSigningSecret!,
+          statusReactionBody
+        ),
+        body: statusReactionBody,
+      }
+    );
+    const statusReactionJson = (await statusReactionResponse.json()) as {
+      status: string;
+    };
+    assert.equal(statusReactionResponse.status, 202);
+    assert.equal(statusReactionJson.status, "ignored");
+
     const duplicateSlackEventResponse = await fetch(
       `http://127.0.0.1:${port}/channels/slack/events`,
       {
