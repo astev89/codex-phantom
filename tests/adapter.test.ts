@@ -252,6 +252,52 @@ test("openai mode sanitizes function tool names and restores runtime ids", async
   });
 });
 
+test("openai mode bounds sanitized function tool names and preserves aliases", async () => {
+  let requestBody: Record<string, unknown> | undefined;
+  const adapter = new CodexAdapter(
+    {
+      ...baseConfig,
+      openAiApiKey: "test-key",
+    },
+    {
+      mode: "openai",
+      transport: async function* (_request, body) {
+        requestBody = body;
+        const toolName = (body.tools as Array<{ name: string }>)[1]?.name;
+        yield {
+          type: "response.function_call_arguments.done",
+          item_id: "call_long",
+          name: toolName,
+          arguments: '{"query":"status"}',
+        };
+      },
+    }
+  );
+  const firstRuntimeName = `dynamic.${"a".repeat(90)}`;
+  const secondRuntimeName = `dynamic_${"a".repeat(90)}`;
+  const request = {
+    ...makeRequest(),
+    toolCapabilities: [firstRuntimeName, secondRuntimeName].map((id) => ({
+      id,
+      description: "Long dynamic tool",
+      inputSchema: { type: "object", additionalProperties: true },
+      scopes: ["read"],
+      kind: "in_process" as const,
+    })),
+  };
+
+  const result = await adapter.run(request, async () => {});
+  const toolNames = (requestBody?.tools as Array<{ name: string }>).map(
+    (tool) => tool.name
+  );
+
+  assert.equal(toolNames.length, 2);
+  assert.ok(toolNames.every((name) => name.length <= 64));
+  assert.ok(toolNames.every((name) => /^[a-zA-Z0-9_-]+$/.test(name)));
+  assert.notEqual(toolNames[0], toolNames[1]);
+  assert.equal(result.toolCalls[0]?.toolName, secondRuntimeName);
+});
+
 test("openai mode aborts outbound responses requests after the configured timeout", async () => {
   const originalFetch = globalThis.fetch;
   const adapter = new CodexAdapter(

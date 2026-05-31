@@ -25,10 +25,16 @@ const sourceUserId =
   process.env.SLACK_SMOKE_USER_ID ??
   "U_CLOUDFLARE_SMOKE";
 const timeoutMs = Number(
-  options.timeoutMs ?? process.env.SLACK_SMOKE_TIMEOUT_MS ?? 30_000
+  options["timeout-ms"] ??
+    options.timeoutMs ??
+    process.env.SLACK_SMOKE_TIMEOUT_MS ??
+    30_000
 );
 const intervalMs = Number(
-  options.intervalMs ?? process.env.SLACK_SMOKE_INTERVAL_MS ?? 1_000
+  options["interval-ms"] ??
+    options.intervalMs ??
+    process.env.SLACK_SMOKE_INTERVAL_MS ??
+    1_000
 );
 const text =
   options.text ??
@@ -71,7 +77,7 @@ const eventResponse = await fetch(`${baseUrl}/channels/slack/events`, {
   headers: signedHeaders(body, signingSecret),
   body,
 });
-const accepted = await eventResponse.json();
+const accepted = await readJsonResponse(eventResponse, "Slack event request");
 console.log(JSON.stringify({ eventStatus: eventResponse.status, accepted }));
 
 if (eventResponse.status !== 202) {
@@ -87,7 +93,10 @@ while (Date.now() < deadline) {
       headers: { authorization: `Bearer ${operatorToken}` },
     }
   );
-  const inbound = await inboundResponse.json();
+  const inbound = await readJsonResponse(
+    inboundResponse,
+    "Inbound status request"
+  );
   const record = inbound.events?.find(
     (event) => event.providerEventId === eventId
   );
@@ -153,6 +162,26 @@ function trimTrailingSlash(value) {
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function readJsonResponse(response, label) {
+  const responseText = await response.text();
+  try {
+    return responseText ? JSON.parse(responseText) : null;
+  } catch {
+    fail(
+      `${label} returned non-JSON response (${response.status}): ${previewBody(
+        responseText
+      )}`
+    );
+  }
+}
+
+function previewBody(value) {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized.length > 500
+    ? `${normalized.slice(0, 500)}...`
+    : normalized;
 }
 
 function fail(message) {

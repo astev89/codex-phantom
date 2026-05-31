@@ -51,6 +51,8 @@ type CodexAdapterOptions = {
   transport?: OpenAiTransport;
 };
 
+const OPENAI_FUNCTION_NAME_MAX_LENGTH = 64;
+
 export class CodexAdapter implements AgentAdapter {
   readonly name = "codex";
   readonly capabilities = {
@@ -385,11 +387,17 @@ function resolveRuntimeToolName(
 
 function toOpenAiFunctionName(runtimeName: string, used: Set<string>): string {
   const normalized = runtimeName.replace(/[^a-zA-Z0-9_-]/g, "_");
-  const base = /^[a-zA-Z0-9_-]+$/.test(normalized) ? normalized : "tool";
+  const base = (
+    /^[a-zA-Z0-9_-]+$/.test(normalized) ? normalized : "tool"
+  ).slice(0, OPENAI_FUNCTION_NAME_MAX_LENGTH);
   let candidate = base;
   let suffix = 2;
   while (used.has(candidate)) {
-    candidate = `${base}_${suffix}`;
+    const suffixText = `_${suffix}`;
+    candidate = `${base.slice(
+      0,
+      OPENAI_FUNCTION_NAME_MAX_LENGTH - suffixText.length
+    )}${suffixText}`;
     suffix += 1;
   }
   used.add(candidate);

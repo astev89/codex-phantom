@@ -136,6 +136,20 @@ test("production config rejects blank and placeholder secrets", () => {
     process.env.OPERATOR_BEARER_TOKEN = "dev-operator-token";
     process.env.EXTERNAL_CHANNEL_SECRET = "webhook-secret";
     assert.throws(() => loadConfig(), /OPERATOR_BEARER_TOKEN/);
+
+    process.env.REJECT_DEFAULT_SECRETS = undefined;
+    process.env.OPERATOR_BEARER_TOKEN = "local-dev-operator-token";
+    process.env.MCP_BEARER_TOKEN = "mcp-secret";
+    process.env.EXTERNAL_CHANNEL_SECRET = "webhook-secret";
+    assert.throws(() => loadConfig(), /OPERATOR_BEARER_TOKEN/);
+
+    process.env.OPERATOR_BEARER_TOKEN = "operator-secret";
+    process.env.MCP_BEARER_TOKEN = "local-dev-mcp-token";
+    assert.throws(() => loadConfig(), /MCP_BEARER_TOKEN/);
+
+    process.env.MCP_BEARER_TOKEN = "mcp-secret";
+    process.env.EXTERNAL_CHANNEL_SECRET = "local-dev-channel-secret";
+    assert.throws(() => loadConfig(), /EXTERNAL_CHANNEL_SECRET/);
   } finally {
     process.env = original;
   }

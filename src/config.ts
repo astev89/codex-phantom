@@ -66,6 +66,9 @@ export type AppConfig = {
 const DEFAULT_MCP_BEARER_TOKEN = "dev-mcp-token";
 const DEFAULT_EXTERNAL_CHANNEL_SECRET = "dev-external-secret";
 const DEFAULT_OPERATOR_BEARER_TOKEN = "dev-operator-token";
+const COMPOSE_DEV_MCP_BEARER_TOKEN = "local-dev-mcp-token";
+const COMPOSE_DEV_EXTERNAL_CHANNEL_SECRET = "local-dev-channel-secret";
+const COMPOSE_DEV_OPERATOR_BEARER_TOKEN = "local-dev-operator-token";
 
 export function loadConfig(): AppConfig {
   const cwd = process.cwd();
@@ -375,23 +378,19 @@ function validateConfig(config: AppConfig): void {
     false
   );
   if (config.rejectDefaultSecrets || config.appEnv === "production") {
-    validateSecret(
-      "OPERATOR_BEARER_TOKEN",
-      config.operatorBearerToken,
-      true,
-      DEFAULT_OPERATOR_BEARER_TOKEN
-    );
-    validateSecret(
-      "MCP_BEARER_TOKEN",
-      config.mcpBearerToken,
-      true,
-      DEFAULT_MCP_BEARER_TOKEN
-    );
+    validateSecret("OPERATOR_BEARER_TOKEN", config.operatorBearerToken, true, [
+      DEFAULT_OPERATOR_BEARER_TOKEN,
+      COMPOSE_DEV_OPERATOR_BEARER_TOKEN,
+    ]);
+    validateSecret("MCP_BEARER_TOKEN", config.mcpBearerToken, true, [
+      DEFAULT_MCP_BEARER_TOKEN,
+      COMPOSE_DEV_MCP_BEARER_TOKEN,
+    ]);
     validateSecret(
       "EXTERNAL_CHANNEL_SECRET",
       config.externalChannelSecret,
       true,
-      DEFAULT_EXTERNAL_CHANNEL_SECRET
+      [DEFAULT_EXTERNAL_CHANNEL_SECRET, COMPOSE_DEV_EXTERNAL_CHANNEL_SECRET]
     );
   }
   if (config.appEnv === "production" && !config.openAiApiKey) {
@@ -403,7 +402,7 @@ function validateSecret(
   field: string,
   value: string,
   rejectPlaceholder: boolean,
-  defaultValue?: string
+  defaultValues: string[] = []
 ): void {
   const normalized = value.trim();
   if (!normalized) {
@@ -411,7 +410,7 @@ function validateSecret(
   }
   if (
     rejectPlaceholder &&
-    (normalized === defaultValue || normalized === "replace-me")
+    (defaultValues.includes(normalized) || normalized === "replace-me")
   ) {
     throw new Error(`${field} must be set to a non-default secret`);
   }

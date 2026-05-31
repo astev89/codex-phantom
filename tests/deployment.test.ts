@@ -99,6 +99,10 @@ test("deployment smoke scripts and docs cover boot, restart persistence, and bac
   assert.match(slackTunnelScript, /SLACK_SMOKE_CHANNEL_ID/);
   assert.match(slackTunnelScript, /SLACK_SIGNING_SECRET/);
   assert.match(slackTunnelScript, /OPERATOR_BEARER_TOKEN/);
+  assert.match(slackTunnelScript, /options\["timeout-ms"\]/);
+  assert.match(slackTunnelScript, /options\["interval-ms"\]/);
+  assert.match(slackTunnelScript, /readJsonResponse\(eventResponse/);
+  assert.match(slackTunnelScript, /returned non-JSON response/);
   assert.match(slackTunnelScript, /\/channels\/slack\/events/);
   assert.match(
     slackTunnelScript,
