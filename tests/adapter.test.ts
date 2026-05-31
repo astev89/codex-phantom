@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { normalizeOpenAiEvent, CodexAdapter } from "../src/agent/codex-adapter.ts";
+import {
+  normalizeOpenAiEvent,
+  CodexAdapter,
+} from "../src/agent/codex-adapter.ts";
 import type { AgentRunRequest } from "../src/agent/types.ts";
 import { makeConfig } from "./helpers.ts";
 
@@ -19,31 +22,43 @@ function makeRequest(): AgentRunRequest {
       mode: "full_access",
       fileGlobs: ["**/*"],
       allowedToolIds: [],
-      allowedMcpServers: []
+      allowedMcpServers: [],
     },
     model: "gpt-5",
-    reasoningEffort: "medium"
+    reasoningEffort: "medium",
   };
 }
 
 test("normalizes OpenAI streaming text and completion events", () => {
   const state = {
     outputText: "",
-    toolCalls: new Map<string, { name: string; argumentsText: string }>()
+    toolCalls: new Map<string, { name: string; argumentsText: string }>(),
   };
 
-  const created = normalizeOpenAiEvent({ runId: "run_1", sessionId: "session_1" }, {
-    type: "response.created",
-    response: { id: "resp_1", model: "gpt-5" }
-  }, state);
-  const delta = normalizeOpenAiEvent({ runId: "run_1", sessionId: "session_1" }, {
-    type: "response.output_text.delta",
-    item_id: "msg_1",
-    delta: "hello"
-  }, state);
-  const done = normalizeOpenAiEvent({ runId: "run_1", sessionId: "session_1" }, {
-    type: "response.output_text.done"
-  }, state);
+  const created = normalizeOpenAiEvent(
+    { runId: "run_1", sessionId: "session_1" },
+    {
+      type: "response.created",
+      response: { id: "resp_1", model: "gpt-5" },
+    },
+    state
+  );
+  const delta = normalizeOpenAiEvent(
+    { runId: "run_1", sessionId: "session_1" },
+    {
+      type: "response.output_text.delta",
+      item_id: "msg_1",
+      delta: "hello",
+    },
+    state
+  );
+  const done = normalizeOpenAiEvent(
+    { runId: "run_1", sessionId: "session_1" },
+    {
+      type: "response.output_text.done",
+    },
+    state
+  );
 
   assert.deepEqual(created, [
     {
@@ -51,8 +66,8 @@ test("normalizes OpenAI streaming text and completion events", () => {
       runId: "run_1",
       sessionId: "session_1",
       providerSessionId: "resp_1",
-      model: "gpt-5"
-    }
+      model: "gpt-5",
+    },
   ]);
   assert.deepEqual(delta, [
     {
@@ -60,8 +75,8 @@ test("normalizes OpenAI streaming text and completion events", () => {
       runId: "run_1",
       sessionId: "session_1",
       messageId: "msg_1",
-      delta: "hello"
-    }
+      delta: "hello",
+    },
   ]);
   assert.deepEqual(done, [
     {
@@ -69,34 +84,42 @@ test("normalizes OpenAI streaming text and completion events", () => {
       runId: "run_1",
       sessionId: "session_1",
       messageId: "msg_1",
-      content: "hello"
+      content: "hello",
     },
     {
       type: "structured_message",
       runId: "run_1",
-      message: { role: "assistant", content: "hello" }
-    }
+      message: { role: "assistant", content: "hello" },
+    },
   ]);
 });
 
 test("normalizes tool call request events", () => {
   const state = {
     outputText: "",
-    toolCalls: new Map<string, { name: string; argumentsText: string }>()
+    toolCalls: new Map<string, { name: string; argumentsText: string }>(),
   };
 
-  const delta = normalizeOpenAiEvent({ runId: "run_2", sessionId: "session_2" }, {
-    type: "response.function_call_arguments.delta",
-    item_id: "tool_1",
-    name: "repo.search",
-    arguments_delta: "{\"query\":\"cod"
-  }, state);
-  const done = normalizeOpenAiEvent({ runId: "run_2", sessionId: "session_2" }, {
-    type: "response.function_call_arguments.done",
-    item_id: "tool_1",
-    name: "repo.search",
-    arguments: "{\"query\":\"codex\"}"
-  }, state);
+  const delta = normalizeOpenAiEvent(
+    { runId: "run_2", sessionId: "session_2" },
+    {
+      type: "response.function_call_arguments.delta",
+      item_id: "tool_1",
+      name: "repo.search",
+      arguments_delta: '{"query":"cod',
+    },
+    state
+  );
+  const done = normalizeOpenAiEvent(
+    { runId: "run_2", sessionId: "session_2" },
+    {
+      type: "response.function_call_arguments.done",
+      item_id: "tool_1",
+      name: "repo.search",
+      arguments: '{"query":"codex"}',
+    },
+    state
+  );
 
   assert.deepEqual(delta, [
     {
@@ -104,8 +127,8 @@ test("normalizes tool call request events", () => {
       runId: "run_2",
       sessionId: "session_2",
       toolCallId: "tool_1",
-      delta: "{\"query\":\"cod"
-    }
+      delta: '{"query":"cod',
+    },
   ]);
   assert.deepEqual(done, [
     {
@@ -114,8 +137,8 @@ test("normalizes tool call request events", () => {
       sessionId: "session_2",
       toolCallId: "tool_1",
       toolName: "repo.search",
-      argumentsText: "{\"query\":\"codex\"}"
-    }
+      argumentsText: '{"query":"codex"}',
+    },
   ]);
 });
 
@@ -141,29 +164,29 @@ test("openai mode can return tool requests without network access", async () => 
   const adapter = new CodexAdapter(
     {
       ...baseConfig,
-      openAiApiKey: "test-key"
+      openAiApiKey: "test-key",
     },
     {
       mode: "openai",
       transport: async function* () {
         yield {
           type: "response.created",
-          response: { id: "resp_live", model: "gpt-5" }
+          response: { id: "resp_live", model: "gpt-5" },
         };
         yield {
           type: "response.function_call_arguments.done",
           item_id: "call_1",
           name: "echo.summary",
-          arguments: "{\"message\":\"hi\"}"
+          arguments: '{"message":"hi"}',
         };
         yield {
           type: "response.completed",
           response: {
             id: "resp_live",
-            usage: { input_tokens: 20, output_tokens: 10, total_tokens: 30 }
-          }
+            usage: { input_tokens: 20, output_tokens: 10, total_tokens: 30 },
+          },
         };
-      }
+      },
     }
   );
 
@@ -175,8 +198,104 @@ test("openai mode can return tool requests without network access", async () => 
   assert.deepEqual(result.toolCalls[0], {
     toolCallId: "call_1",
     toolName: "echo.summary",
-    argumentsText: "{\"message\":\"hi\"}"
+    argumentsText: '{"message":"hi"}',
   });
+});
+
+test("openai mode sanitizes function tool names and restores runtime ids", async () => {
+  let requestBody: Record<string, unknown> | undefined;
+  const adapter = new CodexAdapter(
+    {
+      ...baseConfig,
+      openAiApiKey: "test-key",
+    },
+    {
+      mode: "openai",
+      transport: async function* (_request, body) {
+        requestBody = body;
+        yield {
+          type: "response.created",
+          response: { id: "resp_tools", model: "gpt-5" },
+        };
+        yield {
+          type: "response.function_call_arguments.done",
+          item_id: "call_1",
+          name: "memory_query",
+          arguments: '{"query":"status"}',
+        };
+      },
+    }
+  );
+  const request = {
+    ...makeRequest(),
+    toolCapabilities: [
+      {
+        id: "memory.query",
+        description: "Query managed memory",
+        inputSchema: { type: "object", additionalProperties: true },
+        scopes: ["read"],
+        kind: "in_process" as const,
+      },
+    ],
+  };
+
+  const result = await adapter.run(request, async () => {});
+
+  assert.deepEqual(
+    (requestBody?.tools as Array<{ name: string }>).map((tool) => tool.name),
+    ["memory_query"]
+  );
+  assert.deepEqual(result.toolCalls[0], {
+    toolCallId: "call_1",
+    toolName: "memory.query",
+    argumentsText: '{"query":"status"}',
+  });
+});
+
+test("openai mode bounds sanitized function tool names and preserves aliases", async () => {
+  let requestBody: Record<string, unknown> | undefined;
+  const adapter = new CodexAdapter(
+    {
+      ...baseConfig,
+      openAiApiKey: "test-key",
+    },
+    {
+      mode: "openai",
+      transport: async function* (_request, body) {
+        requestBody = body;
+        const toolName = (body.tools as Array<{ name: string }>)[1]?.name;
+        yield {
+          type: "response.function_call_arguments.done",
+          item_id: "call_long",
+          name: toolName,
+          arguments: '{"query":"status"}',
+        };
+      },
+    }
+  );
+  const firstRuntimeName = `dynamic.${"a".repeat(90)}`;
+  const secondRuntimeName = `dynamic_${"a".repeat(90)}`;
+  const request = {
+    ...makeRequest(),
+    toolCapabilities: [firstRuntimeName, secondRuntimeName].map((id) => ({
+      id,
+      description: "Long dynamic tool",
+      inputSchema: { type: "object", additionalProperties: true },
+      scopes: ["read"],
+      kind: "in_process" as const,
+    })),
+  };
+
+  const result = await adapter.run(request, async () => {});
+  const toolNames = (requestBody?.tools as Array<{ name: string }>).map(
+    (tool) => tool.name
+  );
+
+  assert.equal(toolNames.length, 2);
+  assert.ok(toolNames.every((name) => name.length <= 64));
+  assert.ok(toolNames.every((name) => /^[a-zA-Z0-9_-]+$/.test(name)));
+  assert.notEqual(toolNames[0], toolNames[1]);
+  assert.equal(result.toolCalls[0]?.toolName, secondRuntimeName);
 });
 
 test("openai mode aborts outbound responses requests after the configured timeout", async () => {
@@ -185,7 +304,7 @@ test("openai mode aborts outbound responses requests after the configured timeou
     {
       ...baseConfig,
       openAiApiKey: "test-key",
-      openAiRequestTimeoutMs: 20
+      openAiRequestTimeoutMs: 20,
     },
     { mode: "openai" }
   );
@@ -221,7 +340,7 @@ test("openai mode honors caller abort signals for outbound responses requests", 
   const adapter = new CodexAdapter(
     {
       ...baseConfig,
-      openAiApiKey: "test-key"
+      openAiApiKey: "test-key",
     },
     { mode: "openai" }
   );
@@ -238,7 +357,11 @@ test("openai mode honors caller abort signals for outbound responses requests", 
 
   try {
     await assert.rejects(
-      () => adapter.run({ ...makeRequest(), signal: controller.signal }, async () => {}),
+      () =>
+        adapter.run(
+          { ...makeRequest(), signal: controller.signal },
+          async () => {}
+        ),
       /caller aborted/
     );
   } finally {

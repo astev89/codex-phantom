@@ -80,21 +80,21 @@ function secretChecks(config: AppConfig): ReadinessCheck[] {
       "Operator bearer token",
       "OPERATOR_BEARER_TOKEN",
       config.operatorBearerToken,
-      defaults.operatorBearerToken
+      defaults.operatorBearerTokens
     ),
     secretCheck(
       "mcp-token",
       "MCP bearer token",
       "MCP_BEARER_TOKEN",
       config.mcpBearerToken,
-      defaults.mcpBearerToken
+      defaults.mcpBearerTokens
     ),
     secretCheck(
       "external-channel-secret",
       "External channel HMAC secret",
       "EXTERNAL_CHANNEL_SECRET",
       config.externalChannelSecret,
-      defaults.externalChannelSecret
+      defaults.externalChannelSecrets
     ),
   ];
 }
@@ -104,13 +104,13 @@ function secretCheck(
   label: string,
   envVar: string,
   value: string,
-  defaultValue: string
+  defaultValues: string[]
 ): ReadinessCheck {
   const normalized = value.trim();
   if (
     !normalized ||
     normalized === "replace-me" ||
-    normalized === defaultValue
+    defaultValues.includes(normalized)
   ) {
     return {
       id,

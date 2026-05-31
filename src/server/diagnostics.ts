@@ -27,6 +27,11 @@ export type EmailChannelDiagnostics = {
 export type StartupDiagnostics = {
   appEnv: AppConfig["appEnv"];
   modelAdapter: "openai" | "fallback";
+  model: {
+    name: string;
+    reasoningEffort: AppConfig["openAiReasoningEffort"];
+    memoryReasoningEffort: AppConfig["openAiMemoryReasoningEffort"];
+  };
   qdrant: {
     enabled: boolean;
     configured: boolean;
@@ -88,6 +93,11 @@ export function buildStartupDiagnostics(
   return {
     appEnv: config.appEnv,
     modelAdapter: modelAdapterMode(config),
+    model: {
+      name: config.model,
+      reasoningEffort: config.openAiReasoningEffort,
+      memoryReasoningEffort: config.openAiMemoryReasoningEffort,
+    },
     qdrant: {
       enabled: config.qdrantEnabled,
       configured: memory.qdrantConfigured,

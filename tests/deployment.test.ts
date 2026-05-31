@@ -36,21 +36,35 @@ test("Dockerfile runs as a non-root service with a healthcheck and writable data
   assert.match(dockerfile, /CMD \["node", "dist\/index\.js"\]/);
 });
 
-test("docker compose defines restart and persistence settings for local production proof", async () => {
+test("docker compose defines local dev runtime with persistent SQLite and Qdrant", async () => {
   const compose = await readFile("docker-compose.yml", "utf8");
 
   assert.match(compose, /restart: unless-stopped/);
   assert.match(compose, /required: false/);
+  assert.match(compose, /APP_ENV: \$\{APP_ENV:-development\}/);
+  assert.match(compose, /CODEX_PHANTOM_DATA_DIR: \/app\/data/);
   assert.match(
     compose,
-    /OPERATOR_BEARER_TOKEN: \$\{OPERATOR_BEARER_TOKEN:\?Set OPERATOR_BEARER_TOKEN\}/
+    /CODEX_PHANTOM_DATABASE_PATH: \/app\/data\/codex-phantom\.sqlite/
   );
   assert.match(
     compose,
-    /OPENAI_API_KEY: \$\{OPENAI_API_KEY:\?Set OPENAI_API_KEY\}/
+    /OPERATOR_BEARER_TOKEN: \$\{OPERATOR_BEARER_TOKEN:-local-dev-operator-token\}/
+  );
+  assert.match(compose, /OPENAI_API_KEY: \$\{OPENAI_API_KEY:-\}/);
+  assert.match(compose, /OPENAI_MODEL: \$\{OPENAI_MODEL:-gpt-5\}/);
+  assert.match(
+    compose,
+    /OPENAI_REASONING_EFFORT: \$\{OPENAI_REASONING_EFFORT:-medium\}/
+  );
+  assert.match(
+    compose,
+    /OPENAI_MEMORY_REASONING_EFFORT: \$\{OPENAI_MEMORY_REASONING_EFFORT:-low\}/
   );
   assert.match(compose, /QDRANT_ENABLED: "true"/);
   assert.match(compose, /QDRANT_URL: http:\/\/qdrant:6333/);
+  assert.match(compose, /condition: service_healthy/);
+  assert.match(compose, /GET \/healthz HTTP\/1\.1/);
   assert.match(compose, /codex-phantom-data:\/app\/data/);
   assert.match(compose, /qdrant-data:\/qdrant\/storage/);
 });
@@ -59,6 +73,10 @@ test("deployment smoke scripts and docs cover boot, restart persistence, and bac
   const script = await readFile("scripts/deployment-smoke.sh", "utf8");
   const restoreScript = await readFile(
     "scripts/backup-restore-smoke.sh",
+    "utf8"
+  );
+  const slackTunnelScript = await readFile(
+    "scripts/slack-tunnel-smoke.mjs",
     "utf8"
   );
   const seedScript = await readFile("scripts/restore-smoke-seed.mjs", "utf8");
@@ -78,6 +96,23 @@ test("deployment smoke scripts and docs cover boot, restart persistence, and bac
   assert.match(script, /MCP_BEARER_TOKEN/);
   assert.match(script, /EXTERNAL_CHANNEL_SECRET/);
   assert.match(script, /OPENAI_API_KEY/);
+  assert.match(slackTunnelScript, /^#!\/usr\/bin\/env node/);
+  assert.match(slackTunnelScript, /BASE_URL/);
+  assert.match(slackTunnelScript, /SLACK_SMOKE_CHANNEL_ID/);
+  assert.match(slackTunnelScript, /SLACK_SIGNING_SECRET/);
+  assert.match(slackTunnelScript, /OPERATOR_BEARER_TOKEN/);
+  assert.match(slackTunnelScript, /options\["timeout-ms"\]/);
+  assert.match(slackTunnelScript, /options\["interval-ms"\]/);
+  assert.match(slackTunnelScript, /readJsonResponse\(eventResponse/);
+  assert.match(slackTunnelScript, /returned non-JSON response/);
+  assert.match(slackTunnelScript, /if \(!inboundResponse\.ok\)/);
+  assert.match(slackTunnelScript, /without a Slack response message timestamp/);
+  assert.match(slackTunnelScript, /\/channels\/slack\/events/);
+  assert.match(
+    slackTunnelScript,
+    /\/admin\/channels\/inbound\?channelId=slack/
+  );
+  assert.doesNotMatch(slackTunnelScript, /trycloudflare\.com/);
   assert.match(restoreScript, /docker volume rm codex-phantom-data/);
   assert.match(restoreScript, /docker volume create codex-phantom-data/);
   assert.match(restoreScript, /codex-phantom-data\.tgz/);

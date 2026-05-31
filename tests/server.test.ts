@@ -2662,6 +2662,33 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assert.equal(reactionFeedbackJson.feedback.source, "reaction");
     assert.equal(reactionFeedbackJson.feedback.threadTs, "1713900001.000000");
 
+    const statusReactionBody = JSON.stringify({
+      type: "event_callback",
+      event_id: "EvStatusReaction",
+      event: {
+        type: "reaction_added",
+        user: "U0BOT",
+        reaction: "hourglass",
+        item: { channel: "C123456", ts: "1713900001.000000" },
+      },
+    });
+    const statusReactionResponse = await fetch(
+      `http://127.0.0.1:${port}/channels/slack/events`,
+      {
+        method: "POST",
+        headers: signedSlackHeaders(
+          config.slackSigningSecret!,
+          statusReactionBody
+        ),
+        body: statusReactionBody,
+      }
+    );
+    const statusReactionJson = (await statusReactionResponse.json()) as {
+      status: string;
+    };
+    assert.equal(statusReactionResponse.status, 202);
+    assert.equal(statusReactionJson.status, "ignored");
+
     const duplicateSlackEventResponse = await fetch(
       `http://127.0.0.1:${port}/channels/slack/events`,
       {
@@ -3279,6 +3306,11 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       diagnostics: {
         appEnv: string;
         modelAdapter: string;
+        model: {
+          name: string;
+          reasoningEffort: string;
+          memoryReasoningEffort: string;
+        };
         missingRecommendedEnv: string[];
         rolePolicy: { source: string; valid: boolean };
         channelReadiness: Array<{
@@ -3290,6 +3322,11 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     };
     assert.equal(diagnosticsJson.diagnostics.appEnv, "test");
     assert.equal(diagnosticsJson.diagnostics.modelAdapter, "fallback");
+    assert.deepEqual(diagnosticsJson.diagnostics.model, {
+      name: "gpt-5",
+      reasoningEffort: "medium",
+      memoryReasoningEffort: "low",
+    });
     assert.equal(
       diagnosticsJson.diagnostics.rolePolicy.source,
       "compiled_fallback"

@@ -2,9 +2,9 @@
 
 This is the living status ledger for `codex-phantom`. Update it at the end of each development wave, after tests pass and before handing off or opening a PR.
 
-Last updated: 2026-05-27
-Branch: `jarvis/gitnexus-skills-refresh`
-Latest verified implementation commit: current `refactor(server): deepen operator export module` commit
+Last updated: 2026-05-29
+Branch: `jarvis/docker-dev-qdrant`
+Latest verified implementation commit: current `chore(config): make OpenAI reasoning configurable` commit
 
 ## Current State
 
@@ -13,6 +13,71 @@ Latest verified implementation commit: current `refactor(server): deepen operato
 The project is now past its first serious production-hardening pass. It is not yet equivalent to the original Phantom project, but the core runtime is materially safer to run: request sizes are bounded, secrets are rejected in production when defaults are used, outbound model calls have timeouts, scheduler jobs recover deterministically after restarts, MCP events are durably audited, external webhooks are signed, Slack sends retry transient failures, operator-console workflows have browser coverage, and the Docker image runs compiled JavaScript instead of stripped TypeScript.
 
 ## Just Completed
+
+OpenAI model and reasoning config wave completed locally on 2026-05-29:
+
+- Kept `OPENAI_MODEL` explicit across config, `.env.example`, and the Compose dev stack with a `gpt-5` default.
+- Added `OPENAI_REASONING_EFFORT` for normal agent/coordinator Responses calls, defaulting to `medium`.
+- Added `OPENAI_MEMORY_REASONING_EFFORT` for background memory insight extraction, defaulting to `low`.
+- Validated reasoning effort values as `low`, `medium`, or `high`, and surfaced the configured model/reasoning values in startup diagnostics.
+- Replaced hardcoded runtime reasoning values with the configured defaults while preserving existing behavior unless env overrides are supplied.
+
+Verification from this wave:
+
+```bash
+node --experimental-strip-types --test tests/config.test.ts tests/orchestration.test.ts tests/deployment.test.ts tests/server.test.ts
+npm run typecheck
+npm test
+npm run build
+docker compose config --quiet
+git diff --check
+GitNexus detect_changes(scope="staged")
+```
+
+OpenAI tool-name adapter and Slack tunnel live-test wave completed locally on 2026-05-29:
+
+- Sanitized OpenAI function tool names while preserving original runtime tool IDs for local tool execution.
+- Added regression coverage proving dotted runtime IDs such as `memory.query` are sent to OpenAI as valid function names and restored before runtime tool dispatch.
+- Verified a Cloudflare Quick Tunnel can expose the local Compose app to Slack Event Subscriptions.
+- Proved signed Slack URL verification and a synthetic signed Slack `app_mention` event through the tunnel complete through the coordinator and post a Slack thread reply.
+- Added a parameterized Slack tunnel smoke script so ephemeral Cloudflare Quick Tunnel URLs stay runtime input instead of repo constants.
+
+Verification from this wave:
+
+```bash
+node --experimental-strip-types --test tests/adapter.test.ts
+npm run typecheck
+npm test
+npm run build
+git diff --check
+docker compose up -d --build codex-phantom
+curl --max-time 8 -sS "$PUBLIC_TUNNEL_URL/health"
+Signed Slack url_verification through /channels/slack/events
+BASE_URL="$PUBLIC_TUNNEL_URL" SLACK_SMOKE_CHANNEL_ID="$SLACK_CHANNEL_ID" node scripts/slack-tunnel-smoke.mjs
+GitNexus detect_changes(scope="staged")
+```
+
+Docker Compose local dev stack wave completed locally on 2026-05-29:
+
+- Updated the existing Compose stack to default to a development runtime for local live testing.
+- Made SQLite persistence explicit with `CODEX_PHANTOM_DATA_DIR=/app/data` and `CODEX_PHANTOM_DATABASE_PATH=/app/data/codex-phantom.sqlite` on the persistent `codex-phantom-data` volume.
+- Kept Qdrant enabled by default in Compose with `QDRANT_URL=http://qdrant:6333` and persistent `codex-phantom-qdrant-data` storage.
+- Added local-only fallback operator, MCP, and external webhook secrets so OpenAI/Slack-only `.env` files can boot the stack while production-like smoke runs can still override with explicit secrets and `APP_ENV=production`.
+- Documented the local Compose defaults and the production-smoke override requirement.
+
+Verification from this wave:
+
+```bash
+docker compose config --quiet
+node --experimental-strip-types --test tests/deployment.test.ts tests/config.test.ts
+npm run typecheck
+npm run build
+git diff --check
+docker compose up -d --build
+curl -sS http://127.0.0.1:3210/health
+curl -sS -H 'Authorization: Bearer local-dev-operator-token' http://127.0.0.1:3210/admin/readiness
+curl -sS http://127.0.0.1:6333/readyz
+```
 
 Operator export module wave completed locally on 2026-05-27:
 

@@ -2,6 +2,7 @@ import { join } from "node:path";
 
 export type AppEnvironment = "development" | "test" | "production";
 export type LogLevel = "debug" | "info" | "warn" | "error";
+export type OpenAiReasoningEffort = "low" | "medium" | "high";
 
 export type AppConfig = {
   appEnv: AppEnvironment;
@@ -10,6 +11,8 @@ export type AppConfig = {
   dataDir: string;
   datastorePath: string;
   model: string;
+  openAiReasoningEffort: OpenAiReasoningEffort;
+  openAiMemoryReasoningEffort: OpenAiReasoningEffort;
   agentName: string;
   roleConfigPath: string;
   operatorConfigPath: string;
@@ -63,6 +66,9 @@ export type AppConfig = {
 const DEFAULT_MCP_BEARER_TOKEN = "dev-mcp-token";
 const DEFAULT_EXTERNAL_CHANNEL_SECRET = "dev-external-secret";
 const DEFAULT_OPERATOR_BEARER_TOKEN = "dev-operator-token";
+const COMPOSE_DEV_MCP_BEARER_TOKEN = "local-dev-mcp-token";
+const COMPOSE_DEV_EXTERNAL_CHANNEL_SECRET = "local-dev-channel-secret";
+const COMPOSE_DEV_OPERATOR_BEARER_TOKEN = "local-dev-operator-token";
 
 export function loadConfig(): AppConfig {
   const cwd = process.cwd();
@@ -81,6 +87,16 @@ export function loadConfig(): AppConfig {
     dataDir,
     datastorePath,
     model: process.env.OPENAI_MODEL ?? "gpt-5",
+    openAiReasoningEffort: parseReasoningEffort(
+      process.env.OPENAI_REASONING_EFFORT,
+      "medium",
+      "OPENAI_REASONING_EFFORT"
+    ),
+    openAiMemoryReasoningEffort: parseReasoningEffort(
+      process.env.OPENAI_MEMORY_REASONING_EFFORT,
+      "low",
+      "OPENAI_MEMORY_REASONING_EFFORT"
+    ),
     agentName: process.env.AGENT_NAME ?? "Codex Phantom",
     roleConfigPath:
       process.env.ROLE_CONFIG_PATH ?? join(cwd, "config", "roles.yaml"),
@@ -235,13 +251,25 @@ export function modelAdapterMode(config: AppConfig): "openai" | "fallback" {
 
 export function defaultSecrets(): {
   operatorBearerToken: string;
+  operatorBearerTokens: string[];
   mcpBearerToken: string;
+  mcpBearerTokens: string[];
   externalChannelSecret: string;
+  externalChannelSecrets: string[];
 } {
   return {
     operatorBearerToken: DEFAULT_OPERATOR_BEARER_TOKEN,
+    operatorBearerTokens: [
+      DEFAULT_OPERATOR_BEARER_TOKEN,
+      COMPOSE_DEV_OPERATOR_BEARER_TOKEN,
+    ],
     mcpBearerToken: DEFAULT_MCP_BEARER_TOKEN,
+    mcpBearerTokens: [DEFAULT_MCP_BEARER_TOKEN, COMPOSE_DEV_MCP_BEARER_TOKEN],
     externalChannelSecret: DEFAULT_EXTERNAL_CHANNEL_SECRET,
+    externalChannelSecrets: [
+      DEFAULT_EXTERNAL_CHANNEL_SECRET,
+      COMPOSE_DEV_EXTERNAL_CHANNEL_SECRET,
+    ],
   };
 }
 
@@ -312,6 +340,20 @@ function parsePositiveInteger(
   return value;
 }
 
+function parseReasoningEffort(
+  raw: string | undefined,
+  fallback: OpenAiReasoningEffort,
+  field: string
+): OpenAiReasoningEffort {
+  if (!raw) {
+    return fallback;
+  }
+  if (raw === "low" || raw === "medium" || raw === "high") {
+    return raw;
+  }
+  throw new Error(`${field} must be low, medium, or high`);
+}
+
 function validateConfig(config: AppConfig): void {
   if (!config.dataDir.trim()) {
     throw new Error("CODEX_PHANTOM_DATA_DIR must not be empty");
@@ -348,23 +390,19 @@ function validateConfig(config: AppConfig): void {
     false
   );
   if (config.rejectDefaultSecrets || config.appEnv === "production") {
-    validateSecret(
-      "OPERATOR_BEARER_TOKEN",
-      config.operatorBearerToken,
-      true,
-      DEFAULT_OPERATOR_BEARER_TOKEN
-    );
-    validateSecret(
-      "MCP_BEARER_TOKEN",
-      config.mcpBearerToken,
-      true,
-      DEFAULT_MCP_BEARER_TOKEN
-    );
+    validateSecret("OPERATOR_BEARER_TOKEN", config.operatorBearerToken, true, [
+      DEFAULT_OPERATOR_BEARER_TOKEN,
+      COMPOSE_DEV_OPERATOR_BEARER_TOKEN,
+    ]);
+    validateSecret("MCP_BEARER_TOKEN", config.mcpBearerToken, true, [
+      DEFAULT_MCP_BEARER_TOKEN,
+      COMPOSE_DEV_MCP_BEARER_TOKEN,
+    ]);
     validateSecret(
       "EXTERNAL_CHANNEL_SECRET",
       config.externalChannelSecret,
       true,
-      DEFAULT_EXTERNAL_CHANNEL_SECRET
+      [DEFAULT_EXTERNAL_CHANNEL_SECRET, COMPOSE_DEV_EXTERNAL_CHANNEL_SECRET]
     );
   }
   if (config.appEnv === "production" && !config.openAiApiKey) {
@@ -376,7 +414,7 @@ function validateSecret(
   field: string,
   value: string,
   rejectPlaceholder: boolean,
-  defaultValue?: string
+  defaultValues: string[] = []
 ): void {
   const normalized = value.trim();
   if (!normalized) {
@@ -384,7 +422,7 @@ function validateSecret(
   }
   if (
     rejectPlaceholder &&
-    (normalized === defaultValue || normalized === "replace-me")
+    (defaultValues.includes(normalized) || normalized === "replace-me")
   ) {
     throw new Error(`${field} must be set to a non-default secret`);
   }

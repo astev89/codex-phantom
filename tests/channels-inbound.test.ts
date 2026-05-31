@@ -245,8 +245,8 @@ test("slack event mapper handles supported events and ignores noise", () => {
     },
   };
   assert.equal(
-    mapSlackEventToInboundMessage(reaction, { botUserId: "B999" })?.message,
-    "Slack reaction :thumbsup: from U123"
+    mapSlackEventToInboundMessage(reaction, { botUserId: "B999" }),
+    null
   );
 
   const threadReply: SlackEventsPayload = {

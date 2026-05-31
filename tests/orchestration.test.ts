@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CodexAdapter } from "../src/agent/codex-adapter.ts";
 import { AgentRuntime } from "../src/agent/runtime.ts";
+import type { AgentAdapter, AgentRunRequest } from "../src/agent/types.ts";
 import { SessionStore } from "../src/chat/session-store.ts";
 import { MemoryStore } from "../src/memory/store.ts";
 import { AppDatabase } from "../src/platform/database.ts";
@@ -198,6 +199,90 @@ test("runtime executes tool calls before returning the final answer", async () =
 
   assert.equal(result.result.outputText, "tool complete");
   assert.equal(iteration, 2);
+  database.close();
+});
+
+test("runtime passes configured model and reasoning efforts to adapter", async () => {
+  const database = new AppDatabase(":memory:");
+  const config = makeConfig(".", {
+    model: "gpt-5.1-codex",
+    openAiApiKey: "test-key",
+    openAiReasoningEffort: "high",
+    openAiMemoryReasoningEffort: "medium",
+  });
+  const requests: AgentRunRequest[] = [];
+  const adapter: AgentAdapter = {
+    name: "capturing",
+    capabilities: {
+      supportsResume: true,
+      supportsStreaming: true,
+      supportsToolStreaming: true,
+      supportsStructuredOutput: true,
+      supportsParallelToolCalls: false,
+      supportsReasoningEffort: true,
+    },
+    async run(request) {
+      requests.push(request);
+      return {
+        runId: request.runId,
+        outputText:
+          request.role === "researcher"
+            ? JSON.stringify({
+                semanticFacts: [],
+                proceduralNotes: [],
+                summary: "configured reasoning smoke",
+              })
+            : "configured reasoning complete",
+        providerSessionId: "provider_configured",
+        previousResponseId: "provider_configured",
+        transcript: [
+          { role: "user", content: request.messages.at(-1)?.content ?? "" },
+          { role: "assistant", content: "configured reasoning complete" },
+        ],
+        toolCalls: [],
+      };
+    },
+  };
+
+  const runtime = new AgentRuntime(
+    config,
+    adapter,
+    new SessionStore(database),
+    new MemoryStore(
+      database,
+      config,
+      makeDisabledEmbeddings(),
+      makeFakeVectorStore({
+        backend: "qdrant",
+        available: false,
+        configured: false,
+      }),
+      makeFakeVectorStore({ backend: "sqlite_fallback", available: true })
+    ),
+    new ToolRegistry()
+  );
+
+  await runtime.run(
+    {
+      channelId: "web",
+      conversationId: "conv",
+      role: "coordinator",
+      messages: [{ role: "user", content: "check configured reasoning" }],
+      permissionPolicy: {
+        mode: "read_only",
+        fileGlobs: [],
+        allowedToolIds: [],
+        allowedMcpServers: [],
+      },
+      toolCapabilities: [],
+    },
+    async () => {}
+  );
+
+  assert.equal(requests[0]?.model, "gpt-5.1-codex");
+  assert.equal(requests[0]?.reasoningEffort, "high");
+  assert.equal(requests[1]?.model, "gpt-5.1-codex");
+  assert.equal(requests[1]?.reasoningEffort, "medium");
   database.close();
 });
 
