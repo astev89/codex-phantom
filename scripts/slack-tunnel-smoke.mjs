@@ -97,6 +97,13 @@ while (Date.now() < deadline) {
     inboundResponse,
     "Inbound status request"
   );
+  if (!inboundResponse.ok) {
+    fail(
+      `Inbound status request failed (${inboundResponse.status}): ${previewBody(
+        JSON.stringify(inbound)
+      )}`
+    );
+  }
   const record = inbound.events?.find(
     (event) => event.providerEventId === eventId
   );
@@ -114,7 +121,13 @@ while (Date.now() < deadline) {
         },
       })
     );
-    process.exit(record.status === "completed" ? 0 : 1);
+    if (record.status === "failed") {
+      process.exit(1);
+    }
+    if (!record.slackResponseMessageTs) {
+      fail("Inbound completed without a Slack response message timestamp.");
+    }
+    process.exit(0);
   }
 }
 

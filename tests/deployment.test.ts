@@ -63,6 +63,8 @@ test("docker compose defines local dev runtime with persistent SQLite and Qdrant
   );
   assert.match(compose, /QDRANT_ENABLED: "true"/);
   assert.match(compose, /QDRANT_URL: http:\/\/qdrant:6333/);
+  assert.match(compose, /condition: service_healthy/);
+  assert.match(compose, /GET \/healthz HTTP\/1\.1/);
   assert.match(compose, /codex-phantom-data:\/app\/data/);
   assert.match(compose, /qdrant-data:\/qdrant\/storage/);
 });
@@ -103,6 +105,8 @@ test("deployment smoke scripts and docs cover boot, restart persistence, and bac
   assert.match(slackTunnelScript, /options\["interval-ms"\]/);
   assert.match(slackTunnelScript, /readJsonResponse\(eventResponse/);
   assert.match(slackTunnelScript, /returned non-JSON response/);
+  assert.match(slackTunnelScript, /if \(!inboundResponse\.ok\)/);
+  assert.match(slackTunnelScript, /without a Slack response message timestamp/);
   assert.match(slackTunnelScript, /\/channels\/slack\/events/);
   assert.match(
     slackTunnelScript,

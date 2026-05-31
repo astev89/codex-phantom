@@ -251,13 +251,25 @@ export function modelAdapterMode(config: AppConfig): "openai" | "fallback" {
 
 export function defaultSecrets(): {
   operatorBearerToken: string;
+  operatorBearerTokens: string[];
   mcpBearerToken: string;
+  mcpBearerTokens: string[];
   externalChannelSecret: string;
+  externalChannelSecrets: string[];
 } {
   return {
     operatorBearerToken: DEFAULT_OPERATOR_BEARER_TOKEN,
+    operatorBearerTokens: [
+      DEFAULT_OPERATOR_BEARER_TOKEN,
+      COMPOSE_DEV_OPERATOR_BEARER_TOKEN,
+    ],
     mcpBearerToken: DEFAULT_MCP_BEARER_TOKEN,
+    mcpBearerTokens: [DEFAULT_MCP_BEARER_TOKEN, COMPOSE_DEV_MCP_BEARER_TOKEN],
     externalChannelSecret: DEFAULT_EXTERNAL_CHANNEL_SECRET,
+    externalChannelSecrets: [
+      DEFAULT_EXTERNAL_CHANNEL_SECRET,
+      COMPOSE_DEV_EXTERNAL_CHANNEL_SECRET,
+    ],
   };
 }
 

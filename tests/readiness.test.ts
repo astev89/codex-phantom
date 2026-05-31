@@ -77,6 +77,42 @@ test("operator readiness reports unsafe first-run setup gaps", async () => {
   }
 });
 
+test("operator readiness treats compose dev secrets as unsafe defaults", () => {
+  const dataDir = mkdtempSync(
+    join(tmpdir(), "codex-phantom-compose-readiness-")
+  );
+  const config = makeConfig(dataDir, {
+    operatorBearerToken: "local-dev-operator-token",
+    mcpBearerToken: "local-dev-mcp-token",
+    externalChannelSecret: "local-dev-channel-secret",
+  });
+  const database = new AppDatabase(join(dataDir, "readiness.sqlite"));
+  const channels = new ChannelRegistry(database, config);
+
+  try {
+    const readiness = buildSetupReadiness({
+      config,
+      memory: memoryStatus,
+      channels: channels.list(),
+      databaseReady: database.isReady(),
+    });
+    const failedSecretIds = readiness.checks
+      .filter(
+        (check) => check.category === "secrets" && check.status === "fail"
+      )
+      .map((check) => check.id)
+      .sort();
+
+    assert.deepEqual(failedSecretIds, [
+      "external-channel-secret",
+      "mcp-token",
+      "operator-token",
+    ]);
+  } finally {
+    database.close();
+  }
+});
+
 test("email channel is available but disabled by default", () => {
   const dataDir = mkdtempSync(join(tmpdir(), "codex-phantom-email-readiness-"));
   const config = makeConfig(dataDir);
