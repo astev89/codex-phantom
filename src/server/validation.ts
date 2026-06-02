@@ -4,9 +4,14 @@ import type {
   AssignmentAutonomyLevel,
   AssignmentControlAction,
   AssignmentPolicy,
+  AssignmentPolicyPatch,
   AssignmentSource,
-  CreateAssignmentInput,
   AssignmentControlInput,
+  CreateAssignmentInput,
+} from "../assignments/types.ts";
+import {
+  ASSIGNMENT_AUTONOMY_LEVELS,
+  ASSIGNMENT_LIFECYCLE_STATES,
 } from "../assignments/types.ts";
 import type {
   CreateSelfEvolutionProposalInput,
@@ -462,10 +467,10 @@ function validateSubagents(input: unknown): SubagentRequest[] | undefined {
 function validateAssignmentSource(
   input: unknown
 ): AssignmentSource | undefined {
-  if (input === undefined) {
+  if (input === undefined || input === null) {
     return undefined;
   }
-  const value = asRecord(input);
+  const value = asRecord(input, "source");
   return {
     channelId: optionalString(value.channelId),
     conversationId: optionalString(value.conversationId),
@@ -476,11 +481,11 @@ function validateAssignmentSource(
 
 function validateAssignmentPolicyPatch(
   input: unknown
-): Partial<AssignmentPolicy> | undefined {
-  if (input === undefined) {
+): AssignmentPolicyPatch | undefined {
+  if (input === undefined || input === null) {
     return undefined;
   }
-  const value = asRecord(input);
+  const value = asRecord(input, "policy");
   const notificationCadence =
     value.notificationCadence === undefined
       ? undefined
@@ -510,47 +515,46 @@ function validateAssignmentPolicyPatch(
 
 function validateAssignmentNotificationCadence(
   input: unknown
-): AssignmentPolicy["notificationCadence"] {
-  const value = asRecord(input);
+): Partial<AssignmentPolicy["notificationCadence"]> {
+  const value = asRecord(input, "notificationCadence");
   return {
     onCreate:
       value.onCreate === undefined
-        ? true
+        ? undefined
         : requireBoolean(value.onCreate, "notificationCadence.onCreate"),
     onWakeupStart:
       value.onWakeupStart === undefined
-        ? true
+        ? undefined
         : requireBoolean(
             value.onWakeupStart,
             "notificationCadence.onWakeupStart"
           ),
     onMeaningfulProgress:
       value.onMeaningfulProgress === undefined
-        ? true
+        ? undefined
         : requireBoolean(
             value.onMeaningfulProgress,
             "notificationCadence.onMeaningfulProgress"
           ),
     onBlocked:
       value.onBlocked === undefined
-        ? true
+        ? undefined
         : requireBoolean(value.onBlocked, "notificationCadence.onBlocked"),
     onFailure:
       value.onFailure === undefined
-        ? true
+        ? undefined
         : requireBoolean(value.onFailure, "notificationCadence.onFailure"),
     onCompletion:
       value.onCompletion === undefined
-        ? true
+        ? undefined
         : requireBoolean(
             value.onCompletion,
             "notificationCadence.onCompletion"
           ),
-    activeProgressIntervalMinutes:
-      optionalPositiveInteger(
-        value.activeProgressIntervalMinutes,
-        "notificationCadence.activeProgressIntervalMinutes"
-      ) ?? 30,
+    activeProgressIntervalMinutes: optionalPositiveInteger(
+      value.activeProgressIntervalMinutes,
+      "notificationCadence.activeProgressIntervalMinutes"
+    ),
   };
 }
 
@@ -560,7 +564,7 @@ function requireAssignmentAutonomyLevel(
 ): AssignmentAutonomyLevel {
   if (
     typeof value !== "string" ||
-    !["observe", "draft", "execute", "operate", "evolve"].includes(value)
+    !ASSIGNMENT_AUTONOMY_LEVELS.includes(value as AssignmentAutonomyLevel)
   ) {
     throw new HttpError(
       400,
@@ -622,9 +626,9 @@ function validateAttachments(input: unknown): ChatMessageInput["attachments"] {
   });
 }
 
-function asRecord(value: unknown): Record<string, unknown> {
+function asRecord(value: unknown, field = "Body"): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new HttpError(400, "Body must be a JSON object");
+    throw new HttpError(400, `${field} must be a JSON object`);
   }
   return value as Record<string, unknown>;
 }

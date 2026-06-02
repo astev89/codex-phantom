@@ -13,6 +13,7 @@ import type {
   AssignmentEventRecord,
   AssignmentLifecycleState,
   AssignmentPolicy,
+  AssignmentPolicyPatch,
   AssignmentRecord,
   AssignmentRunLinkRecord,
   AssignmentSource,
@@ -221,14 +222,7 @@ export class AutonomousAssignmentService {
           "policy is required for change_policy"
         );
       }
-      const policy = buildAssignmentPolicy({
-        ...current.policy,
-        ...input.policy,
-        notificationCadence: {
-          ...current.policy.notificationCadence,
-          ...input.policy.notificationCadence,
-        },
-      });
+      const policy = buildAssignmentPolicyPatch(current.policy, input.policy);
       this.database.transaction(() => {
         this.updateAssignment(assignmentId, {
           policy_json: encodeJson(policy),
@@ -306,7 +300,6 @@ export class AutonomousAssignmentService {
       events: rows.map(toAssignmentEventRecord),
     };
   }
-
   linkRun(input: LinkAssignmentRunInput): AssignmentRunLinkRecord {
     this.getRequired(input.assignmentId);
     const now = new Date().toISOString();
@@ -471,16 +464,23 @@ export function defaultAssignmentPolicy(): AssignmentPolicy {
 }
 
 function buildAssignmentPolicy(
-  input?: Partial<AssignmentPolicy>
+  input?: AssignmentPolicyPatch
 ): AssignmentPolicy {
   const defaults = defaultAssignmentPolicy();
+  return buildAssignmentPolicyPatch(defaults, input);
+}
+
+function buildAssignmentPolicyPatch(
+  current: AssignmentPolicy,
+  input?: AssignmentPolicyPatch
+): AssignmentPolicy {
   const patch = stripUndefined(input ?? {});
   const notificationCadence = stripUndefined(input?.notificationCadence ?? {});
   const policy = {
-    ...defaults,
+    ...current,
     ...patch,
     notificationCadence: {
-      ...defaults.notificationCadence,
+      ...current.notificationCadence,
       ...notificationCadence,
     },
   };
@@ -534,6 +534,16 @@ function transitionForControl(
 } {
   switch (action) {
     case "pause":
+      if (isTerminalLifecycleState(current)) {
+        throw new AssignmentValidationError(
+          "Terminal assignments must be reopened before they can be paused"
+        );
+      }
+      if (current !== "active") {
+        throw new AssignmentValidationError(
+          "Only active assignments can be paused"
+        );
+      }
       return {
         nextState: "waiting",
         eventType: "paused",
@@ -541,6 +551,16 @@ function transitionForControl(
         compactable: false,
       };
     case "resume":
+      if (isTerminalLifecycleState(current)) {
+        throw new AssignmentValidationError(
+          "Terminal assignments must be reopened before they can be resumed"
+        );
+      }
+      if (current !== "waiting" && current !== "blocked") {
+        throw new AssignmentValidationError(
+          "Only waiting or blocked assignments can be resumed"
+        );
+      }
       return {
         nextState: "active",
         eventType: "resumed",
@@ -562,6 +582,11 @@ function transitionForControl(
         compactable: false,
       };
     case "reopen":
+      if (!isTerminalLifecycleState(current)) {
+        throw new AssignmentValidationError(
+          "Only terminal assignments can be reopened"
+        );
+      }
       return {
         nextState: "active",
         eventType: "reopened",
@@ -573,6 +598,10 @@ function transitionForControl(
         `Unsupported control action for lifecycle transition: ${action}`
       );
   }
+}
+
+function isTerminalLifecycleState(state: AssignmentLifecycleState): boolean {
+  return ["completed", "cancelled", "expired", "failed"].includes(state);
 }
 
 function toAssignmentRecord(row: AssignmentRow): AssignmentRecord {

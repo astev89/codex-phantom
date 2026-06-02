@@ -76,6 +76,10 @@ import type {
   AssignmentAutonomyLevel,
   AssignmentLifecycleState,
 } from "../assignments/types.ts";
+import {
+  ASSIGNMENT_AUTONOMY_LEVELS,
+  ASSIGNMENT_LIFECYCLE_STATES,
+} from "../assignments/types.ts";
 import { renderOperatorConsole } from "./ui.ts";
 import { renderChatApp } from "./chat-ui.ts";
 import { OperatorSettingsStore } from "./settings.ts";
@@ -161,8 +165,11 @@ export class HttpServer {
     slackTransport?: SlackTransport,
     memoryMaintenance?: MemoryMaintenanceService,
     runtimeChannels = new RuntimeChannelCapabilities(),
-    assignments = new AutonomousAssignmentService(database)
+    assignments?: AutonomousAssignmentService
   ) {
+    if (!assignments) {
+      throw new Error("AutonomousAssignmentService is required");
+    }
     this.config = config;
     this.orchestration = orchestration;
     this.scheduler = scheduler;
@@ -661,7 +668,6 @@ export class HttpServer {
 
       if (req.method === "GET" && url.pathname === "/admin/assignments") {
         this.requireOperatorAuth(req);
-        const limit = url.searchParams.get("limit");
         this.json(res, 200, {
           assignments: this.assignments.list({
             lifecycleState: parseAssignmentLifecycleQuery(
@@ -675,7 +681,10 @@ export class HttpServer {
               url.searchParams.get("parentAssignmentId") ?? undefined,
             sourceChannelId:
               url.searchParams.get("sourceChannelId") ?? undefined,
-            limit: limit ? Number(limit) : undefined,
+            limit: parseOptionalPositiveIntegerQuery(
+              url.searchParams.get("limit"),
+              "limit"
+            ),
           }),
         });
         return;
@@ -693,10 +702,12 @@ export class HttpServer {
             .replace("/timeline", "")
             .replace(/\/$/, "")
         );
-        const limit = url.searchParams.get("limit");
         const timeline = this.assignments.timeline(
           assignmentId,
-          limit ? Number(limit) : undefined
+          parseOptionalPositiveIntegerQuery(
+            url.searchParams.get("limit"),
+            "limit"
+          )
         );
         this.json(res, 200, { timeline });
         return;
@@ -728,7 +739,7 @@ export class HttpServer {
       ) {
         this.requireOperatorAuth(req);
         const assignmentId = decodeURIComponent(
-          url.pathname.replace("/admin/assignments/", "")
+          url.pathname.replace("/admin/assignments/", "").replace(/\/$/, "")
         );
         const assignment = this.assignments.get(assignmentId);
         if (!assignment) {
@@ -1771,7 +1782,9 @@ function parseAssignmentLifecycleQuery(
   if (!value) {
     return undefined;
   }
-  if (!ASSIGNMENT_LIFECYCLE_STATES.includes(value)) {
+  if (
+    !ASSIGNMENT_LIFECYCLE_STATES.includes(value as AssignmentLifecycleState)
+  ) {
     throw new HttpError(400, "lifecycleState must be a valid assignment state");
   }
   return value as AssignmentLifecycleState;
@@ -1783,7 +1796,7 @@ function parseAssignmentAutonomyQuery(
   if (!value) {
     return undefined;
   }
-  if (!ASSIGNMENT_AUTONOMY_LEVELS.includes(value)) {
+  if (!ASSIGNMENT_AUTONOMY_LEVELS.includes(value as AssignmentAutonomyLevel)) {
     throw new HttpError(
       400,
       "autonomyLevel must be a valid assignment autonomy level"
@@ -1792,24 +1805,19 @@ function parseAssignmentAutonomyQuery(
   return value as AssignmentAutonomyLevel;
 }
 
-const ASSIGNMENT_LIFECYCLE_STATES = [
-  "active",
-  "waiting",
-  "needs_approval",
-  "blocked",
-  "completed",
-  "cancelled",
-  "expired",
-  "failed",
-];
-
-const ASSIGNMENT_AUTONOMY_LEVELS = [
-  "observe",
-  "draft",
-  "execute",
-  "operate",
-  "evolve",
-];
+function parseOptionalPositiveIntegerQuery(
+  value: string | null,
+  field: string
+): number | undefined {
+  if (value === null || value.trim() === "") {
+    return undefined;
+  }
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new HttpError(400, `${field} must be a positive integer`);
+  }
+  return parsed;
+}
 
 class SimpleRateLimiter {
   private readonly hits = new Map<string, number[]>();

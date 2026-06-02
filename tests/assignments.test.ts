@@ -210,6 +210,73 @@ test("AutonomousAssignmentService persists context additions and policy changes 
   });
 });
 
+test("AutonomousAssignmentService preserves notification cadence fields across partial policy changes", () => {
+  withAssignments((assignments) => {
+    const created = assignments.create({ objective: "Partial policy patch" });
+    const withoutFailureNotice = assignments.control(created.assignment.id, {
+      action: "change_policy",
+      policy: {
+        notificationCadence: {
+          onFailure: false,
+        },
+      },
+    });
+    assert.equal(
+      withoutFailureNotice.assignment.policy.notificationCadence.onFailure,
+      false
+    );
+
+    const withLongerInterval = assignments.control(created.assignment.id, {
+      action: "change_policy",
+      policy: {
+        notificationCadence: {
+          activeProgressIntervalMinutes: 60,
+        },
+      },
+    });
+
+    assert.equal(
+      withLongerInterval.assignment.policy.notificationCadence.onFailure,
+      false
+    );
+    assert.equal(
+      withLongerInterval.assignment.policy.notificationCadence
+        .activeProgressIntervalMinutes,
+      60
+    );
+  });
+});
+
+test("AutonomousAssignmentService requires reopen for terminal assignments before pause or resume", () => {
+  withAssignments((assignments) => {
+    const created = assignments.create({ objective: "Terminal control test" });
+    const cancelled = assignments.control(created.assignment.id, {
+      action: "cancel",
+    });
+    assert.equal(cancelled.assignment.lifecycleState, "cancelled");
+
+    assert.throws(
+      () => assignments.control(created.assignment.id, { action: "resume" }),
+      /reopened before they can be resumed/
+    );
+    assert.throws(
+      () => assignments.control(created.assignment.id, { action: "pause" }),
+      /reopened before they can be paused/
+    );
+
+    const reopened = assignments.control(created.assignment.id, {
+      action: "reopen",
+    });
+    assert.equal(reopened.assignment.lifecycleState, "active");
+    assert.equal(
+      assignments
+        .timeline(created.assignment.id)
+        .events.find((event) => event.type === "reopened")?.importance,
+      "audit"
+    );
+  });
+});
+
 test("AutonomousAssignmentService links runs and exposes them from assignment detail", async () => {
   const database = new AppDatabase(":memory:");
   const assignments = new AutonomousAssignmentService(database);

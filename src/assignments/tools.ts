@@ -6,6 +6,10 @@ import type {
   AssignmentLifecycleState,
   ListAssignmentsInput,
 } from "./types.ts";
+import {
+  ASSIGNMENT_AUTONOMY_LEVELS,
+  ASSIGNMENT_LIFECYCLE_STATES,
+} from "./types.ts";
 
 export function registerAssignmentTools(
   tools: ToolRegistry,
@@ -156,7 +160,9 @@ function optionalLifecycleState(
   if (!state) {
     return undefined;
   }
-  if (!ASSIGNMENT_LIFECYCLE_STATES.includes(state)) {
+  if (
+    !ASSIGNMENT_LIFECYCLE_STATES.includes(state as AssignmentLifecycleState)
+  ) {
     throw new Error("lifecycleState must be a valid assignment state");
   }
   return state as AssignmentLifecycleState;
@@ -169,27 +175,8 @@ function optionalAutonomyLevel(
   if (!level) {
     return undefined;
   }
-  if (!ASSIGNMENT_AUTONOMY_LEVELS.includes(level)) {
+  if (!ASSIGNMENT_AUTONOMY_LEVELS.includes(level as AssignmentAutonomyLevel)) {
     throw new Error("autonomyLevel must be a valid assignment autonomy level");
   }
   return level as AssignmentAutonomyLevel;
 }
-
-const ASSIGNMENT_LIFECYCLE_STATES = [
-  "active",
-  "waiting",
-  "needs_approval",
-  "blocked",
-  "completed",
-  "cancelled",
-  "expired",
-  "failed",
-];
-
-const ASSIGNMENT_AUTONOMY_LEVELS = [
-  "observe",
-  "draft",
-  "execute",
-  "operate",
-  "evolve",
-];

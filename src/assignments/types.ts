@@ -10,12 +10,31 @@ export type AssignmentLifecycleState =
   | "expired"
   | "failed";
 
+export const ASSIGNMENT_LIFECYCLE_STATES = [
+  "active",
+  "waiting",
+  "needs_approval",
+  "blocked",
+  "completed",
+  "cancelled",
+  "expired",
+  "failed",
+] as const satisfies readonly AssignmentLifecycleState[];
+
 export type AssignmentAutonomyLevel =
   | "observe"
   | "draft"
   | "execute"
   | "operate"
   | "evolve";
+
+export const ASSIGNMENT_AUTONOMY_LEVELS = [
+  "observe",
+  "draft",
+  "execute",
+  "operate",
+  "evolve",
+] as const satisfies readonly AssignmentAutonomyLevel[];
 
 export type AssignmentEventImportance = "audit" | "milestone" | "detail";
 
@@ -46,6 +65,12 @@ export type AssignmentPolicy = {
   wakeupDelayMinMinutes: number;
   wakeupDelayMaxMinutes: number;
   notificationCadence: AssignmentNotificationCadence;
+};
+
+export type AssignmentPolicyPatch = Partial<
+  Omit<AssignmentPolicy, "notificationCadence">
+> & {
+  notificationCadence?: Partial<AssignmentNotificationCadence>;
 };
 
 export type AssignmentSource = {
@@ -117,7 +142,7 @@ export type CreateAssignmentInput = {
   parentAssignmentId?: string;
   autonomyLevel?: AssignmentAutonomyLevel;
   source?: AssignmentSource;
-  policy?: Partial<AssignmentPolicy>;
+  policy?: AssignmentPolicyPatch;
   metadata?: JsonValue;
   createdBy?: string;
 };
@@ -135,7 +160,7 @@ export type AssignmentControlInput = {
   actor?: string;
   reason?: string;
   context?: JsonValue;
-  policy?: Partial<AssignmentPolicy>;
+  policy?: AssignmentPolicyPatch;
 };
 
 export type LinkAssignmentRunInput = {
