@@ -4,7 +4,7 @@ This is the living status ledger for `codex-phantom`. Update it at the end of ea
 
 Last updated: 2026-06-02
 Branch: `jarvis/autonomous-assignment-core`
-Latest verified implementation commit: pending `fix(assignments): address review findings` commit
+Latest verified implementation commit: `f0b42ca fix(assignments): address review findings`
 
 ## Current State
 
