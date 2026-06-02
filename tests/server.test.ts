@@ -889,6 +889,7 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       "/admin/summary",
       "/admin/not-real",
       "/admin/export?scope=requests",
+      "/admin/assignments",
       "/tools/dynamic",
       "/sessions",
       "/runs",
@@ -918,6 +919,114 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       };
     assert.equal(unauthenticatedAdminJson.error, "Unauthorized");
     assert.equal(unauthenticatedAdminJson.status, 401);
+
+    const unauthenticatedAssignmentCreate = await fetch(
+      `${baseUrl}/admin/assignments`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ objective: "blocked assignment" }),
+      }
+    );
+    assert.equal(unauthenticatedAssignmentCreate.status, 401);
+
+    const assignmentCreate = await fetch(`${baseUrl}/admin/assignments`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.operatorBearerToken}`,
+      },
+      body: JSON.stringify({
+        objective: "Keep working on Slack autonomy parity",
+        autonomyLevel: "operate",
+        source: { channelId: "slack", conversationId: "phantom-test-0-0-1" },
+        policy: { maxWakeups: 6 },
+      }),
+    });
+    assert.equal(assignmentCreate.status, 201);
+    const assignmentCreateJson = (await assignmentCreate.json()) as {
+      assignment: {
+        id: string;
+        lifecycleState: string;
+        autonomyLevel: string;
+        policy: { maxWakeups: number };
+      };
+      runLinks: unknown[];
+    };
+    assert.match(assignmentCreateJson.assignment.id, /^asgn_/);
+    assert.equal(assignmentCreateJson.assignment.lifecycleState, "active");
+    assert.equal(assignmentCreateJson.assignment.autonomyLevel, "operate");
+    assert.equal(assignmentCreateJson.assignment.policy.maxWakeups, 6);
+    assert.deepEqual(assignmentCreateJson.runLinks, []);
+
+    const assignmentList = await fetch(
+      `${baseUrl}/admin/assignments?lifecycleState=active&sourceChannelId=slack`,
+      {
+        headers: {
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+      }
+    );
+    assert.equal(assignmentList.status, 200);
+    const assignmentListJson = (await assignmentList.json()) as {
+      assignments: Array<{ id: string }>;
+    };
+    assert.equal(assignmentListJson.assignments.length, 1);
+    assert.equal(
+      assignmentListJson.assignments[0]?.id,
+      assignmentCreateJson.assignment.id
+    );
+
+    const assignmentDetail = await fetch(
+      `${baseUrl}/admin/assignments/${assignmentCreateJson.assignment.id}`,
+      {
+        headers: {
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+      }
+    );
+    assert.equal(assignmentDetail.status, 200);
+
+    const assignmentControl = await fetch(
+      `${baseUrl}/admin/assignments/${assignmentCreateJson.assignment.id}/control`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          action: "force_wakeup",
+          reason: "route smoke",
+        }),
+      }
+    );
+    assert.equal(assignmentControl.status, 200);
+    const assignmentTimeline = await fetch(
+      `${baseUrl}/admin/assignments/${assignmentCreateJson.assignment.id}/timeline`,
+      {
+        headers: {
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+      }
+    );
+    assert.equal(assignmentTimeline.status, 200);
+    const assignmentTimelineJson = (await assignmentTimeline.json()) as {
+      timeline: { events: Array<{ type: string; payload: unknown }> };
+    };
+    assert.deepEqual(
+      assignmentTimelineJson.timeline.events.map((event) => event.type),
+      ["created", "planner_wakeup_requested"]
+    );
+    const missingAssignment = await fetch(
+      `${baseUrl}/admin/assignments/asgn_missing`,
+      {
+        headers: {
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+      }
+    );
+    assert.equal(missingAssignment.status, 404);
 
     const unauthenticatedChatResponse = await fetch(
       `http://127.0.0.1:${port}/chat/message`,

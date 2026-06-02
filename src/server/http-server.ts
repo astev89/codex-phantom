@@ -67,6 +67,15 @@ import {
   SelfEvolutionMutationService,
   createOperatorSettingsMutationAdapter,
 } from "../self-evolution/mutations.ts";
+import {
+  AssignmentNotFoundError,
+  AssignmentValidationError,
+  AutonomousAssignmentService,
+} from "../assignments/service.ts";
+import type {
+  AssignmentAutonomyLevel,
+  AssignmentLifecycleState,
+} from "../assignments/types.ts";
 import { renderOperatorConsole } from "./ui.ts";
 import { renderChatApp } from "./chat-ui.ts";
 import { OperatorSettingsStore } from "./settings.ts";
@@ -79,6 +88,8 @@ import {
   validateDynamicToolBody,
   HttpError,
   parseJsonBody,
+  validateAssignmentControlBody,
+  validateAssignmentCreateBody,
   validateOperatorSettingsBody,
   validateSlackMessageBody,
   validateChatArtifactBody,
@@ -118,6 +129,7 @@ export class HttpServer {
   private readonly slackFeedback: SlackFeedbackStore;
   private readonly inboundRouter: InboundChannelRouter;
   private readonly inboundResponses: InboundResponseDispatcher;
+  private readonly assignments: AutonomousAssignmentService;
   private readonly chatArtifacts: ChatArtifactService;
   private readonly governance: ToolGovernanceService;
   private readonly selfEvolution: SelfEvolutionProposalStore;
@@ -148,7 +160,8 @@ export class HttpServer {
     governance: ToolGovernanceService,
     slackTransport?: SlackTransport,
     memoryMaintenance?: MemoryMaintenanceService,
-    runtimeChannels = new RuntimeChannelCapabilities()
+    runtimeChannels = new RuntimeChannelCapabilities(),
+    assignments = new AutonomousAssignmentService(database)
   ) {
     this.config = config;
     this.orchestration = orchestration;
@@ -218,6 +231,7 @@ export class HttpServer {
       memoryMaintenance: this.memoryMaintenance,
     });
     this.runtimeChannels = runtimeChannels;
+    this.assignments = assignments;
     this.operatorTokenHash = hashToken(config.operatorBearerToken);
     this.mcpTokenHash = hashToken(config.mcpBearerToken);
     this.server = createServer((req, res) => {
@@ -630,6 +644,98 @@ export class HttpServer {
           return;
         }
         throw new HttpError(404, "Not found");
+      }
+
+      if (req.method === "POST" && url.pathname === "/admin/assignments") {
+        this.requireOperatorAuth(req);
+        const body = validateAssignmentCreateBody(
+          parseJsonBody(await readTextBody(req))
+        );
+        const assignment = this.assignments.create({
+          ...body,
+          createdBy: body.createdBy ?? "operator",
+        });
+        this.json(res, 201, { requestId, ...assignment });
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/admin/assignments") {
+        this.requireOperatorAuth(req);
+        const limit = url.searchParams.get("limit");
+        this.json(res, 200, {
+          assignments: this.assignments.list({
+            lifecycleState: parseAssignmentLifecycleQuery(
+              url.searchParams.get("lifecycleState") ??
+                url.searchParams.get("state")
+            ),
+            autonomyLevel: parseAssignmentAutonomyQuery(
+              url.searchParams.get("autonomyLevel")
+            ),
+            parentAssignmentId:
+              url.searchParams.get("parentAssignmentId") ?? undefined,
+            sourceChannelId:
+              url.searchParams.get("sourceChannelId") ?? undefined,
+            limit: limit ? Number(limit) : undefined,
+          }),
+        });
+        return;
+      }
+
+      if (
+        req.method === "GET" &&
+        url.pathname.startsWith("/admin/assignments/") &&
+        url.pathname.endsWith("/timeline")
+      ) {
+        this.requireOperatorAuth(req);
+        const assignmentId = decodeURIComponent(
+          url.pathname
+            .replace("/admin/assignments/", "")
+            .replace("/timeline", "")
+            .replace(/\/$/, "")
+        );
+        const limit = url.searchParams.get("limit");
+        const timeline = this.assignments.timeline(
+          assignmentId,
+          limit ? Number(limit) : undefined
+        );
+        this.json(res, 200, { timeline });
+        return;
+      }
+
+      if (
+        req.method === "POST" &&
+        url.pathname.startsWith("/admin/assignments/") &&
+        url.pathname.endsWith("/control")
+      ) {
+        this.requireOperatorAuth(req);
+        const assignmentId = decodeURIComponent(
+          url.pathname
+            .replace("/admin/assignments/", "")
+            .replace("/control", "")
+            .replace(/\/$/, "")
+        );
+        const body = validateAssignmentControlBody(
+          parseJsonBody(await readTextBody(req))
+        );
+        const assignment = this.assignments.control(assignmentId, body);
+        this.json(res, 200, { requestId, ...assignment });
+        return;
+      }
+
+      if (
+        req.method === "GET" &&
+        url.pathname.startsWith("/admin/assignments/")
+      ) {
+        this.requireOperatorAuth(req);
+        const assignmentId = decodeURIComponent(
+          url.pathname.replace("/admin/assignments/", "")
+        );
+        const assignment = this.assignments.get(assignmentId);
+        if (!assignment) {
+          throw new HttpError(404, "Assignment not found");
+        }
+        this.json(res, 200, assignment);
+        return;
       }
 
       if (
@@ -1631,6 +1737,12 @@ function normalizeHttpError(error: unknown): unknown {
   if (error instanceof SelfEvolutionMutationError) {
     return toSelfEvolutionHttpError(error);
   }
+  if (error instanceof AssignmentNotFoundError) {
+    return new HttpError(404, error.message);
+  }
+  if (error instanceof AssignmentValidationError) {
+    return new HttpError(400, error.message);
+  }
   return error;
 }
 
@@ -1652,6 +1764,52 @@ function toSelfEvolutionHttpError(
     error.mutation as unknown as JsonValue | undefined
   );
 }
+
+function parseAssignmentLifecycleQuery(
+  value: string | null
+): AssignmentLifecycleState | undefined {
+  if (!value) {
+    return undefined;
+  }
+  if (!ASSIGNMENT_LIFECYCLE_STATES.includes(value)) {
+    throw new HttpError(400, "lifecycleState must be a valid assignment state");
+  }
+  return value as AssignmentLifecycleState;
+}
+
+function parseAssignmentAutonomyQuery(
+  value: string | null
+): AssignmentAutonomyLevel | undefined {
+  if (!value) {
+    return undefined;
+  }
+  if (!ASSIGNMENT_AUTONOMY_LEVELS.includes(value)) {
+    throw new HttpError(
+      400,
+      "autonomyLevel must be a valid assignment autonomy level"
+    );
+  }
+  return value as AssignmentAutonomyLevel;
+}
+
+const ASSIGNMENT_LIFECYCLE_STATES = [
+  "active",
+  "waiting",
+  "needs_approval",
+  "blocked",
+  "completed",
+  "cancelled",
+  "expired",
+  "failed",
+];
+
+const ASSIGNMENT_AUTONOMY_LEVELS = [
+  "observe",
+  "draft",
+  "execute",
+  "operate",
+  "evolve",
+];
 
 class SimpleRateLimiter {
   private readonly hits = new Map<string, number[]>();

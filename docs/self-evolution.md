@@ -1,6 +1,8 @@
 # Governed Self-Evolution
 
-Governed self-evolution lets Codex Phantom propose changes to its own behavior without mutating production state directly. This is the parity path for adaptive prompts, memory policy, tools, roles, and runtime configuration.
+Governed self-evolution lets Codex Phantom change its own behavior under explicit policy, audit, rollback, and operator-interruption controls. ADR-0003 extends the target model beyond proposal-only HITL: autonomous assignments may use delegated autonomous self-evolution when assignment policy grants `evolve` or higher authority.
+
+The current implementation is still narrower than that target. Today, Codex Phantom can create auditable proposals and can apply approved operator-settings mutations through operator-authenticated APIs. Prompt, memory policy, tool, role, project-file, and broader configuration mutation classes remain future work.
 
 ## Proposal Scope
 
@@ -14,7 +16,7 @@ Supported proposal targets:
 
 Every proposal records a title, rationale, risk class, structured proposed change metadata, optional operator/agent identity, and timestamps. Risk classes are `low`, `medium`, `high`, and `critical`.
 
-Direct mutation remains out of scope for this slice. Proposal payloads that request immediate apply behavior, such as `applyNow: true` or `mutationMode: "direct"`, are rejected.
+Direct mutation remains out of scope for the current implementation slice. Proposal payloads that request immediate apply behavior, such as `applyNow: true` or `mutationMode: "direct"`, are rejected until assignment-scoped delegated mutation support exists.
 
 ## Operator APIs
 
@@ -78,10 +80,10 @@ curl -X POST http://localhost:3210/admin/self-evolution/proposals/sep_123/rollba
   -d '{"rolledBackBy":"operator"}'
 ```
 
-V1 apply support is intentionally narrow. Only `configuration` proposals with `proposedChange.operatorSettings` can apply. The mutation record captures `before`, `after`, and rollback metadata before the operator settings are changed. Prompt, memory policy, tool, and role proposals remain auditable proposals until a later slice adds safe mutation classes for them.
+Current apply support is intentionally narrow. Only `configuration` proposals with `proposedChange.operatorSettings` can apply. The mutation record captures `before`, `after`, and rollback metadata before the operator settings are changed. Prompt, memory policy, tool, role, project-file, and broader runtime configuration proposals remain auditable proposals until autonomous assignment policy and mutation-ledger support add safe mutation classes for them.
 
 Apply and rollback execution lives behind the self-evolution mutation module. HTTP routes validate operator requests and serialize responses; target adapters own mutation validation, before/after/rollback payload construction, failure audit, and rollback effects.
 
 ## Agent Tool
 
-The in-process tool `self_evolution.propose` creates the same durable proposal record with `proposedBy: "agent"`. It does not approve, apply, write files, change prompts, update config, or alter tool policy. Apply and rollback remain operator-authenticated HTTP actions.
+The in-process tool `self_evolution.propose` creates the same durable proposal record with `proposedBy: "agent"`. In the current implementation, it does not approve, apply, write files, change prompts, update config, or alter tool policy. Apply and rollback remain operator-authenticated HTTP actions until delegated autonomous self-evolution is implemented through autonomous assignment policy.
