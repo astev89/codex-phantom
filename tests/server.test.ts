@@ -1064,6 +1064,21 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       }
     );
     assert.equal(assignmentControl.status, 200);
+    const assignmentControlTrailingSlash = await fetch(
+      `${baseUrl}/admin/assignments/${assignmentCreateJson.assignment.id}/control/`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          action: "force_wakeup",
+          reason: "trailing slash route smoke",
+        }),
+      }
+    );
+    assert.equal(assignmentControlTrailingSlash.status, 200);
     const disableFailureNotifications = await fetch(
       `${baseUrl}/admin/assignments/${assignmentCreateJson.assignment.id}/control`,
       {
@@ -1130,6 +1145,15 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       }
     );
     assert.equal(assignmentTimeline.status, 200);
+    const assignmentTimelineTrailingSlash = await fetch(
+      `${baseUrl}/admin/assignments/${assignmentCreateJson.assignment.id}/timeline/`,
+      {
+        headers: {
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+      }
+    );
+    assert.equal(assignmentTimelineTrailingSlash.status, 200);
     const invalidTimelineLimit = await fetch(
       `${baseUrl}/admin/assignments/${assignmentCreateJson.assignment.id}/timeline?limit=abc`,
       {
@@ -1146,6 +1170,7 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       assignmentTimelineJson.timeline.events.map((event) => event.type),
       [
         "created",
+        "planner_wakeup_requested",
         "planner_wakeup_requested",
         "policy_changed",
         "policy_changed",

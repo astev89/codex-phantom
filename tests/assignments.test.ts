@@ -93,6 +93,10 @@ test("AutonomousAssignmentService lists and gets assignments through domain filt
       [slackChild.assignment.id]
     );
     assert.equal(assignments.list({ sourceChannelId: "slack" }).length, 2);
+    assert.throws(
+      () => assignments.list({ limit: 0 }),
+      /limit must be a positive integer/
+    );
     assert.equal(
       assignments.get(slackParent.assignment.id)?.assignment.objective,
       "Parent Slack assignment"
@@ -206,6 +210,25 @@ test("AutonomousAssignmentService persists context additions and policy changes 
           policy: { wakeupDelayMinMinutes: 60, wakeupDelayMaxMinutes: 30 },
         }),
       /wakeupDelayMinMinutes/
+    );
+    const beforeNoopPolicyPatchEvents = assignments.timeline(
+      created.assignment.id
+    ).events.length;
+    assert.throws(
+      () =>
+        assignments.control(created.assignment.id, {
+          action: "change_policy",
+          policy: { notificationCadence: {} },
+        }),
+      /policy is required/
+    );
+    assert.equal(
+      assignments.timeline(created.assignment.id).events.length,
+      beforeNoopPolicyPatchEvents
+    );
+    assert.throws(
+      () => assignments.timeline(created.assignment.id, 0),
+      /limit must be a positive integer/
     );
   });
 });

@@ -28,7 +28,7 @@ export function registerAssignmentTools(
         autonomyLevel: { type: "string" },
         parentAssignmentId: { type: "string" },
         sourceChannelId: { type: "string" },
-        limit: { type: "number" },
+        limit: { type: "integer" },
       },
     },
     handler: (input) => ({
@@ -72,7 +72,7 @@ export function registerAssignmentTools(
       required: ["id"],
       properties: {
         id: { type: "string" },
-        limit: { type: "number" },
+        limit: { type: "integer" },
       },
     },
     handler: (input) => {

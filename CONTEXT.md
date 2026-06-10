@@ -97,7 +97,7 @@ The delegated authority tier for an autonomous assignment: `observe` may inspect
 _Avoid_: Boolean autonomy flag, hidden trust mode
 
 **Assignment lifecycle state**:
-The durable status of an autonomous assignment: `proposed`, `active`, `waiting`, `needs_approval`, `blocked`, `completed`, `cancelled`, `expired`, or `failed`.
+The durable status of an autonomous assignment: `active`, `waiting`, `needs_approval`, `blocked`, `completed`, `cancelled`, `expired`, or `failed`.
 _Avoid_: Run status, scheduler status
 
 **Assignment intake**:

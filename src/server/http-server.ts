@@ -693,7 +693,7 @@ export class HttpServer {
       if (
         req.method === "GET" &&
         url.pathname.startsWith("/admin/assignments/") &&
-        url.pathname.endsWith("/timeline")
+        trimTrailingSlash(url.pathname).endsWith("/timeline")
       ) {
         this.requireOperatorAuth(req);
         const assignmentId = decodeURIComponent(
@@ -716,7 +716,7 @@ export class HttpServer {
       if (
         req.method === "POST" &&
         url.pathname.startsWith("/admin/assignments/") &&
-        url.pathname.endsWith("/control")
+        trimTrailingSlash(url.pathname).endsWith("/control")
       ) {
         this.requireOperatorAuth(req);
         const assignmentId = decodeURIComponent(
@@ -1817,6 +1817,10 @@ function parseOptionalPositiveIntegerQuery(
     throw new HttpError(400, `${field} must be a positive integer`);
   }
   return parsed;
+}
+
+function trimTrailingSlash(pathname: string): string {
+  return pathname.replace(/\/$/, "");
 }
 
 class SimpleRateLimiter {

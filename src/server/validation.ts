@@ -9,10 +9,7 @@ import type {
   AssignmentControlInput,
   CreateAssignmentInput,
 } from "../assignments/types.ts";
-import {
-  ASSIGNMENT_AUTONOMY_LEVELS,
-  ASSIGNMENT_LIFECYCLE_STATES,
-} from "../assignments/types.ts";
+import { ASSIGNMENT_AUTONOMY_LEVELS } from "../assignments/types.ts";
 import type {
   CreateSelfEvolutionProposalInput,
   SelfEvolutionRiskClass,

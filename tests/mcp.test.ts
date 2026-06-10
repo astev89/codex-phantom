@@ -323,7 +323,13 @@ test("McpServer exposes read-only assignment tools with actionable missing-id er
     );
     assert.equal(listTools.status, 200);
     const listToolsJson = (await listTools.json()) as {
-      tools: Array<{ id: string; scopes: string[] }>;
+      tools: Array<{
+        id: string;
+        scopes: string[];
+        inputSchema: {
+          properties?: Record<string, { type?: string }>;
+        };
+      }>;
     };
     assert.deepEqual(listToolsJson.tools.map((tool) => tool.id).sort(), [
       "assignment.get",
@@ -334,6 +340,14 @@ test("McpServer exposes read-only assignment tools with actionable missing-id er
       listToolsJson.tools.every((tool) => tool.scopes.includes("read")),
       true
     );
+    const listTool = listToolsJson.tools.find(
+      (tool) => tool.id === "assignment.list"
+    );
+    const timelineTool = listToolsJson.tools.find(
+      (tool) => tool.id === "assignment.timeline"
+    );
+    assert.equal(listTool?.inputSchema.properties?.limit?.type, "integer");
+    assert.equal(timelineTool?.inputSchema.properties?.limit?.type, "integer");
 
     const listCall = await mcp.handle(
       new Request("http://localhost/mcp", {

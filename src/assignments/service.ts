@@ -217,7 +217,7 @@ export class AutonomousAssignmentService {
     }
 
     if (input.action === "change_policy") {
-      if (!input.policy || Object.keys(input.policy).length === 0) {
+      if (!hasPolicyPatch(input.policy)) {
         throw new AssignmentValidationError(
           "policy is required for change_policy"
         );
@@ -522,6 +522,26 @@ function stripUndefined<T extends Record<string, unknown>>(
   ) as Partial<T>;
 }
 
+function hasPolicyPatch(input: AssignmentPolicyPatch | undefined): boolean {
+  if (!input) {
+    return false;
+  }
+  return Object.entries(input).some(([key, value]) => {
+    if (value === undefined) {
+      return false;
+    }
+    if (key === "notificationCadence") {
+      return (
+        value !== null &&
+        typeof value === "object" &&
+        !Array.isArray(value) &&
+        Object.values(value).some((item) => item !== undefined)
+      );
+    }
+    return true;
+  });
+}
+
 function transitionForControl(
   current: AssignmentLifecycleState,
   action: AssignmentControlInput["action"]
@@ -686,7 +706,7 @@ function validatePositiveInteger(value: number, field: string): void {
 }
 
 function boundLimit(value: number | undefined, fallback: number): number {
-  if (!value) {
+  if (value === undefined) {
     return fallback;
   }
   if (!Number.isInteger(value) || value <= 0) {
