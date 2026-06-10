@@ -4,7 +4,7 @@ This is the living status ledger for `codex-phantom`. Update it at the end of ea
 
 Last updated: 2026-06-10
 Branch: `jarvis/assignment-wakeup-planner`
-Latest verified implementation commit: pending `feat(assignments): add wakeup planner`
+Latest verified implementation commit: `ca5d8ef fix(assignments): harden wakeup scheduling`
 
 ## Current State
 
@@ -20,6 +20,7 @@ Assignment wakeup planner wave completed locally on 2026-06-10:
 - Added assignment service wakeup lifecycle methods so the assignment Module remains the state owner for counters, lifecycle transitions, run links, and retention-aware events.
 - Added scheduler custom job handlers so `assignment.wakeup` jobs run through the planner without changing the jobs schema, while preserving generic scheduler job behavior and `lastRunId` visibility.
 - Changed `force_wakeup` assignment control from placeholder-only to a due-now scheduler job while preserving the existing admin route response shape.
+- Hardened review findings by making wakeup run completion atomic, skipping overlapping in-process wakeups, deduplicating pending wakeup jobs per assignment, and returning an explicit warning when forced wakeup scheduling fails after control persistence.
 
 Verification from this wave:
 
