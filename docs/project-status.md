@@ -2,17 +2,36 @@
 
 This is the living status ledger for `codex-phantom`. Update it at the end of each development wave, after tests pass and before handing off or opening a PR.
 
-Last updated: 2026-05-29
-Branch: `jarvis/docker-dev-qdrant`
-Latest verified implementation commit: current `chore(config): make OpenAI reasoning configurable` commit
+Last updated: 2026-06-02
+Branch: `jarvis/autonomous-assignment-core`
+Latest verified implementation commit: `f0b42ca fix(assignments): address review findings`
 
 ## Current State
 
-`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, module-backed operator exports, a Codex-native `/chat` product surface with durable/searchable attachment continuity, explicit artifacts, and bounded automatic artifact extraction, hybrid long-term memory with Qdrant-backed vector recall, SQLite fallback, lifecycle controls, restart-safe maintenance, decay/reinforcement-aware ranking, governed self-evolution proposals with mutation module-backed operator-approved apply/rollback for settings changes, governed internal tool bundles with preview, approval, enable, disable, and uninstall lifecycle, and a disabled-by-default Email runtime channel with bounded IMAP polling and audited SMTP replies.
+`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, durable autonomous assignment records with operator controls and read-only MCP visibility, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, module-backed operator exports, a Codex-native `/chat` product surface with durable/searchable attachment continuity, explicit artifacts, and bounded automatic artifact extraction, hybrid long-term memory with Qdrant-backed vector recall, SQLite fallback, lifecycle controls, restart-safe maintenance, decay/reinforcement-aware ranking, governed self-evolution proposals with mutation module-backed operator-approved apply/rollback for settings changes, governed internal tool bundles with preview, approval, enable, disable, and uninstall lifecycle, and a disabled-by-default Email runtime channel with bounded IMAP polling and audited SMTP replies.
 
 The project is now past its first serious production-hardening pass. It is not yet equivalent to the original Phantom project, but the core runtime is materially safer to run: request sizes are bounded, secrets are rejected in production when defaults are used, outbound model calls have timeouts, scheduler jobs recover deterministically after restarts, MCP events are durably audited, external webhooks are signed, Slack sends retry transient failures, operator-console workflows have browser coverage, and the Docker image runs compiled JavaScript instead of stripped TypeScript.
 
 ## Just Completed
+
+Autonomous assignment core wave completed locally on 2026-06-02:
+
+- Added a deep autonomous assignment Module with durable assignment state, policy defaults, lifecycle controls, retention-aware events, run links, and read models.
+- Added SQLite assignment, assignment event, and assignment-run link tables using `asgn`, `asgnevt`, and `asgnrun` ids.
+- Added operator-authenticated admin routes for assignment create, list, detail, control, and timeline without adding planner wakeups or Slack intake yet.
+- Registered read-only MCP/in-process tools for `assignment.list`, `assignment.get`, and `assignment.timeline` with focused filters and actionable missing-id errors.
+- Recorded ADR-0003 and glossary terms for delegated autonomous assignments, bounded autonomy, retention, and future self-evolution delegation.
+
+Verification from this wave:
+
+```bash
+node --experimental-strip-types --test tests/assignments.test.ts tests/server.test.ts tests/mcp.test.ts
+npm run typecheck
+npm test
+npm run build
+git diff --check
+GitNexus detect_changes(scope="staged")
+```
 
 OpenAI model and reasoning config wave completed locally on 2026-05-29:
 

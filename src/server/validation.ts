@@ -1,6 +1,16 @@
 import type { JsonValue } from "../shared/types.ts";
 import type { SubagentRequest } from "../orchestration/types.ts";
 import type {
+  AssignmentAutonomyLevel,
+  AssignmentControlAction,
+  AssignmentPolicy,
+  AssignmentPolicyPatch,
+  AssignmentSource,
+  AssignmentControlInput,
+  CreateAssignmentInput,
+} from "../assignments/types.ts";
+import { ASSIGNMENT_AUTONOMY_LEVELS } from "../assignments/types.ts";
+import type {
   CreateSelfEvolutionProposalInput,
   SelfEvolutionRiskClass,
   SelfEvolutionTarget,
@@ -109,6 +119,9 @@ export type ToolBundleLifecycleInput = {
   actor: string;
   notes?: string;
 };
+
+export type AssignmentCreateInput = CreateAssignmentInput;
+export type AssignmentControlBodyInput = AssignmentControlInput;
 
 export function parseJsonBody(text: string): unknown {
   if (!text) {
@@ -359,6 +372,46 @@ export function validateToolBundleLifecycleBody(
   };
 }
 
+export function validateAssignmentCreateBody(
+  input: unknown
+): AssignmentCreateInput {
+  const value = asRecord(input);
+  const autonomyLevel =
+    value.autonomyLevel === undefined
+      ? undefined
+      : requireAssignmentAutonomyLevel(value.autonomyLevel, "autonomyLevel");
+  return {
+    objective: nonEmptyString(value.objective, "objective"),
+    title: optionalString(value.title),
+    parentAssignmentId: optionalString(value.parentAssignmentId),
+    autonomyLevel,
+    source: validateAssignmentSource(value.source),
+    policy: validateAssignmentPolicyPatch(value.policy),
+    metadata:
+      value.metadata === undefined
+        ? undefined
+        : toJsonValue(value.metadata, "metadata"),
+    createdBy: optionalString(value.createdBy),
+  };
+}
+
+export function validateAssignmentControlBody(
+  input: unknown
+): AssignmentControlBodyInput {
+  const value = asRecord(input);
+  const action = requireAssignmentControlAction(value.action, "action");
+  return {
+    action,
+    actor: optionalString(value.actor),
+    reason: optionalString(value.reason),
+    context:
+      value.context === undefined
+        ? undefined
+        : toJsonValue(value.context, "context"),
+    policy: validateAssignmentPolicyPatch(value.policy),
+  };
+}
+
 function validateSubagents(input: unknown): SubagentRequest[] | undefined {
   if (input === undefined) {
     return undefined;
@@ -408,6 +461,140 @@ function validateSubagents(input: unknown): SubagentRequest[] | undefined {
   });
 }
 
+function validateAssignmentSource(
+  input: unknown
+): AssignmentSource | undefined {
+  if (input === undefined || input === null) {
+    return undefined;
+  }
+  const value = asRecord(input, "source");
+  return {
+    channelId: optionalString(value.channelId),
+    conversationId: optionalString(value.conversationId),
+    userId: optionalString(value.userId),
+    inboundEventId: optionalString(value.inboundEventId),
+  };
+}
+
+function validateAssignmentPolicyPatch(
+  input: unknown
+): AssignmentPolicyPatch | undefined {
+  if (input === undefined || input === null) {
+    return undefined;
+  }
+  const value = asRecord(input, "policy");
+  const notificationCadence =
+    value.notificationCadence === undefined
+      ? undefined
+      : validateAssignmentNotificationCadence(value.notificationCadence);
+  return {
+    maxWakeups: optionalPositiveInteger(value.maxWakeups, "maxWakeups"),
+    maxTotalRuntimeMinutes: optionalPositiveInteger(
+      value.maxTotalRuntimeMinutes,
+      "maxTotalRuntimeMinutes"
+    ),
+    maxConsecutiveFailures: optionalPositiveInteger(
+      value.maxConsecutiveFailures,
+      "maxConsecutiveFailures"
+    ),
+    maxIdleHours: optionalPositiveInteger(value.maxIdleHours, "maxIdleHours"),
+    wakeupDelayMinMinutes: optionalPositiveInteger(
+      value.wakeupDelayMinMinutes,
+      "wakeupDelayMinMinutes"
+    ),
+    wakeupDelayMaxMinutes: optionalPositiveInteger(
+      value.wakeupDelayMaxMinutes,
+      "wakeupDelayMaxMinutes"
+    ),
+    notificationCadence,
+  };
+}
+
+function validateAssignmentNotificationCadence(
+  input: unknown
+): Partial<AssignmentPolicy["notificationCadence"]> {
+  const value = asRecord(input, "notificationCadence");
+  return {
+    onCreate:
+      value.onCreate === undefined
+        ? undefined
+        : requireBoolean(value.onCreate, "notificationCadence.onCreate"),
+    onWakeupStart:
+      value.onWakeupStart === undefined
+        ? undefined
+        : requireBoolean(
+            value.onWakeupStart,
+            "notificationCadence.onWakeupStart"
+          ),
+    onMeaningfulProgress:
+      value.onMeaningfulProgress === undefined
+        ? undefined
+        : requireBoolean(
+            value.onMeaningfulProgress,
+            "notificationCadence.onMeaningfulProgress"
+          ),
+    onBlocked:
+      value.onBlocked === undefined
+        ? undefined
+        : requireBoolean(value.onBlocked, "notificationCadence.onBlocked"),
+    onFailure:
+      value.onFailure === undefined
+        ? undefined
+        : requireBoolean(value.onFailure, "notificationCadence.onFailure"),
+    onCompletion:
+      value.onCompletion === undefined
+        ? undefined
+        : requireBoolean(
+            value.onCompletion,
+            "notificationCadence.onCompletion"
+          ),
+    activeProgressIntervalMinutes: optionalPositiveInteger(
+      value.activeProgressIntervalMinutes,
+      "notificationCadence.activeProgressIntervalMinutes"
+    ),
+  };
+}
+
+function requireAssignmentAutonomyLevel(
+  value: unknown,
+  field: string
+): AssignmentAutonomyLevel {
+  if (
+    typeof value !== "string" ||
+    !ASSIGNMENT_AUTONOMY_LEVELS.includes(value as AssignmentAutonomyLevel)
+  ) {
+    throw new HttpError(
+      400,
+      `${field} must be observe, draft, execute, operate, or evolve`
+    );
+  }
+  return value as AssignmentAutonomyLevel;
+}
+
+function requireAssignmentControlAction(
+  value: unknown,
+  field: string
+): AssignmentControlAction {
+  if (
+    typeof value !== "string" ||
+    ![
+      "pause",
+      "resume",
+      "cancel",
+      "force_wakeup",
+      "add_context",
+      "change_policy",
+      "reopen",
+    ].includes(value)
+  ) {
+    throw new HttpError(
+      400,
+      `${field} must be a valid assignment control action`
+    );
+  }
+  return value as AssignmentControlAction;
+}
+
 function validateAttachments(input: unknown): ChatMessageInput["attachments"] {
   if (input === undefined) {
     return undefined;
@@ -436,9 +623,9 @@ function validateAttachments(input: unknown): ChatMessageInput["attachments"] {
   });
 }
 
-function asRecord(value: unknown): Record<string, unknown> {
+function asRecord(value: unknown, field = "Body"): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new HttpError(400, "Body must be a JSON object");
+    throw new HttpError(400, `${field} must be a JSON object`);
   }
   return value as Record<string, unknown>;
 }

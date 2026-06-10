@@ -157,6 +157,51 @@ export class AppDatabase {
         last_run_id TEXT
       );
 
+      CREATE TABLE IF NOT EXISTS assignments (
+        id TEXT PRIMARY KEY,
+        parent_assignment_id TEXT,
+        objective TEXT NOT NULL,
+        title TEXT,
+        lifecycle_state TEXT NOT NULL,
+        autonomy_level TEXT NOT NULL,
+        source_json TEXT NOT NULL,
+        policy_json TEXT NOT NULL,
+        context_json TEXT NOT NULL,
+        metadata_json TEXT NOT NULL,
+        wakeup_count INTEGER NOT NULL DEFAULT 0,
+        consecutive_failure_count INTEGER NOT NULL DEFAULT 0,
+        created_by TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        last_activity_at TEXT NOT NULL,
+        terminal_reason TEXT,
+        FOREIGN KEY (parent_assignment_id) REFERENCES assignments(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS assignment_events (
+        id TEXT PRIMARY KEY,
+        assignment_id TEXT NOT NULL,
+        type TEXT NOT NULL,
+        importance TEXT NOT NULL,
+        compactable INTEGER NOT NULL DEFAULT 0,
+        expires_at TEXT,
+        payload_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (assignment_id) REFERENCES assignments(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS assignment_run_links (
+        id TEXT PRIMARY KEY,
+        assignment_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        step_id TEXT,
+        action TEXT,
+        metadata_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (assignment_id) REFERENCES assignments(id),
+        FOREIGN KEY (run_id) REFERENCES runs(run_id)
+      );
+
       CREATE TABLE IF NOT EXISTS memory_entries (
         id TEXT PRIMARY KEY,
         category TEXT NOT NULL,
@@ -394,6 +439,13 @@ export class AppDatabase {
       CREATE INDEX IF NOT EXISTS idx_chat_attachment_text_index_run_id ON chat_attachment_text_index(run_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_chat_artifacts_session_id ON chat_artifacts(session_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_jobs_status_scheduled_at ON jobs(status, scheduled_at);
+      CREATE INDEX IF NOT EXISTS idx_assignments_lifecycle ON assignments(lifecycle_state, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_assignments_autonomy ON assignments(autonomy_level, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_assignments_parent ON assignments(parent_assignment_id, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_assignment_events_assignment ON assignment_events(assignment_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_assignment_events_expires_at ON assignment_events(expires_at);
+      CREATE INDEX IF NOT EXISTS idx_assignment_run_links_assignment ON assignment_run_links(assignment_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_assignment_run_links_run ON assignment_run_links(run_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_memory_entries_category_created_at ON memory_entries(category, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_memory_lifecycle_links_target ON memory_lifecycle_links(target_memory_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_memory_lifecycle_links_source ON memory_lifecycle_links(source_memory_id, created_at DESC);

@@ -43,6 +43,7 @@ import {
   type SlackTransport,
 } from "../src/channels/slack.ts";
 import { ChannelDeliveryStore } from "../src/channels/delivery-log.ts";
+import { AutonomousAssignmentService } from "../src/assignments/service.ts";
 
 class FakeAdapter implements AgentAdapter {
   readonly name = "fake-codex";
@@ -474,6 +475,7 @@ test("admin email visibility surfaces channel status, readiness gaps, inbound, d
   });
   const runtimeChannels = new RuntimeChannelCapabilities();
   runtimeChannels.registerLifecycle("email", emailStatus);
+  const assignments = new AutonomousAssignmentService(database);
   const server = new HttpServer(
     config,
     orchestration,
@@ -490,7 +492,8 @@ test("admin email visibility surfaces channel status, readiness gaps, inbound, d
     governance,
     new FakeSlackTransport(),
     undefined,
-    runtimeChannels
+    runtimeChannels,
+    assignments
   );
 
   const inboundRecord = inbound.recordReceived({
@@ -824,6 +827,28 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
   const dynamicTools = new DynamicToolRegistry(database, tools);
   const governance = new ToolGovernanceService(database);
   const slackTransport = new FakeSlackTransport();
+  const assignments = new AutonomousAssignmentService(database);
+  assert.throws(
+    () =>
+      new HttpServer(
+        config,
+        orchestration,
+        scheduler,
+        sessions,
+        runs,
+        mcp,
+        database,
+        new Logger("error"),
+        metrics,
+        memory,
+        dynamicTools,
+        channels,
+        governance,
+        slackTransport,
+        memoryMaintenance
+      ),
+    /AutonomousAssignmentService is required/
+  );
   const server = new HttpServer(
     config,
     orchestration,
@@ -839,7 +864,9 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     channels,
     governance,
     slackTransport,
-    memoryMaintenance
+    memoryMaintenance,
+    undefined,
+    assignments
   );
   const instance = await server.listen();
   const address = instance.address();
@@ -889,6 +916,7 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       "/admin/summary",
       "/admin/not-real",
       "/admin/export?scope=requests",
+      "/admin/assignments",
       "/tools/dynamic",
       "/sessions",
       "/runs",
@@ -918,6 +946,245 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       };
     assert.equal(unauthenticatedAdminJson.error, "Unauthorized");
     assert.equal(unauthenticatedAdminJson.status, 401);
+
+    const unauthenticatedAssignmentCreate = await fetch(
+      `${baseUrl}/admin/assignments`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ objective: "blocked assignment" }),
+      }
+    );
+    assert.equal(unauthenticatedAssignmentCreate.status, 401);
+
+    const assignmentCreate = await fetch(`${baseUrl}/admin/assignments`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.operatorBearerToken}`,
+      },
+      body: JSON.stringify({
+        objective: "Keep working on Slack autonomy parity",
+        autonomyLevel: "operate",
+        source: { channelId: "slack", conversationId: "phantom-test-0-0-1" },
+        policy: { maxWakeups: 6 },
+      }),
+    });
+    assert.equal(assignmentCreate.status, 201);
+    const assignmentCreateJson = (await assignmentCreate.json()) as {
+      assignment: {
+        id: string;
+        lifecycleState: string;
+        autonomyLevel: string;
+        policy: { maxWakeups: number };
+      };
+      runLinks: unknown[];
+    };
+    assert.match(assignmentCreateJson.assignment.id, /^asgn_/);
+    assert.equal(assignmentCreateJson.assignment.lifecycleState, "active");
+    assert.equal(assignmentCreateJson.assignment.autonomyLevel, "operate");
+    assert.equal(assignmentCreateJson.assignment.policy.maxWakeups, 6);
+    assert.deepEqual(assignmentCreateJson.runLinks, []);
+
+    const assignmentList = await fetch(
+      `${baseUrl}/admin/assignments?lifecycleState=active&sourceChannelId=slack`,
+      {
+        headers: {
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+      }
+    );
+    assert.equal(assignmentList.status, 200);
+    const assignmentListJson = (await assignmentList.json()) as {
+      assignments: Array<{ id: string }>;
+    };
+    assert.equal(assignmentListJson.assignments.length, 1);
+    assert.equal(
+      assignmentListJson.assignments[0]?.id,
+      assignmentCreateJson.assignment.id
+    );
+    const invalidAssignmentLimit = await fetch(
+      `${baseUrl}/admin/assignments?limit=abc`,
+      {
+        headers: {
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+      }
+    );
+    assert.equal(invalidAssignmentLimit.status, 400);
+
+    const nullableSourceAssignment = await fetch(
+      `${baseUrl}/admin/assignments`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          objective: "Nullable source assignment",
+          source: null,
+          policy: null,
+        }),
+      }
+    );
+    assert.equal(nullableSourceAssignment.status, 201);
+
+    const assignmentDetail = await fetch(
+      `${baseUrl}/admin/assignments/${assignmentCreateJson.assignment.id}`,
+      {
+        headers: {
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+      }
+    );
+    assert.equal(assignmentDetail.status, 200);
+    const assignmentDetailTrailingSlash = await fetch(
+      `${baseUrl}/admin/assignments/${assignmentCreateJson.assignment.id}/`,
+      {
+        headers: {
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+      }
+    );
+    assert.equal(assignmentDetailTrailingSlash.status, 200);
+
+    const assignmentControl = await fetch(
+      `${baseUrl}/admin/assignments/${assignmentCreateJson.assignment.id}/control`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          action: "force_wakeup",
+          reason: "route smoke",
+        }),
+      }
+    );
+    assert.equal(assignmentControl.status, 200);
+    const assignmentControlTrailingSlash = await fetch(
+      `${baseUrl}/admin/assignments/${assignmentCreateJson.assignment.id}/control/`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          action: "force_wakeup",
+          reason: "trailing slash route smoke",
+        }),
+      }
+    );
+    assert.equal(assignmentControlTrailingSlash.status, 200);
+    const disableFailureNotifications = await fetch(
+      `${baseUrl}/admin/assignments/${assignmentCreateJson.assignment.id}/control`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          action: "change_policy",
+          policy: {
+            notificationCadence: {
+              onFailure: false,
+            },
+          },
+        }),
+      }
+    );
+    assert.equal(disableFailureNotifications.status, 200);
+    const changeOnlyInterval = await fetch(
+      `${baseUrl}/admin/assignments/${assignmentCreateJson.assignment.id}/control`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          action: "change_policy",
+          policy: {
+            notificationCadence: {
+              activeProgressIntervalMinutes: 60,
+            },
+          },
+        }),
+      }
+    );
+    assert.equal(changeOnlyInterval.status, 200);
+    const changeOnlyIntervalJson = (await changeOnlyInterval.json()) as {
+      assignment: {
+        policy: {
+          notificationCadence: {
+            onFailure: boolean;
+            activeProgressIntervalMinutes: number;
+          };
+        };
+      };
+    };
+    assert.equal(
+      changeOnlyIntervalJson.assignment.policy.notificationCadence.onFailure,
+      false
+    );
+    assert.equal(
+      changeOnlyIntervalJson.assignment.policy.notificationCadence
+        .activeProgressIntervalMinutes,
+      60
+    );
+    const assignmentTimeline = await fetch(
+      `${baseUrl}/admin/assignments/${assignmentCreateJson.assignment.id}/timeline`,
+      {
+        headers: {
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+      }
+    );
+    assert.equal(assignmentTimeline.status, 200);
+    const assignmentTimelineTrailingSlash = await fetch(
+      `${baseUrl}/admin/assignments/${assignmentCreateJson.assignment.id}/timeline/`,
+      {
+        headers: {
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+      }
+    );
+    assert.equal(assignmentTimelineTrailingSlash.status, 200);
+    const invalidTimelineLimit = await fetch(
+      `${baseUrl}/admin/assignments/${assignmentCreateJson.assignment.id}/timeline?limit=abc`,
+      {
+        headers: {
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+      }
+    );
+    assert.equal(invalidTimelineLimit.status, 400);
+    const assignmentTimelineJson = (await assignmentTimeline.json()) as {
+      timeline: { events: Array<{ type: string; payload: unknown }> };
+    };
+    assert.deepEqual(
+      assignmentTimelineJson.timeline.events.map((event) => event.type),
+      [
+        "created",
+        "planner_wakeup_requested",
+        "planner_wakeup_requested",
+        "policy_changed",
+        "policy_changed",
+      ]
+    );
+    const missingAssignment = await fetch(
+      `${baseUrl}/admin/assignments/asgn_missing`,
+      {
+        headers: {
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+      }
+    );
+    assert.equal(missingAssignment.status, 404);
 
     const unauthenticatedChatResponse = await fetch(
       `http://127.0.0.1:${port}/chat/message`,
@@ -2127,7 +2394,10 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       restartedDynamicTools,
       new ChannelRegistry(database, config),
       new ToolGovernanceService(database),
-      slackTransport
+      slackTransport,
+      undefined,
+      undefined,
+      new AutonomousAssignmentService(database)
     );
     const restartedInstance = await restartedServer.listen();
     const restartedAddress = restartedInstance.address();
@@ -3410,6 +3680,7 @@ test("slack inbound rejects missing signing secret and disabled channel", async 
   );
   const dynamicTools = new DynamicToolRegistry(database, tools);
   const governance = new ToolGovernanceService(database);
+  const assignments = new AutonomousAssignmentService(database);
   const server = new HttpServer(
     config,
     orchestration,
@@ -3424,7 +3695,10 @@ test("slack inbound rejects missing signing secret and disabled channel", async 
     dynamicTools,
     channels,
     governance,
-    new FakeSlackTransport()
+    new FakeSlackTransport(),
+    undefined,
+    undefined,
+    assignments
   );
 
   try {

@@ -26,6 +26,8 @@ import {
   SelfEvolutionProposalStore,
   type CreateSelfEvolutionProposalInput,
 } from "./self-evolution/proposals.ts";
+import { AutonomousAssignmentService } from "./assignments/service.ts";
+import { registerAssignmentTools } from "./assignments/tools.ts";
 import { CodexAdapter } from "./agent/codex-adapter.ts";
 import { AgentRuntime } from "./agent/runtime.ts";
 import { RunGraphStore } from "./orchestration/run-graph-store.ts";
@@ -55,6 +57,7 @@ const tools = new ToolRegistry();
 const dynamicTools = new DynamicToolRegistry(database, tools);
 const governance = new ToolGovernanceService(database);
 const selfEvolution = new SelfEvolutionProposalStore(database);
+const assignments = new AutonomousAssignmentService(database);
 const runs = new RunGraphStore(database);
 const mcpAudit = new McpAuditStore(database);
 const rolePolicy = loadRolePolicyConfig(config.roleConfigPath);
@@ -97,6 +100,7 @@ tools.register({
       proposedBy: "agent",
     }) as unknown as JsonValue,
 });
+registerAssignmentTools(tools, assignments);
 
 const adapter = new CodexAdapter(config);
 const runtime = new AgentRuntime(config, adapter, sessions, memory, tools);
@@ -178,7 +182,8 @@ const server = new HttpServer(
   governance,
   undefined,
   memoryMaintenance,
-  runtimeChannels
+  runtimeChannels,
+  assignments
 );
 
 await memory.backfillEmbeddings();

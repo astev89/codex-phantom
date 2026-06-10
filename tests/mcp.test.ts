@@ -8,6 +8,8 @@ import { McpAuditStore } from "../src/mcp/audit.ts";
 import { AppDatabase } from "../src/platform/database.ts";
 import { MetricsStore } from "../src/platform/metrics.ts";
 import { ToolRegistry } from "../src/tools/registry.ts";
+import { AutonomousAssignmentService } from "../src/assignments/service.ts";
+import { registerAssignmentTools } from "../src/assignments/tools.ts";
 
 test("McpServer authenticates without retaining the raw bearer token and records audit metrics", async () => {
   const tools = new ToolRegistry();
@@ -16,81 +18,89 @@ test("McpServer authenticates without retaining the raw bearer token and records
     description: "echo input",
     scopes: ["read"],
     kind: "in_process",
-    handler: async (input) => ({ input })
+    handler: async (input) => ({ input }),
   });
   tools.register({
     id: "write.note",
     description: "write note",
     scopes: ["write"],
     kind: "in_process",
-    handler: async (input) => ({ saved: input })
+    handler: async (input) => ({ saved: input }),
   });
   const metrics = new MetricsStore();
   const mcp = new McpServer("mcp-secret", tools, metrics, {
     mode: "read_only",
     fileGlobs: [],
     allowedToolIds: ["echo"],
-    allowedMcpServers: []
+    allowedMcpServers: [],
   });
 
   assert.equal(JSON.stringify(mcp).includes("mcp-secret"), false);
 
-  const unauthorized = await mcp.handle(new Request("http://localhost/mcp", {
-    method: "POST",
-    headers: {
-      Authorization: "Bearer wrong",
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({ method: "tools/list" })
-  }));
+  const unauthorized = await mcp.handle(
+    new Request("http://localhost/mcp", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer wrong",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ method: "tools/list" }),
+    })
+  );
   assert.equal(unauthorized.status, 401);
 
-  const list = await mcp.handle(new Request("http://localhost/mcp", {
-    method: "POST",
-    headers: {
-      Authorization: "Bearer mcp-secret",
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({ method: "tools/list" })
-  }));
+  const list = await mcp.handle(
+    new Request("http://localhost/mcp", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer mcp-secret",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ method: "tools/list" }),
+    })
+  );
   assert.equal(list.status, 200);
 
-  const call = await mcp.handle(new Request("http://localhost/mcp", {
-    method: "POST",
-    headers: {
-      Authorization: "Bearer mcp-secret",
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      method: "tools/call",
-      params: {
-        name: "echo",
-        input: { hello: "world" }
-      }
+  const call = await mcp.handle(
+    new Request("http://localhost/mcp", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer mcp-secret",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        method: "tools/call",
+        params: {
+          name: "echo",
+          input: { hello: "world" },
+        },
+      }),
     })
-  }));
+  );
   assert.equal(call.status, 200);
 
-  const blockedWrite = await mcp.handle(new Request("http://localhost/mcp", {
-    method: "POST",
-    headers: {
-      Authorization: "Bearer mcp-secret",
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      method: "tools/call",
-      params: {
-        name: "write.note",
-        input: { secret: true },
-        policy: {
-          mode: "full_access",
-          fileGlobs: ["**/*"],
-          allowedToolIds: ["write.note"],
-          allowedMcpServers: []
-        }
-      }
+  const blockedWrite = await mcp.handle(
+    new Request("http://localhost/mcp", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer mcp-secret",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        method: "tools/call",
+        params: {
+          name: "write.note",
+          input: { secret: true },
+          policy: {
+            mode: "full_access",
+            fileGlobs: ["**/*"],
+            allowedToolIds: ["write.note"],
+            allowedMcpServers: [],
+          },
+        },
+      }),
     })
-  }));
+  );
   assert.equal(blockedWrite.status, 400);
 
   const snapshot = metrics.snapshot();
@@ -113,7 +123,7 @@ test("McpServer records durable audit rows for auth failures and tool outcomes",
     description: "echo input",
     scopes: ["read"],
     kind: "in_process",
-    handler: async (input) => ({ input })
+    handler: async (input) => ({ input }),
   });
   tools.register({
     id: "explode",
@@ -122,85 +132,103 @@ test("McpServer records durable audit rows for auth failures and tool outcomes",
     kind: "in_process",
     handler: async () => {
       throw new Error("boom");
-    }
+    },
   });
-  const mcp = new McpServer("secret", tools, new MetricsStore(), {
-    mode: "read_only",
-    fileGlobs: [],
-    allowedToolIds: ["echo", "explode"],
-    allowedMcpServers: []
-  }, audit);
+  const mcp = new McpServer(
+    "secret",
+    tools,
+    new MetricsStore(),
+    {
+      mode: "read_only",
+      fileGlobs: [],
+      allowedToolIds: ["echo", "explode"],
+      allowedMcpServers: [],
+    },
+    audit
+  );
 
   try {
-    await mcp.handle(new Request("http://localhost/mcp", {
-      method: "POST",
-      headers: {
-        Authorization: "Bearer wrong",
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ method: "tools/list" })
-    }));
-
-    await mcp.handle(new Request("http://localhost/mcp", {
-      method: "POST",
-      headers: {
-        Authorization: "Bearer secret",
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ method: "tools/list" })
-    }));
-
-    await mcp.handle(new Request("http://localhost/mcp", {
-      method: "POST",
-      headers: {
-        Authorization: "Bearer secret",
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        method: "tools/call",
-        params: {
-          name: "echo",
-          input: { hello: "world" }
-        }
+    await mcp.handle(
+      new Request("http://localhost/mcp", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer wrong",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ method: "tools/list" }),
       })
-    }));
+    );
 
-    await mcp.handle(new Request("http://localhost/mcp", {
-      method: "POST",
-      headers: {
-        Authorization: "Bearer secret",
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        method: "tools/call",
-        params: {
-          name: "missing.tool"
-        }
+    await mcp.handle(
+      new Request("http://localhost/mcp", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer secret",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ method: "tools/list" }),
       })
-    }));
+    );
 
-    await mcp.handle(new Request("http://localhost/mcp", {
-      method: "POST",
-      headers: {
-        Authorization: "Bearer secret",
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        method: "tools/call",
-        params: {
-          name: "explode"
-        }
+    await mcp.handle(
+      new Request("http://localhost/mcp", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer secret",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          method: "tools/call",
+          params: {
+            name: "echo",
+            input: { hello: "world" },
+          },
+        }),
       })
-    }));
+    );
 
-    await mcp.handle(new Request("http://localhost/mcp", {
-      method: "POST",
-      headers: {
-        Authorization: "Bearer secret",
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ method: "tools/nope" })
-    }));
+    await mcp.handle(
+      new Request("http://localhost/mcp", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer secret",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          method: "tools/call",
+          params: {
+            name: "missing.tool",
+          },
+        }),
+      })
+    );
+
+    await mcp.handle(
+      new Request("http://localhost/mcp", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer secret",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          method: "tools/call",
+          params: {
+            name: "explode",
+          },
+        }),
+      })
+    );
+
+    await mcp.handle(
+      new Request("http://localhost/mcp", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer secret",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ method: "tools/nope" }),
+      })
+    );
 
     const rows = audit.list(10);
     assert.equal(rows.length, 6);
@@ -214,7 +242,10 @@ test("McpServer records durable audit rows for auth failures and tool outcomes",
     assert.equal(rows[4]?.outcome, "success");
     assert.equal(rows[4]?.method, "tools/list");
     assert.equal(rows[5]?.outcome, "auth_failed");
-    assert.equal(rows.every((row) => row.errorMessage !== "secret"), true);
+    assert.equal(
+      rows.every((row) => row.errorMessage !== "secret"),
+      true
+    );
     assert.equal(JSON.stringify(rows).includes("Bearer secret"), false);
     assert.equal(JSON.stringify(rows).includes("hello"), false);
   } finally {
@@ -223,7 +254,9 @@ test("McpServer records durable audit rows for auth failures and tool outcomes",
 });
 
 test("McpServer treats audit write failures as best-effort", async () => {
-  const dataDir = await mkdtemp(join(tmpdir(), "codex-phantom-mcp-audit-failure-"));
+  const dataDir = await mkdtemp(
+    join(tmpdir(), "codex-phantom-mcp-audit-failure-")
+  );
   const database = new AppDatabase(join(dataDir, "mcp-audit-failure.sqlite"));
   const audit = new McpAuditStore(database);
   audit.record = (() => {
@@ -231,25 +264,176 @@ test("McpServer treats audit write failures as best-effort", async () => {
   }) as McpAuditStore["record"];
   const tools = new ToolRegistry();
   const metrics = new MetricsStore();
-  const mcp = new McpServer("secret", tools, metrics, {
-    mode: "read_only",
-    fileGlobs: [],
-    allowedToolIds: [],
-    allowedMcpServers: []
-  }, audit);
+  const mcp = new McpServer(
+    "secret",
+    tools,
+    metrics,
+    {
+      mode: "read_only",
+      fileGlobs: [],
+      allowedToolIds: [],
+      allowedMcpServers: [],
+    },
+    audit
+  );
 
   try {
-    const response = await mcp.handle(new Request("http://localhost/mcp", {
-      method: "POST",
-      headers: {
-        Authorization: "Bearer secret",
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ method: "tools/list" })
-    }));
+    const response = await mcp.handle(
+      new Request("http://localhost/mcp", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer secret",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ method: "tools/list" }),
+      })
+    );
 
     assert.equal(response.status, 200);
     assert.equal(metrics.snapshot().counters["mcp.audit.failure"], 1);
+  } finally {
+    database.close();
+  }
+});
+
+test("McpServer exposes read-only assignment tools with actionable missing-id errors", async () => {
+  const dataDir = await mkdtemp(
+    join(tmpdir(), "codex-phantom-mcp-assignments-")
+  );
+  const database = new AppDatabase(join(dataDir, "assignments.sqlite"));
+  const assignments = new AutonomousAssignmentService(database);
+  const created = assignments.create({
+    objective: "Track autonomous assignment MCP visibility",
+    source: { channelId: "slack" },
+  });
+  const tools = new ToolRegistry();
+  registerAssignmentTools(tools, assignments);
+  const mcp = new McpServer("secret", tools, new MetricsStore());
+
+  try {
+    const listTools = await mcp.handle(
+      new Request("http://localhost/mcp", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer secret",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ method: "tools/list" }),
+      })
+    );
+    assert.equal(listTools.status, 200);
+    const listToolsJson = (await listTools.json()) as {
+      tools: Array<{
+        id: string;
+        scopes: string[];
+        inputSchema: {
+          properties?: Record<string, { type?: string }>;
+        };
+      }>;
+    };
+    assert.deepEqual(listToolsJson.tools.map((tool) => tool.id).sort(), [
+      "assignment.get",
+      "assignment.list",
+      "assignment.timeline",
+    ]);
+    assert.equal(
+      listToolsJson.tools.every((tool) => tool.scopes.includes("read")),
+      true
+    );
+    const listTool = listToolsJson.tools.find(
+      (tool) => tool.id === "assignment.list"
+    );
+    const timelineTool = listToolsJson.tools.find(
+      (tool) => tool.id === "assignment.timeline"
+    );
+    assert.equal(listTool?.inputSchema.properties?.limit?.type, "integer");
+    assert.equal(timelineTool?.inputSchema.properties?.limit?.type, "integer");
+
+    const listCall = await mcp.handle(
+      new Request("http://localhost/mcp", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer secret",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          method: "tools/call",
+          params: {
+            name: "assignment.list",
+            input: { sourceChannelId: "slack" },
+          },
+        }),
+      })
+    );
+    assert.equal(listCall.status, 200);
+    const listCallJson = (await listCall.json()) as {
+      output: { assignments: Array<{ id: string }> };
+    };
+    assert.equal(listCallJson.output.assignments[0]?.id, created.assignment.id);
+
+    const getCall = await mcp.handle(
+      new Request("http://localhost/mcp", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer secret",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          method: "tools/call",
+          params: {
+            name: "assignment.get",
+            input: { id: created.assignment.id },
+          },
+        }),
+      })
+    );
+    assert.equal(getCall.status, 200);
+    const getCallJson = (await getCall.json()) as {
+      output: { assignment: { id: string } };
+    };
+    assert.equal(getCallJson.output.assignment.id, created.assignment.id);
+
+    const timelineCall = await mcp.handle(
+      new Request("http://localhost/mcp", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer secret",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          method: "tools/call",
+          params: {
+            name: "assignment.timeline",
+            input: { id: created.assignment.id },
+          },
+        }),
+      })
+    );
+    assert.equal(timelineCall.status, 200);
+    const timelineCallJson = (await timelineCall.json()) as {
+      output: { timeline: { events: Array<{ type: string }> } };
+    };
+    assert.equal(timelineCallJson.output.timeline.events[0]?.type, "created");
+
+    const missingCall = await mcp.handle(
+      new Request("http://localhost/mcp", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer secret",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          method: "tools/call",
+          params: {
+            name: "assignment.get",
+            input: { id: "asgn_missing" },
+          },
+        }),
+      })
+    );
+    assert.equal(missingCall.status, 400);
+    const missingCallJson = (await missingCall.json()) as { error: string };
+    assert.match(missingCallJson.error, /assignment\.list/);
   } finally {
     database.close();
   }
