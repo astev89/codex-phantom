@@ -72,6 +72,7 @@ import {
   AssignmentValidationError,
   AutonomousAssignmentService,
 } from "../assignments/service.ts";
+import { AssignmentWakeupPlanner } from "../assignments/wakeup-planner.ts";
 import type {
   AssignmentAutonomyLevel,
   AssignmentLifecycleState,
@@ -134,6 +135,7 @@ export class HttpServer {
   private readonly inboundRouter: InboundChannelRouter;
   private readonly inboundResponses: InboundResponseDispatcher;
   private readonly assignments: AutonomousAssignmentService;
+  private readonly assignmentWakeups?: AssignmentWakeupPlanner;
   private readonly chatArtifacts: ChatArtifactService;
   private readonly governance: ToolGovernanceService;
   private readonly selfEvolution: SelfEvolutionProposalStore;
@@ -165,7 +167,8 @@ export class HttpServer {
     slackTransport?: SlackTransport,
     memoryMaintenance?: MemoryMaintenanceService,
     runtimeChannels = new RuntimeChannelCapabilities(),
-    assignments?: AutonomousAssignmentService
+    assignments?: AutonomousAssignmentService,
+    assignmentWakeups?: AssignmentWakeupPlanner
   ) {
     if (!assignments) {
       throw new Error("AutonomousAssignmentService is required");
@@ -222,6 +225,7 @@ export class HttpServer {
         }),
       },
     });
+    this.assignmentWakeups = assignmentWakeups;
     this.requestAudits = new RequestAuditStore(database);
     this.mcpAudit = new McpAuditStore(database);
     this.operatorExports = new OperatorExportService({
@@ -729,6 +733,13 @@ export class HttpServer {
           parseJsonBody(await readTextBody(req))
         );
         const assignment = this.assignments.control(assignmentId, body);
+        if (body.action === "force_wakeup" && this.assignmentWakeups) {
+          await this.assignmentWakeups.scheduleNext({
+            assignmentId,
+            reason: body.reason ?? "Operator forced wakeup",
+            delayMinutes: 0,
+          });
+        }
         this.json(res, 200, { requestId, ...assignment });
         return;
       }

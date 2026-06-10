@@ -347,3 +347,87 @@ test("AutonomousAssignmentService links runs and exposes them from assignment de
     database.close();
   }
 });
+
+test("AutonomousAssignmentService records wakeup lifecycle state through domain methods", async () => {
+  const database = new AppDatabase(":memory:");
+  const assignments = new AutonomousAssignmentService(database);
+  const runs = new RunGraphStore(database);
+  try {
+    const created = assignments.create({ objective: "Wakeup lifecycle test" });
+
+    const started = assignments.startWakeup({
+      assignmentId: created.assignment.id,
+      actor: "operator",
+      reason: "forced by operator",
+      source: "force_wakeup",
+    });
+    assert.equal(started.assignment.wakeupCount, 1);
+    assert.equal(started.assignment.lifecycleState, "active");
+
+    const runId = "coord_wakeup_lifecycle_1";
+    await runs.upsert({
+      runId,
+      role: "coordinator",
+      objective: "Continue assignment",
+      status: "completed",
+      permissionPolicy: {
+        mode: "read_only",
+        fileGlobs: [],
+        allowedToolIds: [],
+        allowedMcpServers: [],
+      },
+      allowedMcpServers: [],
+      allowedToolIds: [],
+      childRunIds: [],
+      transcript: [],
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      summary: "ASSIGNMENT_STATUS: continue",
+    });
+
+    assignments.failWakeup({
+      assignmentId: created.assignment.id,
+      error: "temporary model error",
+    });
+    assert.equal(
+      assignments.get(created.assignment.id)?.assignment
+        .consecutiveFailureCount,
+      1
+    );
+
+    const completed = assignments.completeWakeupRun({
+      assignmentId: created.assignment.id,
+      runId,
+      outputText: "ASSIGNMENT_STATUS: continue",
+    });
+    assert.equal(completed.assignment.consecutiveFailureCount, 0);
+    assert.equal(completed.runLinks[0]?.runId, runId);
+
+    const waiting = assignments.applyWakeupDecision({
+      assignmentId: created.assignment.id,
+      decision: "waiting",
+      reason: "Continue later",
+      nextWakeupAt: "2026-04-28T13:00:00.000Z",
+    });
+    assert.equal(waiting.assignment.lifecycleState, "waiting");
+
+    const eventTypes = assignments
+      .timeline(created.assignment.id)
+      .events.map((event) => event.type);
+    assert.deepEqual(eventTypes, [
+      "created",
+      "wakeup_started",
+      "wakeup_failed",
+      "run_linked",
+      "wakeup_run_completed",
+      "wakeup_scheduled",
+    ]);
+    const runCompletedEvent = assignments
+      .timeline(created.assignment.id)
+      .events.find((event) => event.type === "wakeup_run_completed");
+    assert.equal(runCompletedEvent?.compactable, true);
+    assert.equal(typeof runCompletedEvent?.retention.expiresAt, "string");
+  } finally {
+    database.close();
+  }
+});

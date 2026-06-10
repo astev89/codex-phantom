@@ -116,6 +116,10 @@ _Avoid_: Silent self-change, unrollbackable mutation
 The assignment runtime decision component that builds a compact assignment state packet on each wakeup and chooses one inspectable next action: run, schedule, notify, mutate, request approval, complete, block, cancel, or expire.
 _Avoid_: Re-run the whole objective blindly, hidden infinite loop
 
+**Assignment wakeup planner**:
+The deterministic v1 implementation of the assignment step planner that wakes an assignment through scheduler policy, runs one coordinator attempt, links the run, applies bounded lifecycle decisions, and schedules the next wakeup without delegated mutation or child assignment execution.
+_Avoid_: Infinite autonomous loop, hidden background worker
+
 **Assignment notification**:
 An assignment-level channel update about accepted work, wakeup start, progress, autonomous changes, waiting state, approval needs, blocked state, completion, expiration, failure, or cancellation.
 _Avoid_: Tool-call spam, hidden background work
@@ -197,6 +201,8 @@ _Avoid_: Implemented feature, feature complete
 - If Phantom cannot construct a rollback payload or before snapshot for a mutation class, it cannot autonomously apply that mutation class.
 - **Autonomous assignment** uses an **Assignment step planner** on each wakeup instead of blindly re-running the full objective.
 - **Assignment step planner** chooses one outer next action per wakeup so the autonomous loop remains inspectable.
+- **Assignment wakeup planner** is the first runtime implementation of the **Assignment step planner**: it can run one coordinator wakeup, link the run, transition lifecycle, and schedule the next wakeup.
+- **Assignment wakeup planner** is deliberately deterministic in v1 and does not yet own delegated mutation, child assignment creation, Slack assignment intake, notification delivery, or dashboard behavior.
 - **Autonomous assignment** reports through **Assignment notifications** at assignment-level milestones rather than exposing every internal tool call.
 - Slack **Assignment notifications** use one thread per assignment and avoid flooding by updating progress/status messages where practical.
 - Feedback buttons attach to major **Assignment notifications** and terminal outcomes, not every wakeup.
@@ -216,9 +222,9 @@ _Avoid_: Implemented feature, feature complete
 - **Assignment event retention** gives assignment events `importance`, `compactable`, and optional `expiresAt` metadata from v1, even if maintenance compaction lands later.
 - **Assignment event retention** keeps terminal summaries, final outcomes, policy changes, controls, child links, run links, mutation links, completion, and reopen events long-term.
 - High-frequency assignment progress/detail events may be compacted into summary events; autonomous mutation ledger entries are not compacted while rollback is promised.
-- The first **Autonomous assignment** core slice deliberately excludes several **Deferred assignment slices**: autonomous mutation execution, Slack automatic assignment intake, child assignment execution, real planner LLM wakeups, event compaction maintenance, full dashboard, production deployment automation, autonomous filesystem/project mutation, and changes to existing one-shot channel behavior.
+- The first **Autonomous assignment** core plus wakeup planner slices deliberately exclude several **Deferred assignment slices**: autonomous mutation execution, Slack automatic assignment intake, child assignment execution, LLM planner policy, event compaction maintenance, full dashboard, production deployment automation, autonomous filesystem/project mutation, and changes to existing one-shot channel behavior.
 - **Deferred assignment slices** remain planned follow-up work rather than permanent exclusions.
-- **Deferred assignment slices** should proceed in this order after assignment core: assignment wakeup planner, channel assignment intake, delegated mutation ledger, delegated autonomous self-evolution, child assignment execution, retention/compaction maintenance, then operator UX.
+- **Deferred assignment slices** should proceed in this order after assignment wakeup planner: channel assignment intake, delegated mutation ledger, delegated autonomous self-evolution, child assignment execution, retention/compaction maintenance, then operator UX.
 - Public unauthenticated assignment endpoints, heavy UI changes, assignment templates, and multi-agent dashboards are not part of the v1 autonomous assignment surface.
 - `waiting` means Phantom knows when or how to resume; `blocked` means it cannot make meaningful progress without new information or access.
 - **Email channel parity** treats inbound IMAP and outbound SMTP as one all-or-nothing enabled capability; partial inbound-only or outbound-only modes are not parity-complete.

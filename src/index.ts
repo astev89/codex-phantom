@@ -28,6 +28,10 @@ import {
 } from "./self-evolution/proposals.ts";
 import { AutonomousAssignmentService } from "./assignments/service.ts";
 import { registerAssignmentTools } from "./assignments/tools.ts";
+import {
+  ASSIGNMENT_WAKEUP_JOB_NAME,
+  AssignmentWakeupPlanner,
+} from "./assignments/wakeup-planner.ts";
 import { CodexAdapter } from "./agent/codex-adapter.ts";
 import { AgentRuntime } from "./agent/runtime.ts";
 import { RunGraphStore } from "./orchestration/run-graph-store.ts";
@@ -116,6 +120,14 @@ const inboundRouter = new InboundChannelRouter(
   orchestration
 );
 const scheduler = new SchedulerService(database, orchestration);
+const assignmentWakeups = new AssignmentWakeupPlanner({
+  assignments,
+  scheduler,
+  orchestration,
+});
+scheduler.registerHandler(ASSIGNMENT_WAKEUP_JOB_NAME, (job) =>
+  assignmentWakeups.handleScheduledWakeup(job)
+);
 const mcp = new McpServer(
   config.mcpBearerToken,
   tools,
@@ -183,7 +195,8 @@ const server = new HttpServer(
   undefined,
   memoryMaintenance,
   runtimeChannels,
-  assignments
+  assignments,
+  assignmentWakeups
 );
 
 await memory.backfillEmbeddings();
