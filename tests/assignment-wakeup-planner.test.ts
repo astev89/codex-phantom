@@ -10,12 +10,8 @@ import { RunGraphStore } from "../src/orchestration/run-graph-store.ts";
 import type { OrchestrationService } from "../src/orchestration/service.ts";
 import type { JobRecord } from "../src/scheduler/service.ts";
 
-type ScheduledJob = {
-  name: string;
-  message: string;
+type ScheduledJob = JobRecord & {
   delayMs?: number;
-  maxAttempts?: number;
-  scheduledAt: string;
 };
 
 type CoordinatorInput = Parameters<OrchestrationService["runCoordinator"]>[0];
@@ -28,6 +24,7 @@ function makeScheduler(now: string): {
       message: string,
       options: { delayMs?: number; maxAttempts?: number }
     ) => Promise<JobRecord>;
+    list: () => Promise<JobRecord[]>;
   };
 } {
   const jobs: ScheduledJob[] = [];
@@ -38,8 +35,7 @@ function makeScheduler(now: string): {
         const scheduledAt = new Date(
           Date.parse(now) + (options.delayMs ?? 0)
         ).toISOString();
-        jobs.push({ name, message, ...options, scheduledAt });
-        return {
+        const record: ScheduledJob = {
           id: `job_${jobs.length}`,
           name,
           message,
@@ -49,7 +45,13 @@ function makeScheduler(now: string): {
           createdAt: now,
           attemptCount: 0,
           maxAttempts: options.maxAttempts ?? 1,
+          delayMs: options.delayMs,
         };
+        jobs.push(record);
+        return record;
+      },
+      async list() {
+        return jobs;
       },
     },
   };
@@ -323,4 +325,111 @@ test("AssignmentWakeupPlanner clamps next wakeup delays and skips terminal assig
   });
   assert.equal(skipped.status, "skipped");
   assert.equal(runCount, 1);
+});
+
+test("AssignmentWakeupPlanner skips overlapping wakeups for the same assignment", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-04-28T14:30:00.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const database = new AppDatabase(":memory:");
+  t.after(() => database.close());
+  const assignments = new AutonomousAssignmentService(database);
+  const runs = new RunGraphStore(database);
+  const { scheduler } = makeScheduler(now);
+  let runCount = 0;
+  let releaseCoordinator: (() => void) | undefined;
+  const coordinatorGate = new Promise<void>((resolve) => {
+    releaseCoordinator = resolve;
+  });
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: {
+      async runCoordinator(input: { message: string }) {
+        runCount += 1;
+        await coordinatorGate;
+        const runId = `coord_overlap_${runCount}`;
+        await runs.upsert({
+          runId,
+          role: "coordinator",
+          objective: input.message,
+          status: "completed",
+          permissionPolicy: {
+            mode: "read_only",
+            fileGlobs: [],
+            allowedToolIds: [],
+            allowedMcpServers: [],
+          },
+          allowedMcpServers: [],
+          allowedToolIds: [],
+          childRunIds: [],
+          transcript: [],
+          summary: "ASSIGNMENT_STATUS: complete",
+          startedAt: new Date().toISOString(),
+          finishedAt: new Date().toISOString(),
+        });
+        return {
+          sessionId: "session",
+          runId,
+          outputText: "ASSIGNMENT_STATUS: complete",
+        };
+      },
+    } as unknown as OrchestrationService,
+  });
+  const assignment = assignments.create({ objective: "Avoid overlap" });
+
+  const firstWakeup = planner.wakeNow({
+    assignmentId: assignment.assignment.id,
+    reason: "first",
+  });
+  const skippedWakeup = await planner.wakeNow({
+    assignmentId: assignment.assignment.id,
+    reason: "second",
+  });
+  assert.equal(skippedWakeup.status, "skipped");
+  assert.equal(runCount, 1);
+
+  releaseCoordinator?.();
+  const completed = await firstWakeup;
+  assert.equal(completed.status, "completed");
+  assert.equal(runCount, 1);
+  assert.equal(
+    assignments.getRequired(assignment.assignment.id).assignment.wakeupCount,
+    1
+  );
+});
+
+test("AssignmentWakeupPlanner reuses pending wakeup jobs for the same assignment", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-04-28T15:00:00.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const database = new AppDatabase(":memory:");
+  t.after(() => database.close());
+  const assignments = new AutonomousAssignmentService(database);
+  const runs = new RunGraphStore(database);
+  const { scheduler, jobs } = makeScheduler(now);
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, []),
+  });
+  const assignment = assignments.create({ objective: "Deduplicate jobs" });
+
+  const first = await planner.scheduleNext({
+    assignmentId: assignment.assignment.id,
+    reason: "first",
+    delayMinutes: 0,
+  });
+  const second = await planner.scheduleNext({
+    assignmentId: assignment.assignment.id,
+    reason: "second",
+    delayMinutes: 0,
+  });
+
+  assert.equal(first.id, second.id);
+  assert.equal(jobs.length, 1);
+  assert.deepEqual(JSON.parse(jobs[0]?.message ?? "{}"), {
+    assignmentId: assignment.assignment.id,
+    reason: "first",
+  });
 });

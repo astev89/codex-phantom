@@ -733,14 +733,37 @@ export class HttpServer {
           parseJsonBody(await readTextBody(req))
         );
         const assignment = this.assignments.control(assignmentId, body);
+        let wakeupScheduleWarning:
+          | { message: string; error: string }
+          | undefined;
         if (body.action === "force_wakeup" && this.assignmentWakeups) {
-          await this.assignmentWakeups.scheduleNext({
-            assignmentId,
-            reason: body.reason ?? "Operator forced wakeup",
-            delayMinutes: 0,
-          });
+          try {
+            await this.assignmentWakeups.scheduleNext({
+              assignmentId,
+              reason: body.reason ?? "Operator forced wakeup",
+              delayMinutes: 0,
+            });
+          } catch (error) {
+            const errorMessage =
+              error instanceof Error
+                ? error.message
+                : "Assignment wakeup scheduling failed";
+            requestLogger.warn("assignment_wakeup_schedule_failed", {
+              assignmentId,
+              error: errorMessage,
+            });
+            wakeupScheduleWarning = {
+              message:
+                "Assignment control was recorded, but wakeup scheduling failed",
+              error: errorMessage,
+            };
+          }
         }
-        this.json(res, 200, { requestId, ...assignment });
+        this.json(res, 200, {
+          requestId,
+          ...assignment,
+          ...(wakeupScheduleWarning ? { wakeupScheduleWarning } : {}),
+        });
         return;
       }
 

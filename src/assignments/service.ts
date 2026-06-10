@@ -336,13 +336,18 @@ export class AutonomousAssignmentService {
 
   completeWakeupRun(input: CompleteAssignmentWakeupRunInput): AssignmentDetail {
     const now = new Date().toISOString();
-    this.linkRun({
-      assignmentId: input.assignmentId,
-      runId: input.runId,
-      action: "assignment_wakeup",
-      metadata: { outputText: input.outputText ?? null },
-    });
+    const link = buildAssignmentRunLink(
+      {
+        assignmentId: input.assignmentId,
+        runId: input.runId,
+        action: "assignment_wakeup",
+        metadata: { outputText: input.outputText ?? null },
+      },
+      now
+    );
+    this.getRequired(input.assignmentId);
     this.database.transaction(() => {
+      this.insertRunLink(link, now);
       this.updateAssignment(input.assignmentId, {
         consecutive_failure_count: 0,
         updated_at: now,
@@ -419,49 +424,45 @@ export class AutonomousAssignmentService {
   linkRun(input: LinkAssignmentRunInput): AssignmentRunLinkRecord {
     this.getRequired(input.assignmentId);
     const now = new Date().toISOString();
-    const link: AssignmentRunLinkRecord = {
-      id: createId("asgnrun"),
-      assignmentId: input.assignmentId,
-      runId: input.runId,
-      stepId: normalizeOptionalText(input.stepId),
-      action: normalizeOptionalText(input.action),
-      metadata: input.metadata ?? {},
-      createdAt: now,
-    };
+    const link = buildAssignmentRunLink(input, now);
 
     this.database.transaction(() => {
-      this.database.run(
-        `INSERT INTO assignment_run_links (
-          id, assignment_id, run_id, step_id, action, metadata_json, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        link.id,
-        link.assignmentId,
-        link.runId,
-        link.stepId ?? null,
-        link.action ?? null,
-        encodeJson(link.metadata),
-        link.createdAt
-      );
-      this.updateAssignment(input.assignmentId, {
-        updated_at: now,
-        last_activity_at: now,
-      });
-      this.recordEvent({
-        assignmentId: input.assignmentId,
-        type: "run_linked",
-        importance: "audit",
-        compactable: false,
-        payload: {
-          linkId: link.id,
-          runId: link.runId,
-          stepId: link.stepId ?? null,
-          action: link.action ?? null,
-        },
-        createdAt: now,
-      });
+      this.insertRunLink(link, now);
     });
 
     return link;
+  }
+
+  private insertRunLink(link: AssignmentRunLinkRecord, now: string): void {
+    this.database.run(
+      `INSERT INTO assignment_run_links (
+        id, assignment_id, run_id, step_id, action, metadata_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      link.id,
+      link.assignmentId,
+      link.runId,
+      link.stepId ?? null,
+      link.action ?? null,
+      encodeJson(link.metadata),
+      link.createdAt
+    );
+    this.updateAssignment(link.assignmentId, {
+      updated_at: now,
+      last_activity_at: now,
+    });
+    this.recordEvent({
+      assignmentId: link.assignmentId,
+      type: "run_linked",
+      importance: "audit",
+      compactable: false,
+      payload: {
+        linkId: link.id,
+        runId: link.runId,
+        stepId: link.stepId ?? null,
+        action: link.action ?? null,
+      },
+      createdAt: now,
+    });
   }
 
   private insertAssignment(assignment: AssignmentRecord): void {
@@ -734,6 +735,21 @@ function transitionForControl(
         `Unsupported control action for lifecycle transition: ${action}`
       );
   }
+}
+
+function buildAssignmentRunLink(
+  input: LinkAssignmentRunInput,
+  now: string
+): AssignmentRunLinkRecord {
+  return {
+    id: createId("asgnrun"),
+    assignmentId: input.assignmentId,
+    runId: input.runId,
+    stepId: normalizeOptionalText(input.stepId),
+    action: normalizeOptionalText(input.action),
+    metadata: input.metadata ?? {},
+    createdAt: now,
+  };
 }
 
 function wakeupDecisionTransition(input: ApplyAssignmentWakeupDecisionInput): {

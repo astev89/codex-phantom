@@ -15,7 +15,7 @@ import { AutonomousAssignmentService } from "./service.ts";
 export const ASSIGNMENT_WAKEUP_JOB_NAME = "assignment.wakeup";
 const DEFAULT_NEXT_WAKEUP_MINUTES = 30;
 
-type AssignmentWakeupScheduler = Pick<SchedulerService, "schedule">;
+type AssignmentWakeupScheduler = Pick<SchedulerService, "list" | "schedule">;
 
 export type AssignmentWakeupResult = {
   status:
@@ -34,6 +34,7 @@ export class AssignmentWakeupPlanner {
   private readonly assignments: AutonomousAssignmentService;
   private readonly scheduler: AssignmentWakeupScheduler;
   private readonly orchestration: OrchestrationService;
+  private readonly activeWakeups = new Set<string>();
 
   constructor(input: {
     assignments: AutonomousAssignmentService;
@@ -51,6 +52,12 @@ export class AssignmentWakeupPlanner {
     reason?: string;
     source?: string;
   }): Promise<AssignmentWakeupResult> {
+    if (this.activeWakeups.has(input.assignmentId)) {
+      return {
+        status: "skipped",
+        assignment: this.assignments.getRequired(input.assignmentId),
+      };
+    }
     const initial = this.assignments.getRequired(input.assignmentId);
     if (isTerminalAssignment(initial.assignment)) {
       return { status: "skipped", assignment: initial };
@@ -66,117 +73,122 @@ export class AssignmentWakeupPlanner {
       };
     }
 
-    const started = this.assignments.startWakeup({
-      assignmentId: input.assignmentId,
-      actor: input.actor,
-      reason: input.reason,
-      source: input.source,
-    });
-
+    this.activeWakeups.add(input.assignmentId);
     try {
-      const result = await this.orchestration.runCoordinator(
-        {
-          channelId: "scheduler",
-          conversationId: input.assignmentId,
-          message: buildWakeupPrompt(
-            started,
-            this.assignments.timeline(input.assignmentId, 10).events
-          ),
-        },
-        async () => undefined
-      );
-      const completed = this.assignments.completeWakeupRun({
+      const started = this.assignments.startWakeup({
         assignmentId: input.assignmentId,
-        runId: result.runId,
-        outputText: result.outputText,
+        actor: input.actor,
+        reason: input.reason,
+        source: input.source,
       });
-      const marker = parsePlannerMarkers(result.outputText);
-      if (marker.status === "completed") {
-        return {
-          status: "completed",
-          runId: result.runId,
-          assignment: this.assignments.applyWakeupDecision({
-            assignmentId: input.assignmentId,
-            decision: "completed",
-            reason: "Coordinator reported assignment completion",
-          }),
-        };
-      }
-      if (marker.status === "blocked") {
-        return {
-          status: "blocked",
-          runId: result.runId,
-          assignment: this.assignments.applyWakeupDecision({
-            assignmentId: input.assignmentId,
-            decision: "blocked",
-            reason: "Coordinator reported assignment is blocked",
-          }),
-        };
-      }
-      if (
-        completed.assignment.wakeupCount >=
-        completed.assignment.policy.maxWakeups
-      ) {
-        return {
-          status: "expired",
-          runId: result.runId,
-          assignment: this.assignments.applyWakeupDecision({
-            assignmentId: input.assignmentId,
-            decision: "expired",
-            reason: "Assignment exhausted wakeup budget",
-          }),
-        };
-      }
-      const nextJob = await this.scheduleNext({
-        assignmentId: input.assignmentId,
-        reason: "Planner requested continuation",
-        delayMinutes: marker.nextWakeupMinutes,
-      });
-      return {
-        status: "scheduled",
-        runId: result.runId,
-        nextJob,
-        assignment: this.assignments.applyWakeupDecision({
+
+      try {
+        const result = await this.orchestration.runCoordinator(
+          {
+            channelId: "scheduler",
+            conversationId: input.assignmentId,
+            message: buildWakeupPrompt(
+              started,
+              this.assignments.timeline(input.assignmentId, 10).events
+            ),
+          },
+          async () => undefined
+        );
+        const completed = this.assignments.completeWakeupRun({
           assignmentId: input.assignmentId,
-          decision: "waiting",
+          runId: result.runId,
+          outputText: result.outputText,
+        });
+        const marker = parsePlannerMarkers(result.outputText);
+        if (marker.status === "completed") {
+          return {
+            status: "completed",
+            runId: result.runId,
+            assignment: this.assignments.applyWakeupDecision({
+              assignmentId: input.assignmentId,
+              decision: "completed",
+              reason: "Coordinator reported assignment completion",
+            }),
+          };
+        }
+        if (marker.status === "blocked") {
+          return {
+            status: "blocked",
+            runId: result.runId,
+            assignment: this.assignments.applyWakeupDecision({
+              assignmentId: input.assignmentId,
+              decision: "blocked",
+              reason: "Coordinator reported assignment is blocked",
+            }),
+          };
+        }
+        if (
+          completed.assignment.wakeupCount >=
+          completed.assignment.policy.maxWakeups
+        ) {
+          return {
+            status: "expired",
+            runId: result.runId,
+            assignment: this.assignments.applyWakeupDecision({
+              assignmentId: input.assignmentId,
+              decision: "expired",
+              reason: "Assignment exhausted wakeup budget",
+            }),
+          };
+        }
+        const nextJob = await this.scheduleNext({
+          assignmentId: input.assignmentId,
           reason: "Planner requested continuation",
-          nextWakeupAt: nextJob.scheduledAt,
-        }),
-      };
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Assignment wakeup failed";
-      const failed = this.assignments.failWakeup({
-        assignmentId: input.assignmentId,
-        error: message,
-      });
-      if (
-        failed.assignment.consecutiveFailureCount >=
-        failed.assignment.policy.maxConsecutiveFailures
-      ) {
+          delayMinutes: marker.nextWakeupMinutes,
+        });
         return {
-          status: "failed",
+          status: "scheduled",
+          runId: result.runId,
+          nextJob,
           assignment: this.assignments.applyWakeupDecision({
             assignmentId: input.assignmentId,
-            decision: "failed",
-            reason: "Assignment exhausted consecutive failure budget",
+            decision: "waiting",
+            reason: "Planner requested continuation",
+            nextWakeupAt: nextJob.scheduledAt,
+          }),
+        };
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Assignment wakeup failed";
+        const failed = this.assignments.failWakeup({
+          assignmentId: input.assignmentId,
+          error: message,
+        });
+        if (
+          failed.assignment.consecutiveFailureCount >=
+          failed.assignment.policy.maxConsecutiveFailures
+        ) {
+          return {
+            status: "failed",
+            assignment: this.assignments.applyWakeupDecision({
+              assignmentId: input.assignmentId,
+              decision: "failed",
+              reason: "Assignment exhausted consecutive failure budget",
+            }),
+          };
+        }
+        const nextJob = await this.scheduleNext({
+          assignmentId: input.assignmentId,
+          reason: "Retry after wakeup failure",
+        });
+        return {
+          status: "scheduled",
+          nextJob,
+          assignment: this.assignments.applyWakeupDecision({
+            assignmentId: input.assignmentId,
+            decision: "waiting",
+            reason: "Retry after wakeup failure",
+            nextWakeupAt: nextJob.scheduledAt,
           }),
         };
       }
-      const nextJob = await this.scheduleNext({
-        assignmentId: input.assignmentId,
-        reason: "Retry after wakeup failure",
-      });
-      return {
-        status: "scheduled",
-        nextJob,
-        assignment: this.assignments.applyWakeupDecision({
-          assignmentId: input.assignmentId,
-          decision: "waiting",
-          reason: "Retry after wakeup failure",
-          nextWakeupAt: nextJob.scheduledAt,
-        }),
-      };
+    } finally {
+      this.activeWakeups.delete(input.assignmentId);
     }
   }
 
@@ -186,6 +198,13 @@ export class AssignmentWakeupPlanner {
     delayMinutes?: number;
   }): Promise<JobRecord> {
     const detail = this.assignments.getRequired(input.assignmentId);
+    const existing = findScheduledWakeupJob(
+      await this.scheduler.list(),
+      input.assignmentId
+    );
+    if (existing) {
+      return existing;
+    }
     const delayMinutes =
       input.delayMinutes === 0
         ? 0
@@ -218,6 +237,26 @@ export class AssignmentWakeupPlanner {
     });
     return result.runId ? { runId: result.runId } : {};
   }
+}
+
+function findScheduledWakeupJob(
+  jobs: JobRecord[],
+  assignmentId: string
+): JobRecord | null {
+  for (const job of jobs) {
+    if (job.name !== ASSIGNMENT_WAKEUP_JOB_NAME || job.status !== "scheduled") {
+      continue;
+    }
+    try {
+      const payload = parseWakeupJobPayload(job.message);
+      if (payload.assignmentId === assignmentId) {
+        return job;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return null;
 }
 
 function buildWakeupPrompt(
