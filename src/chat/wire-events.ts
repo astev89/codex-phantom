@@ -4,6 +4,7 @@ import type { JsonValue } from "../shared/types.ts";
 export type ChatWireEventType =
   | "request.started"
   | "agent.event"
+  | "assignment.created"
   | "run.completed"
   | "request.completed"
   | "request.failed";
@@ -28,7 +29,15 @@ export class ChatWireEventBuilder {
     this.requestId = requestId;
   }
 
-  build(type: ChatWireEventType, payload: JsonValue, options: { sessionId?: string; runId?: string; rawEvent?: AgentRunEvent } = {}): ChatWireEvent {
+  build(
+    type: ChatWireEventType,
+    payload: JsonValue,
+    options: {
+      sessionId?: string;
+      runId?: string;
+      rawEvent?: AgentRunEvent;
+    } = {}
+  ): ChatWireEvent {
     this.sequence += 1;
     return {
       version: 1,
@@ -39,7 +48,7 @@ export class ChatWireEventBuilder {
       sequence: this.sequence,
       createdAt: new Date().toISOString(),
       payload,
-      rawEvent: options.rawEvent
+      rawEvent: options.rawEvent,
     };
   }
 }

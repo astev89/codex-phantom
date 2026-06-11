@@ -81,6 +81,7 @@ import {
   ASSIGNMENT_AUTONOMY_LEVELS,
   ASSIGNMENT_LIFECYCLE_STATES,
 } from "../assignments/types.ts";
+import { AssignmentIntakeService } from "../assignments/intake.ts";
 import { renderOperatorConsole } from "./ui.ts";
 import { renderChatApp } from "./chat-ui.ts";
 import { OperatorSettingsStore } from "./settings.ts";
@@ -136,6 +137,7 @@ export class HttpServer {
   private readonly inboundResponses: InboundResponseDispatcher;
   private readonly assignments: AutonomousAssignmentService;
   private readonly assignmentWakeups?: AssignmentWakeupPlanner;
+  private readonly assignmentIntake: AssignmentIntakeService;
   private readonly chatArtifacts: ChatArtifactService;
   private readonly governance: ToolGovernanceService;
   private readonly selfEvolution: SelfEvolutionProposalStore;
@@ -168,7 +170,8 @@ export class HttpServer {
     memoryMaintenance?: MemoryMaintenanceService,
     runtimeChannels = new RuntimeChannelCapabilities(),
     assignments?: AutonomousAssignmentService,
-    assignmentWakeups?: AssignmentWakeupPlanner
+    assignmentWakeups?: AssignmentWakeupPlanner,
+    assignmentIntake?: AssignmentIntakeService
   ) {
     if (!assignments) {
       throw new Error("AutonomousAssignmentService is required");
@@ -226,6 +229,9 @@ export class HttpServer {
       },
     });
     this.assignmentWakeups = assignmentWakeups;
+    this.assignmentIntake =
+      assignmentIntake ??
+      new AssignmentIntakeService(assignments, assignmentWakeups);
     this.requestAudits = new RequestAuditStore(database);
     this.mcpAudit = new McpAuditStore(database);
     this.operatorExports = new OperatorExportService({
@@ -1153,6 +1159,31 @@ export class HttpServer {
           conversationId: body.conversationId ?? "web-chat",
           attachmentCount: body.attachments?.length ?? 0,
         });
+        const intake = await this.assignmentIntake.handle({
+          channelId: "web",
+          conversationId: body.conversationId ?? body.sessionId ?? "web-chat",
+          senderId: "operator",
+          message: body.message,
+          rawPayload: body as unknown as JsonValue,
+          assignment: body.assignment,
+        });
+        if (intake.kind === "assignment_created") {
+          const assignmentCreatedPayload: Record<string, JsonValue> = {
+            assignment: intake.assignment.assignment,
+            acknowledgementText: intake.acknowledgementText,
+            duplicate: intake.duplicate,
+          };
+          if (intake.nextJob) {
+            assignmentCreatedPayload.nextJob =
+              intake.nextJob as unknown as JsonValue;
+          }
+          emitWire("assignment.created", assignmentCreatedPayload);
+          emitWire("request.completed", {
+            status: "assignment_created",
+          });
+          res.end();
+          return;
+        }
         const extractedArtifacts: ExtractedArtifactDraft[] = [];
         const collectExtractedArtifacts = (
           drafts: ExtractedArtifactDraft[]
@@ -1291,12 +1322,33 @@ export class HttpServer {
           throw new HttpError(401, "Unauthorized");
         }
         const body = validateWebhookBody(parseJsonBody(rawBody));
+        const webhookProviderEventId = `webhook:${requestId}`;
+        const intake = await this.assignmentIntake.handle({
+          channelId: "webhook",
+          providerEventId: webhookProviderEventId,
+          conversationId: body.conversationId ?? "webhook",
+          senderId: "webhook",
+          message: body.message,
+          rawPayload: parseJsonBody(rawBody) as JsonValue,
+          assignment: body.assignment,
+        });
+        if (intake.kind === "assignment_created") {
+          this.json(res, 202, {
+            requestId,
+            status: "assignment_created",
+            assignment: intake.assignment.assignment,
+            nextJob: intake.nextJob,
+            acknowledgementText: intake.acknowledgementText,
+            duplicate: intake.duplicate,
+          });
+          return;
+        }
         const events: AgentRunEvent[] = [];
         const routed = await this.inboundRouter.routeSync(
           {
             sessionId: body.sessionId,
             channelId: "webhook",
-            providerEventId: `webhook:${requestId}`,
+            providerEventId: webhookProviderEventId,
             conversationId: body.conversationId ?? "webhook",
             message: body.message,
             responseTarget: { type: "webhook" },
@@ -1374,6 +1426,38 @@ export class HttpServer {
         });
         if (!message) {
           this.json(res, 202, { requestId, status: "ignored" });
+          return;
+        }
+        const slackRuntimeChannel = this.channels.get("slack");
+        if (!slackRuntimeChannel || !slackRuntimeChannel.enabled) {
+          throw new HttpError(409, "slack channel is not enabled");
+        }
+        const intake = await this.assignmentIntake.handle({
+          channelId: message.channelId,
+          providerEventId: message.providerEventId,
+          conversationId: message.conversationId,
+          senderId: message.senderId,
+          message: message.message,
+          rawPayload: message.rawPayload,
+        });
+        if (intake.kind === "assignment_created") {
+          const target =
+            message.responseTarget?.type === "slack_thread"
+              ? message.responseTarget
+              : undefined;
+          if (target && !intake.duplicate) {
+            await this.slack.sendMessage({
+              channel: target.channel,
+              threadTs: target.threadTs,
+              text: intake.acknowledgementText,
+            });
+          }
+          this.json(res, 202, {
+            requestId,
+            status: "assignment_created",
+            assignmentId: intake.assignment.assignment.id,
+            duplicate: intake.duplicate,
+          });
           return;
         }
         const routed = this.inboundRouter.routeAsync(message, {

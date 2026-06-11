@@ -28,6 +28,7 @@ import {
 } from "./self-evolution/proposals.ts";
 import { AutonomousAssignmentService } from "./assignments/service.ts";
 import { registerAssignmentTools } from "./assignments/tools.ts";
+import { AssignmentIntakeService } from "./assignments/intake.ts";
 import {
   ASSIGNMENT_WAKEUP_JOB_NAME,
   AssignmentWakeupPlanner,
@@ -125,6 +126,10 @@ const assignmentWakeups = new AssignmentWakeupPlanner({
   scheduler,
   orchestration,
 });
+const assignmentIntake = new AssignmentIntakeService(
+  assignments,
+  assignmentWakeups
+);
 scheduler.registerHandler(ASSIGNMENT_WAKEUP_JOB_NAME, (job) =>
   assignmentWakeups.handleScheduledWakeup(job)
 );
@@ -175,6 +180,7 @@ const email = new EmailChannelService({
   }),
   sendTransport: emailSendTransport,
   logger,
+  assignmentIntake,
 });
 const runtimeChannels = new RuntimeChannelCapabilities();
 runtimeChannels.registerLifecycle("email", email);
@@ -196,7 +202,8 @@ const server = new HttpServer(
   memoryMaintenance,
   runtimeChannels,
   assignments,
-  assignmentWakeups
+  assignmentWakeups,
+  assignmentIntake
 );
 
 await memory.backfillEmbeddings();

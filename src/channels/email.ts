@@ -4,6 +4,7 @@ import type { JsonValue } from "../shared/types.ts";
 import type { InboundChannelMessage, InboundChannelRouter } from "./inbound.ts";
 import type { InboundResponseDispatcher } from "./inbound-response-dispatcher.ts";
 import type { ChannelRegistry } from "./registry.ts";
+import type { AssignmentIntakeService } from "../assignments/intake.ts";
 import type {
   EmailInboundMessage,
   EmailPollTransport,
@@ -45,6 +46,7 @@ export class EmailChannelService {
   private readonly pollTransport: EmailPollTransport;
   private readonly sendTransport: EmailSendTransport;
   private readonly logger: Logger;
+  private readonly assignmentIntake?: AssignmentIntakeService;
   private timer?: NodeJS.Timeout;
   private running = false;
   private readonly statusState: EmailChannelStatus;
@@ -57,6 +59,7 @@ export class EmailChannelService {
     pollTransport: EmailPollTransport;
     sendTransport: EmailSendTransport;
     logger: Logger;
+    assignmentIntake?: AssignmentIntakeService;
   }) {
     this.config = input.config;
     this.channels = input.channels;
@@ -65,6 +68,7 @@ export class EmailChannelService {
     this.pollTransport = input.pollTransport;
     this.sendTransport = input.sendTransport;
     this.logger = input.logger.child({ component: "email_channel" });
+    this.assignmentIntake = input.assignmentIntake;
     this.statusState = {
       enabled: false,
       running: false,
@@ -130,14 +134,31 @@ export class EmailChannelService {
         await this.pollTransport.markSeen(message.providerMessageId);
         continue;
       }
-      const routed = this.inboundRouter.routeAsync(
-        toInboundChannelMessage(message),
-        {
-          onComplete: async (record) => {
-            await this.responseDispatcher.onComplete(record);
-          },
+      const inboundMessage = toInboundChannelMessage(message);
+      if (this.assignmentIntake) {
+        const intake = await this.assignmentIntake.handle({
+          channelId: inboundMessage.channelId,
+          providerEventId: inboundMessage.providerEventId,
+          conversationId: inboundMessage.conversationId,
+          senderId: inboundMessage.senderId,
+          message: inboundMessage.message,
+          rawPayload: inboundMessage.rawPayload,
+        });
+        if (intake.kind === "assignment_created") {
+          if (intake.duplicate) {
+            summary.duplicateCount += 1;
+          } else {
+            summary.acceptedCount += 1;
+          }
+          await this.pollTransport.markSeen(message.providerMessageId);
+          continue;
         }
-      );
+      }
+      const routed = this.inboundRouter.routeAsync(inboundMessage, {
+        onComplete: async (record) => {
+          await this.responseDispatcher.onComplete(record);
+        },
+      });
       if (routed.duplicate) {
         summary.duplicateCount += 1;
       } else {

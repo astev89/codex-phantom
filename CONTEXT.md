@@ -104,6 +104,14 @@ _Avoid_: Run status, scheduler status
 The channel/API interpretation step that decides whether an inbound operator request creates a one-shot run or a durable autonomous assignment, using explicit persistence intent first, configured defaults second, and confirmation only for ambiguous high-authority cases.
 _Avoid_: Every message is an assignment, hidden background work
 
+**Assignment intake service**:
+The assignment module interface that classifies explicit persistence intent, creates durable autonomous assignments from channel/API requests, schedules the first wakeup, and returns adapter-ready acknowledgement data while preserving one-shot behavior by default.
+_Avoid_: Route keyword hack, every inbound message becomes background work
+
+**Assignment acceptance acknowledgement**:
+A minimal channel/API confirmation that an autonomous assignment was created and queued for its first wakeup, distinct from full progress, blocked, terminal, or mutation notifications.
+_Avoid_: Silent background intake, full notification lifecycle
+
 **Assignment policy**:
 The explicit limits and authorities for an autonomous assignment, including autonomy level, wakeup budget, runtime budget, failure budget, idle expiry, tool-call limits, notification cadence, self-evolution authority, and approval gates.
 _Avoid_: Prompt-only guardrail, global daemon setting
@@ -194,6 +202,8 @@ _Avoid_: Implemented feature, feature complete
 - Autonomous assignment summaries absorb useful subagent results so future wakeups do not require full transcript replay.
 - **Assignment intake** creates autonomous assignments from explicit persistence intent such as "keep working", "continue until", "monitor", "check back later", or explicit API fields.
 - Slack mentions default to one-shot runs unless **Assignment intake** detects persistence intent or channel/operator policy says otherwise.
+- **Assignment intake** is implemented through the **Assignment intake service** so HTTP, Slack, Email, and webhook adapters do not own assignment creation policy.
+- **Assignment acceptance acknowledgement** confirms intake without expanding into the full **Assignment notification** lifecycle.
 - `evolve` and `operate` autonomy require explicit delegation language or an operator default policy.
 - **Assignment policy** defaults v1 trusted local/dev assignments to `execute`, 5 wakeups, 60 total runtime minutes, 2 consecutive failures, 24 max idle hours, planner-chosen wakeups capped from 5 minutes to 4 hours, and progress notifications at create/start/progress/block/failure/completion plus at least every 30 active minutes.
 - **Assignment policy** enables broad self/project mutation only at `evolve` or higher, and keeps external destructive actions, secrets/auth changes, spending outside budget, and `operate` actions behind explicit delegation or approval gates.
@@ -222,9 +232,9 @@ _Avoid_: Implemented feature, feature complete
 - **Assignment event retention** gives assignment events `importance`, `compactable`, and optional `expiresAt` metadata from v1, even if maintenance compaction lands later.
 - **Assignment event retention** keeps terminal summaries, final outcomes, policy changes, controls, child links, run links, mutation links, completion, and reopen events long-term.
 - High-frequency assignment progress/detail events may be compacted into summary events; autonomous mutation ledger entries are not compacted while rollback is promised.
-- The first **Autonomous assignment** core plus wakeup planner slices deliberately exclude several **Deferred assignment slices**: autonomous mutation execution, Slack automatic assignment intake, child assignment execution, LLM planner policy, event compaction maintenance, full dashboard, production deployment automation, autonomous filesystem/project mutation, and changes to existing one-shot channel behavior.
+- The first **Autonomous assignment** core plus wakeup planner and intake slices deliberately exclude several **Deferred assignment slices**: autonomous mutation execution, child assignment execution, LLM planner policy, event compaction maintenance, full dashboard, production deployment automation, autonomous filesystem/project mutation, and changes to existing one-shot channel behavior.
 - **Deferred assignment slices** remain planned follow-up work rather than permanent exclusions.
-- **Deferred assignment slices** should proceed in this order after assignment wakeup planner: channel assignment intake, delegated mutation ledger, delegated autonomous self-evolution, child assignment execution, retention/compaction maintenance, then operator UX.
+- **Deferred assignment slices** should proceed in this order after assignment channel intake: delegated mutation ledger, delegated autonomous self-evolution, child assignment execution, retention/compaction maintenance, then operator UX.
 - Public unauthenticated assignment endpoints, heavy UI changes, assignment templates, and multi-agent dashboards are not part of the v1 autonomous assignment surface.
 - `waiting` means Phantom knows when or how to resume; `blocked` means it cannot make meaningful progress without new information or access.
 - **Email channel parity** treats inbound IMAP and outbound SMTP as one all-or-nothing enabled capability; partial inbound-only or outbound-only modes are not parity-complete.

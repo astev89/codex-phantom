@@ -10,6 +10,7 @@ import type {
   CreateAssignmentInput,
 } from "../assignments/types.ts";
 import { ASSIGNMENT_AUTONOMY_LEVELS } from "../assignments/types.ts";
+import type { AssignmentIntakeCommand } from "../assignments/intake.ts";
 import type {
   CreateSelfEvolutionProposalInput,
   SelfEvolutionRiskClass,
@@ -31,6 +32,7 @@ export type ChatMessageInput = {
   sessionId?: string;
   conversationId?: string;
   message: string;
+  assignment?: AssignmentIntakeCommand;
   attachments?: Array<{
     name: string;
     contentType: string;
@@ -142,6 +144,7 @@ export function validateChatBody(input: unknown): ChatMessageInput {
     sessionId: optionalString(value.sessionId),
     conversationId: optionalString(value.conversationId),
     message,
+    assignment: validateAssignmentIntakeCommand(value.assignment),
     attachments: validateAttachments(value.attachments),
     attachmentIds: optionalStringArray(value.attachmentIds, "attachmentIds"),
     subagents: validateSubagents(value.subagents),
@@ -507,6 +510,30 @@ function validateAssignmentPolicyPatch(
       "wakeupDelayMaxMinutes"
     ),
     notificationCadence,
+  };
+}
+
+function validateAssignmentIntakeCommand(
+  input: unknown
+): AssignmentIntakeCommand | undefined {
+  if (input === undefined || input === null) {
+    return undefined;
+  }
+  const value = asRecord(input, "assignment");
+  return {
+    create:
+      value.create === undefined
+        ? undefined
+        : requireBoolean(value.create, "assignment.create"),
+    title: optionalString(value.title),
+    autonomyLevel:
+      value.autonomyLevel === undefined
+        ? undefined
+        : requireAssignmentAutonomyLevel(
+            value.autonomyLevel,
+            "assignment.autonomyLevel"
+          ),
+    policy: validateAssignmentPolicyPatch(value.policy),
   };
 }
 
