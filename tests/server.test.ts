@@ -1092,7 +1092,30 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       }
     );
     assert.equal(assignmentControlTrailingSlash.status, 200);
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    const assignmentWakeupJobsJson = await eventually(
+      async () => {
+        const response = await fetch(`${baseUrl}/scheduler/jobs`, {
+          headers: {
+            Authorization: `Bearer ${config.operatorBearerToken}`,
+          },
+        });
+        return (await response.json()) as {
+          jobs: Array<{ name: string; status: string; lastRunId?: string }>;
+        };
+      },
+      (value) =>
+        value.jobs.some(
+          (job) =>
+            job.name === ASSIGNMENT_WAKEUP_JOB_NAME &&
+            job.status === "completed" &&
+            job.lastRunId?.startsWith("coord_") === true
+        ) &&
+        value.jobs.some(
+          (job) =>
+            job.name === ASSIGNMENT_WAKEUP_JOB_NAME &&
+            job.status === "scheduled"
+        )
+    );
     const disableFailureNotifications = await fetch(
       `${baseUrl}/admin/assignments/${assignmentCreateJson.assignment.id}/control`,
       {
@@ -1188,18 +1211,6 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assert.ok(assignmentEventTypes.includes("run_linked"));
     assert.ok(assignmentEventTypes.includes("wakeup_run_completed"));
     assert.ok(assignmentEventTypes.includes("wakeup_scheduled"));
-    const assignmentWakeupJobsResponse = await fetch(
-      `${baseUrl}/scheduler/jobs`,
-      {
-        headers: {
-          Authorization: `Bearer ${config.operatorBearerToken}`,
-        },
-      }
-    );
-    const assignmentWakeupJobsJson =
-      (await assignmentWakeupJobsResponse.json()) as {
-        jobs: Array<{ name: string; status: string; lastRunId?: string }>;
-      };
     assert.ok(
       assignmentWakeupJobsJson.jobs.some(
         (job) =>

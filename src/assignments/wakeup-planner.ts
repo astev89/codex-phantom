@@ -196,17 +196,19 @@ export class AssignmentWakeupPlanner {
     assignmentId: string;
     reason: string;
     delayMinutes?: number;
+    force?: boolean;
   }): Promise<JobRecord> {
     const detail = this.assignments.getRequired(input.assignmentId);
     const existing = findScheduledWakeupJob(
       await this.scheduler.list(),
-      input.assignmentId
+      input.assignmentId,
+      { force: input.force === true }
     );
     if (existing) {
       return existing;
     }
     const delayMinutes =
-      input.delayMinutes === 0
+      input.force === true && input.delayMinutes === 0
         ? 0
         : clampDelayMinutes(
             input.delayMinutes ?? DEFAULT_NEXT_WAKEUP_MINUTES,
@@ -241,10 +243,15 @@ export class AssignmentWakeupPlanner {
 
 function findScheduledWakeupJob(
   jobs: JobRecord[],
-  assignmentId: string
+  assignmentId: string,
+  options: { force?: boolean } = {}
 ): JobRecord | null {
+  const now = Date.now();
   for (const job of jobs) {
     if (job.name !== ASSIGNMENT_WAKEUP_JOB_NAME || job.status !== "scheduled") {
+      continue;
+    }
+    if (options.force && Date.parse(job.scheduledAt) > now) {
       continue;
     }
     try {

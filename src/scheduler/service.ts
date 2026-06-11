@@ -204,34 +204,35 @@ export class SchedulerService {
     }
 
     const startedAt = new Date().toISOString();
-    await this.update({
+    const runningJob: JobRecord = {
       ...job,
       status: "running",
       startedAt,
       attemptCount: job.attemptCount + 1,
       failureReason: undefined,
-    });
+    };
+    await this.update(runningJob);
 
     try {
       const handler = this.handlers.get(job.name);
       const result = handler
-        ? await handler({ ...job, status: "running", startedAt })
+        ? await handler(runningJob)
         : await this.orchestration.runCoordinator(
             {
               channelId: "scheduler",
-              conversationId: job.id,
-              message: job.message,
-              subagents: job.subagents,
+              conversationId: runningJob.id,
+              message: runningJob.message,
+              subagents: runningJob.subagents,
             },
             async () => undefined
           );
 
       await this.update({
-        ...job,
+        ...runningJob,
         status: "completed",
         startedAt,
         finishedAt: new Date().toISOString(),
-        attemptCount: job.attemptCount + 1,
+        attemptCount: runningJob.attemptCount,
         lastRunId: result?.runId,
         failureReason: undefined,
       });

@@ -327,6 +327,35 @@ test("AssignmentWakeupPlanner clamps next wakeup delays and skips terminal assig
   assert.equal(runCount, 1);
 });
 
+test("AssignmentWakeupPlanner clamps zero-minute coordinator wakeup requests", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-04-28T14:15:00.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const database = new AppDatabase(":memory:");
+  t.after(() => database.close());
+  const assignments = new AutonomousAssignmentService(database);
+  const runs = new RunGraphStore(database);
+  const { scheduler, jobs } = makeScheduler(now);
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, [
+      "Keep going.\nASSIGNMENT_STATUS: continue\nNEXT_WAKEUP_MINUTES: 0",
+    ]),
+  });
+  const assignment = assignments.create({
+    objective: "Clamp zero",
+    policy: { wakeupDelayMinMinutes: 5, wakeupDelayMaxMinutes: 15 },
+  });
+
+  await planner.wakeNow({
+    assignmentId: assignment.assignment.id,
+    reason: "run",
+  });
+
+  assert.equal(jobs[0]?.delayMs, 5 * 60_000);
+});
+
 test("AssignmentWakeupPlanner skips overlapping wakeups for the same assignment", async (t) => {
   t.mock.timers.enable({ apis: ["Date"] });
   const now = "2026-04-28T14:30:00.000Z";
@@ -419,11 +448,13 @@ test("AssignmentWakeupPlanner reuses pending wakeup jobs for the same assignment
     assignmentId: assignment.assignment.id,
     reason: "first",
     delayMinutes: 0,
+    force: true,
   });
   const second = await planner.scheduleNext({
     assignmentId: assignment.assignment.id,
     reason: "second",
     delayMinutes: 0,
+    force: true,
   });
 
   assert.equal(first.id, second.id);
@@ -431,5 +462,46 @@ test("AssignmentWakeupPlanner reuses pending wakeup jobs for the same assignment
   assert.deepEqual(JSON.parse(jobs[0]?.message ?? "{}"), {
     assignmentId: assignment.assignment.id,
     reason: "first",
+  });
+});
+
+test("AssignmentWakeupPlanner force wakeups do not reuse later scheduled jobs", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-04-28T15:30:00.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const database = new AppDatabase(":memory:");
+  t.after(() => database.close());
+  const assignments = new AutonomousAssignmentService(database);
+  const runs = new RunGraphStore(database);
+  const { scheduler, jobs } = makeScheduler(now);
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, []),
+  });
+  const assignment = assignments.create({
+    objective: "Force despite future job",
+    policy: { wakeupDelayMinMinutes: 5, wakeupDelayMaxMinutes: 240 },
+  });
+
+  const future = await planner.scheduleNext({
+    assignmentId: assignment.assignment.id,
+    reason: "future",
+    delayMinutes: 120,
+  });
+  const forced = await planner.scheduleNext({
+    assignmentId: assignment.assignment.id,
+    reason: "force",
+    delayMinutes: 0,
+    force: true,
+  });
+
+  assert.notEqual(future.id, forced.id);
+  assert.equal(jobs.length, 2);
+  assert.equal(jobs[0]?.delayMs, 120 * 60_000);
+  assert.equal(jobs[1]?.delayMs, 0);
+  assert.deepEqual(JSON.parse(jobs[1]?.message ?? "{}"), {
+    assignmentId: assignment.assignment.id,
+    reason: "force",
   });
 });

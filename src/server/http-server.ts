@@ -742,6 +742,7 @@ export class HttpServer {
               assignmentId,
               reason: body.reason ?? "Operator forced wakeup",
               delayMinutes: 0,
+              force: true,
             });
           } catch (error) {
             const errorMessage =
