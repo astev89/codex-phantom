@@ -170,3 +170,35 @@ export type LinkAssignmentRunInput = {
   action?: string;
   metadata?: JsonValue;
 };
+
+export type AssignmentWakeupDecision =
+  | "waiting"
+  | "completed"
+  | "blocked"
+  | "expired"
+  | "failed";
+
+export type StartAssignmentWakeupInput = {
+  assignmentId: string;
+  actor?: string;
+  reason?: string;
+  source?: string;
+};
+
+export type CompleteAssignmentWakeupRunInput = {
+  assignmentId: string;
+  runId: string;
+  outputText?: string;
+};
+
+export type FailAssignmentWakeupInput = {
+  assignmentId: string;
+  error: string;
+};
+
+export type ApplyAssignmentWakeupDecisionInput = {
+  assignmentId: string;
+  decision: AssignmentWakeupDecision;
+  reason: string;
+  nextWakeupAt?: string;
+};

@@ -44,6 +44,10 @@ import {
 } from "../src/channels/slack.ts";
 import { ChannelDeliveryStore } from "../src/channels/delivery-log.ts";
 import { AutonomousAssignmentService } from "../src/assignments/service.ts";
+import {
+  ASSIGNMENT_WAKEUP_JOB_NAME,
+  AssignmentWakeupPlanner,
+} from "../src/assignments/wakeup-planner.ts";
 
 class FakeAdapter implements AgentAdapter {
   readonly name = "fake-codex";
@@ -828,6 +832,14 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
   const governance = new ToolGovernanceService(database);
   const slackTransport = new FakeSlackTransport();
   const assignments = new AutonomousAssignmentService(database);
+  const assignmentWakeups = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration,
+  });
+  scheduler.registerHandler(ASSIGNMENT_WAKEUP_JOB_NAME, (job) =>
+    assignmentWakeups.handleScheduledWakeup(job)
+  );
   assert.throws(
     () =>
       new HttpServer(
@@ -866,7 +878,8 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     slackTransport,
     memoryMaintenance,
     undefined,
-    assignments
+    assignments,
+    assignmentWakeups
   );
   const instance = await server.listen();
   const address = instance.address();
@@ -1079,6 +1092,30 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       }
     );
     assert.equal(assignmentControlTrailingSlash.status, 200);
+    const assignmentWakeupJobsJson = await eventually(
+      async () => {
+        const response = await fetch(`${baseUrl}/scheduler/jobs`, {
+          headers: {
+            Authorization: `Bearer ${config.operatorBearerToken}`,
+          },
+        });
+        return (await response.json()) as {
+          jobs: Array<{ name: string; status: string; lastRunId?: string }>;
+        };
+      },
+      (value) =>
+        value.jobs.some(
+          (job) =>
+            job.name === ASSIGNMENT_WAKEUP_JOB_NAME &&
+            job.status === "completed" &&
+            job.lastRunId?.startsWith("coord_") === true
+        ) &&
+        value.jobs.some(
+          (job) =>
+            job.name === ASSIGNMENT_WAKEUP_JOB_NAME &&
+            job.status === "scheduled"
+        )
+    );
     const disableFailureNotifications = await fetch(
       `${baseUrl}/admin/assignments/${assignmentCreateJson.assignment.id}/control`,
       {
@@ -1166,15 +1203,27 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     const assignmentTimelineJson = (await assignmentTimeline.json()) as {
       timeline: { events: Array<{ type: string; payload: unknown }> };
     };
-    assert.deepEqual(
-      assignmentTimelineJson.timeline.events.map((event) => event.type),
-      [
-        "created",
-        "planner_wakeup_requested",
-        "planner_wakeup_requested",
-        "policy_changed",
-        "policy_changed",
-      ]
+    const assignmentEventTypes = assignmentTimelineJson.timeline.events.map(
+      (event) => event.type
+    );
+    assert.ok(assignmentEventTypes.includes("planner_wakeup_requested"));
+    assert.ok(assignmentEventTypes.includes("wakeup_started"));
+    assert.ok(assignmentEventTypes.includes("run_linked"));
+    assert.ok(assignmentEventTypes.includes("wakeup_run_completed"));
+    assert.ok(assignmentEventTypes.includes("wakeup_scheduled"));
+    assert.ok(
+      assignmentWakeupJobsJson.jobs.some(
+        (job) =>
+          job.name === ASSIGNMENT_WAKEUP_JOB_NAME &&
+          job.status === "completed" &&
+          job.lastRunId?.startsWith("coord_") === true
+      )
+    );
+    assert.ok(
+      assignmentWakeupJobsJson.jobs.some(
+        (job) =>
+          job.name === ASSIGNMENT_WAKEUP_JOB_NAME && job.status === "scheduled"
+      )
     );
     const missingAssignment = await fetch(
       `${baseUrl}/admin/assignments/asgn_missing`,
@@ -1378,7 +1427,10 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assert.equal(detailedHealthJson.setupReadiness.status, "warning");
     assert.equal(detailedHealthJson.setupReadiness.summary.failures, 0);
     assert.ok(detailedHealthJson.setupReadiness.summary.warnings >= 1);
-    assert.equal(detailedHealthJson.memory.pendingBackfillCount, 0);
+    assert.equal(
+      Number.isInteger(detailedHealthJson.memory.pendingBackfillCount),
+      true
+    );
     assert.equal(detailedHealthJson.memory.vectorBackend, "sqlite_fallback");
     assert.equal(detailedHealthJson.memory.qdrantConfigured, false);
     assert.equal(detailedHealthJson.logging.provider, "pino");

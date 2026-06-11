@@ -18,9 +18,13 @@ import type {
   AssignmentRunLinkRecord,
   AssignmentSource,
   AssignmentTimeline,
+  ApplyAssignmentWakeupDecisionInput,
+  CompleteAssignmentWakeupRunInput,
   CreateAssignmentInput,
+  FailAssignmentWakeupInput,
   LinkAssignmentRunInput,
   ListAssignmentsInput,
+  StartAssignmentWakeupInput,
 } from "./types.ts";
 
 type AssignmentRow = {
@@ -300,52 +304,165 @@ export class AutonomousAssignmentService {
       events: rows.map(toAssignmentEventRecord),
     };
   }
-  linkRun(input: LinkAssignmentRunInput): AssignmentRunLinkRecord {
-    this.getRequired(input.assignmentId);
-    const now = new Date().toISOString();
-    const link: AssignmentRunLinkRecord = {
-      id: createId("asgnrun"),
-      assignmentId: input.assignmentId,
-      runId: input.runId,
-      stepId: normalizeOptionalText(input.stepId),
-      action: normalizeOptionalText(input.action),
-      metadata: input.metadata ?? {},
-      createdAt: now,
-    };
 
+  startWakeup(input: StartAssignmentWakeupInput): AssignmentDetail {
+    const now = new Date().toISOString();
+    const current = this.getRequired(input.assignmentId).assignment;
+    assertWakeable(current.lifecycleState);
     this.database.transaction(() => {
-      this.database.run(
-        `INSERT INTO assignment_run_links (
-          id, assignment_id, run_id, step_id, action, metadata_json, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        link.id,
-        link.assignmentId,
-        link.runId,
-        link.stepId ?? null,
-        link.action ?? null,
-        encodeJson(link.metadata),
-        link.createdAt
-      );
       this.updateAssignment(input.assignmentId, {
+        lifecycle_state: "active",
+        wakeup_count: current.wakeupCount + 1,
+        updated_at: now,
+        last_activity_at: now,
+        terminal_reason: null,
+      });
+      this.recordEvent({
+        assignmentId: input.assignmentId,
+        type: "wakeup_started",
+        importance: "milestone",
+        compactable: false,
+        payload: {
+          actor: normalizeOptionalText(input.actor) ?? "system",
+          reason: normalizeOptionalText(input.reason) ?? null,
+          source: normalizeOptionalText(input.source) ?? "scheduled",
+          wakeupCount: current.wakeupCount + 1,
+        },
+        createdAt: now,
+      });
+    });
+    return this.getRequired(input.assignmentId);
+  }
+
+  completeWakeupRun(input: CompleteAssignmentWakeupRunInput): AssignmentDetail {
+    const now = new Date().toISOString();
+    const link = buildAssignmentRunLink(
+      {
+        assignmentId: input.assignmentId,
+        runId: input.runId,
+        action: "assignment_wakeup",
+        metadata: { outputText: input.outputText ?? null },
+      },
+      now
+    );
+    this.getRequired(input.assignmentId);
+    this.database.transaction(() => {
+      this.insertRunLink(link, now);
+      this.updateAssignment(input.assignmentId, {
+        consecutive_failure_count: 0,
         updated_at: now,
         last_activity_at: now,
       });
       this.recordEvent({
         assignmentId: input.assignmentId,
-        type: "run_linked",
-        importance: "audit",
-        compactable: false,
+        type: "wakeup_run_completed",
+        importance: "detail",
+        compactable: true,
+        expiresAt: hoursFrom(now, 24 * 30),
         payload: {
-          linkId: link.id,
-          runId: link.runId,
-          stepId: link.stepId ?? null,
-          action: link.action ?? null,
+          runId: input.runId,
+          outputText: input.outputText ?? null,
         },
         createdAt: now,
       });
     });
+    return this.getRequired(input.assignmentId);
+  }
+
+  failWakeup(input: FailAssignmentWakeupInput): AssignmentDetail {
+    const now = new Date().toISOString();
+    const current = this.getRequired(input.assignmentId).assignment;
+    this.database.transaction(() => {
+      this.updateAssignment(input.assignmentId, {
+        consecutive_failure_count: current.consecutiveFailureCount + 1,
+        updated_at: now,
+        last_activity_at: now,
+      });
+      this.recordEvent({
+        assignmentId: input.assignmentId,
+        type: "wakeup_failed",
+        importance: "milestone",
+        compactable: false,
+        payload: {
+          error: input.error,
+          consecutiveFailureCount: current.consecutiveFailureCount + 1,
+        },
+        createdAt: now,
+      });
+    });
+    return this.getRequired(input.assignmentId);
+  }
+
+  applyWakeupDecision(
+    input: ApplyAssignmentWakeupDecisionInput
+  ): AssignmentDetail {
+    const now = new Date().toISOString();
+    const transition = wakeupDecisionTransition(input);
+    this.database.transaction(() => {
+      this.updateAssignment(input.assignmentId, {
+        lifecycle_state: transition.lifecycleState,
+        terminal_reason: transition.terminalReason,
+        updated_at: now,
+        last_activity_at: now,
+      });
+      this.recordEvent({
+        assignmentId: input.assignmentId,
+        type: transition.eventType,
+        importance: transition.importance,
+        compactable: false,
+        payload: {
+          decision: input.decision,
+          reason: input.reason,
+          nextWakeupAt: input.nextWakeupAt ?? null,
+        },
+        createdAt: now,
+      });
+    });
+    return this.getRequired(input.assignmentId);
+  }
+
+  linkRun(input: LinkAssignmentRunInput): AssignmentRunLinkRecord {
+    this.getRequired(input.assignmentId);
+    const now = new Date().toISOString();
+    const link = buildAssignmentRunLink(input, now);
+
+    this.database.transaction(() => {
+      this.insertRunLink(link, now);
+    });
 
     return link;
+  }
+
+  private insertRunLink(link: AssignmentRunLinkRecord, now: string): void {
+    this.database.run(
+      `INSERT INTO assignment_run_links (
+        id, assignment_id, run_id, step_id, action, metadata_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      link.id,
+      link.assignmentId,
+      link.runId,
+      link.stepId ?? null,
+      link.action ?? null,
+      encodeJson(link.metadata),
+      link.createdAt
+    );
+    this.updateAssignment(link.assignmentId, {
+      updated_at: now,
+      last_activity_at: now,
+    });
+    this.recordEvent({
+      assignmentId: link.assignmentId,
+      type: "run_linked",
+      importance: "audit",
+      compactable: false,
+      payload: {
+        linkId: link.id,
+        runId: link.runId,
+        stepId: link.stepId ?? null,
+        action: link.action ?? null,
+      },
+      createdAt: now,
+    });
   }
 
   private insertAssignment(assignment: AssignmentRecord): void {
@@ -620,8 +737,76 @@ function transitionForControl(
   }
 }
 
+function buildAssignmentRunLink(
+  input: LinkAssignmentRunInput,
+  now: string
+): AssignmentRunLinkRecord {
+  return {
+    id: createId("asgnrun"),
+    assignmentId: input.assignmentId,
+    runId: input.runId,
+    stepId: normalizeOptionalText(input.stepId),
+    action: normalizeOptionalText(input.action),
+    metadata: input.metadata ?? {},
+    createdAt: now,
+  };
+}
+
+function wakeupDecisionTransition(input: ApplyAssignmentWakeupDecisionInput): {
+  lifecycleState: AssignmentLifecycleState;
+  terminalReason: string | null;
+  eventType: string;
+  importance: AssignmentEventImportance;
+} {
+  switch (input.decision) {
+    case "waiting":
+      return {
+        lifecycleState: "waiting",
+        terminalReason: null,
+        eventType: "wakeup_scheduled",
+        importance: "milestone",
+      };
+    case "completed":
+      return {
+        lifecycleState: "completed",
+        terminalReason: "assignment_completed",
+        eventType: "completed",
+        importance: "audit",
+      };
+    case "blocked":
+      return {
+        lifecycleState: "blocked",
+        terminalReason: null,
+        eventType: "blocked",
+        importance: "audit",
+      };
+    case "expired":
+      return {
+        lifecycleState: "expired",
+        terminalReason: "assignment_expired",
+        eventType: "expired",
+        importance: "audit",
+      };
+    case "failed":
+      return {
+        lifecycleState: "failed",
+        terminalReason: "assignment_failed",
+        eventType: "failed",
+        importance: "audit",
+      };
+  }
+}
+
 function isTerminalLifecycleState(state: AssignmentLifecycleState): boolean {
   return ["completed", "cancelled", "expired", "failed"].includes(state);
+}
+
+function assertWakeable(state: AssignmentLifecycleState): void {
+  if (isTerminalLifecycleState(state)) {
+    throw new AssignmentValidationError(
+      "Terminal assignments must be reopened before they can wake"
+    );
+  }
 }
 
 function toAssignmentRecord(row: AssignmentRow): AssignmentRecord {

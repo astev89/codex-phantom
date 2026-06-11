@@ -38,8 +38,20 @@ type JobRow = {
   last_run_id: string | null;
 };
 
+export type SchedulerJobHandlerResult = {
+  runId?: string;
+};
+
+export type SchedulerJobHandler = (
+  job: JobRecord
+) =>
+  | Promise<SchedulerJobHandlerResult | void>
+  | SchedulerJobHandlerResult
+  | void;
+
 export class SchedulerService {
   private readonly timers = new Map<string, NodeJS.Timeout>();
+  private readonly handlers = new Map<string, SchedulerJobHandler>();
   private running = false;
   private readonly database: AppDatabase;
   private readonly orchestration: OrchestrationService;
@@ -75,6 +87,10 @@ export class SchedulerService {
     return this.running;
   }
 
+  registerHandler(name: string, handler: SchedulerJobHandler): void {
+    this.handlers.set(name, handler);
+  }
+
   async schedule(
     name: string,
     message: string,
@@ -98,7 +114,7 @@ export class SchedulerService {
       status: "scheduled",
       createdAt: now.toISOString(),
       attemptCount: 0,
-      maxAttempts: options.maxAttempts ?? 1
+      maxAttempts: options.maxAttempts ?? 1,
     };
 
     this.database.run(
@@ -153,7 +169,7 @@ export class SchedulerService {
         finishedAt: exhausted ? recoveredAt : undefined,
         failureReason: exhausted
           ? "Job was running during shutdown and attempts are exhausted"
-          : "Recovered after interrupted run"
+          : "Recovered after interrupted run",
       });
     }
   }
@@ -188,36 +204,41 @@ export class SchedulerService {
     }
 
     const startedAt = new Date().toISOString();
-    await this.update({
+    const runningJob: JobRecord = {
       ...job,
       status: "running",
       startedAt,
       attemptCount: job.attemptCount + 1,
-      failureReason: undefined
-    });
+      failureReason: undefined,
+    };
+    await this.update(runningJob);
 
     try {
-      const result = await this.orchestration.runCoordinator(
-        {
-          channelId: "scheduler",
-          conversationId: job.id,
-          message: job.message,
-          subagents: job.subagents
-        },
-        async () => undefined
-      );
+      const handler = this.handlers.get(job.name);
+      const result = handler
+        ? await handler(runningJob)
+        : await this.orchestration.runCoordinator(
+            {
+              channelId: "scheduler",
+              conversationId: runningJob.id,
+              message: runningJob.message,
+              subagents: runningJob.subagents,
+            },
+            async () => undefined
+          );
 
       await this.update({
-        ...job,
+        ...runningJob,
         status: "completed",
         startedAt,
         finishedAt: new Date().toISOString(),
-        attemptCount: job.attemptCount + 1,
-        lastRunId: result.runId,
-        failureReason: undefined
+        attemptCount: runningJob.attemptCount,
+        lastRunId: result?.runId,
+        failureReason: undefined,
       });
     } catch (error) {
-      const failureReason = error instanceof Error ? error.message : "Scheduler run failed";
+      const failureReason =
+        error instanceof Error ? error.message : "Scheduler run failed";
       const shouldRetry = job.attemptCount + 1 < job.maxAttempts;
       await this.update({
         ...job,
@@ -226,9 +247,11 @@ export class SchedulerService {
         startedAt: shouldRetry ? undefined : startedAt,
         finishedAt: shouldRetry ? undefined : new Date().toISOString(),
         scheduledAt: shouldRetry
-          ? new Date(Date.now() + retryDelayMs(job.attemptCount + 1)).toISOString()
+          ? new Date(
+              Date.now() + retryDelayMs(job.attemptCount + 1)
+            ).toISOString()
           : job.scheduledAt,
-        failureReason
+        failureReason,
       });
       if (shouldRetry) {
         const reloaded = await this.get(jobId);
@@ -240,7 +263,10 @@ export class SchedulerService {
   }
 
   private async get(jobId: string): Promise<JobRecord | null> {
-    const row = this.database.get<JobRow>("SELECT * FROM jobs WHERE id = ?", jobId);
+    const row = this.database.get<JobRow>(
+      "SELECT * FROM jobs WHERE id = ?",
+      jobId
+    );
     return row ? toJobRecord(row) : null;
   }
 
@@ -271,7 +297,10 @@ export class SchedulerService {
 }
 
 function retryDelayMs(attemptCount: number): number {
-  return Math.min(60_000, 1_000 * Math.max(1, 2 ** Math.max(0, attemptCount - 1)));
+  return Math.min(
+    60_000,
+    1_000 * Math.max(1, 2 ** Math.max(0, attemptCount - 1))
+  );
 }
 
 function toJobRecord(row: JobRow): JobRecord {
@@ -288,6 +317,6 @@ function toJobRecord(row: JobRow): JobRecord {
     attemptCount: row.attempt_count,
     maxAttempts: row.max_attempts,
     failureReason: row.failure_reason ?? undefined,
-    lastRunId: row.last_run_id ?? undefined
+    lastRunId: row.last_run_id ?? undefined,
   };
 }

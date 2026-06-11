@@ -2,17 +2,36 @@
 
 This is the living status ledger for `codex-phantom`. Update it at the end of each development wave, after tests pass and before handing off or opening a PR.
 
-Last updated: 2026-06-02
-Branch: `jarvis/autonomous-assignment-core`
-Latest verified implementation commit: `f0b42ca fix(assignments): address review findings`
+Last updated: 2026-06-10
+Branch: `jarvis/assignment-wakeup-planner`
+Latest verified implementation commit: `ca5d8ef fix(assignments): harden wakeup scheduling`
 
 ## Current State
 
-`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, durable autonomous assignment records with operator controls and read-only MCP visibility, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, module-backed operator exports, a Codex-native `/chat` product surface with durable/searchable attachment continuity, explicit artifacts, and bounded automatic artifact extraction, hybrid long-term memory with Qdrant-backed vector recall, SQLite fallback, lifecycle controls, restart-safe maintenance, decay/reinforcement-aware ranking, governed self-evolution proposals with mutation module-backed operator-approved apply/rollback for settings changes, governed internal tool bundles with preview, approval, enable, disable, and uninstall lifecycle, and a disabled-by-default Email runtime channel with bounded IMAP polling and audited SMTP replies.
+`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, durable autonomous assignment records with operator controls, read-only MCP visibility, and deterministic scheduler-backed wakeup planning, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, module-backed operator exports, a Codex-native `/chat` product surface with durable/searchable attachment continuity, explicit artifacts, and bounded automatic artifact extraction, hybrid long-term memory with Qdrant-backed vector recall, SQLite fallback, lifecycle controls, restart-safe maintenance, decay/reinforcement-aware ranking, governed self-evolution proposals with mutation module-backed operator-approved apply/rollback for settings changes, governed internal tool bundles with preview, approval, enable, disable, and uninstall lifecycle, and a disabled-by-default Email runtime channel with bounded IMAP polling and audited SMTP replies.
 
 The project is now past its first serious production-hardening pass. It is not yet equivalent to the original Phantom project, but the core runtime is materially safer to run: request sizes are bounded, secrets are rejected in production when defaults are used, outbound model calls have timeouts, scheduler jobs recover deterministically after restarts, MCP events are durably audited, external webhooks are signed, Slack sends retry transient failures, operator-console workflows have browser coverage, and the Docker image runs compiled JavaScript instead of stripped TypeScript.
 
 ## Just Completed
+
+Assignment wakeup planner wave completed locally on 2026-06-10:
+
+- Added a deterministic assignment wakeup planner that runs one coordinator attempt per wakeup, links the run, records retention-aware wakeup events, applies `completed`, `blocked`, `expired`, `failed`, or `waiting` outcomes, and schedules bounded follow-up wakeups.
+- Added assignment service wakeup lifecycle methods so the assignment Module remains the state owner for counters, lifecycle transitions, run links, and retention-aware events.
+- Added scheduler custom job handlers so `assignment.wakeup` jobs run through the planner without changing the jobs schema, while preserving generic scheduler job behavior and `lastRunId` visibility.
+- Changed `force_wakeup` assignment control from placeholder-only to a due-now scheduler job while preserving the existing admin route response shape.
+- Hardened review findings by making wakeup run completion atomic, skipping overlapping in-process wakeups, deduplicating pending wakeup jobs per assignment, and returning an explicit warning when forced wakeup scheduling fails after control persistence.
+
+Verification from this wave:
+
+```bash
+node --experimental-strip-types --test tests/assignment-wakeup-planner.test.ts tests/assignments.test.ts tests/scheduler.test.ts tests/server.test.ts
+npm run typecheck
+npm test
+npm run build
+git diff --check
+GitNexus detect_changes(scope="staged")
+```
 
 Autonomous assignment core wave completed locally on 2026-06-02:
 

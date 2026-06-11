@@ -52,7 +52,7 @@ function makeOrchestration(
   runCoordinator: () => Promise<OrchestrationResult>
 ): OrchestrationService {
   return {
-    runCoordinator
+    runCoordinator,
   } as unknown as OrchestrationService;
 }
 
@@ -71,7 +71,7 @@ test("start recovers stale running jobs back to scheduled deterministically", as
     createdAt: new Date(now - 120_000).toISOString(),
     startedAt: new Date(now - 60_000).toISOString(),
     attemptCount: 1,
-    maxAttempts: 3
+    maxAttempts: 3,
   });
 
   const scheduler = new SchedulerService(
@@ -79,7 +79,7 @@ test("start recovers stale running jobs back to scheduled deterministically", as
     makeOrchestration(async () => ({
       sessionId: "session",
       runId: "run",
-      outputText: "ok"
+      outputText: "ok",
     }))
   );
 
@@ -106,7 +106,7 @@ test("start marks exhausted stale running jobs as failed", async (t) => {
     createdAt: new Date(now - 120_000).toISOString(),
     startedAt: new Date(now - 60_000).toISOString(),
     attemptCount: 3,
-    maxAttempts: 3
+    maxAttempts: 3,
   });
 
   const scheduler = new SchedulerService(
@@ -114,15 +114,20 @@ test("start marks exhausted stale running jobs as failed", async (t) => {
     makeOrchestration(async () => ({
       sessionId: "session",
       runId: "run",
-      outputText: "ok"
+      outputText: "ok",
     }))
   );
 
   await scheduler.start();
 
-  const job = (await scheduler.list()).find((item) => item.id === "job-exhausted");
+  const job = (await scheduler.list()).find(
+    (item) => item.id === "job-exhausted"
+  );
   assert.equal(job?.status, "failed");
-  assert.equal(job?.failureReason, "Job was running during shutdown and attempts are exhausted");
+  assert.equal(
+    job?.failureReason,
+    "Job was running during shutdown and attempts are exhausted"
+  );
   assert.equal(job?.finishedAt, new Date(now).toISOString());
 });
 
@@ -140,7 +145,7 @@ test("retry scheduling uses deterministic exponential backoff", async (t) => {
     scheduledAt: new Date(now + 10_000).toISOString(),
     createdAt: new Date(now - 120_000).toISOString(),
     attemptCount: 2,
-    maxAttempts: 5
+    maxAttempts: 5,
   });
 
   const scheduler = new SchedulerService(
@@ -151,7 +156,9 @@ test("retry scheduling uses deterministic exponential backoff", async (t) => {
   );
 
   await scheduler.start();
-  await (scheduler as unknown as { execute(jobId: string): Promise<void> }).execute("job-retry");
+  await (
+    scheduler as unknown as { execute(jobId: string): Promise<void> }
+  ).execute("job-retry");
 
   const job = (await scheduler.list()).find((item) => item.id === "job-retry");
   assert.equal(job?.status, "scheduled");
@@ -173,7 +180,7 @@ test("retry scheduling caps backoff at sixty seconds", async (t) => {
     scheduledAt: new Date(now + 10_000).toISOString(),
     createdAt: new Date(now - 120_000).toISOString(),
     attemptCount: 7,
-    maxAttempts: 10
+    maxAttempts: 10,
   });
 
   const scheduler = new SchedulerService(
@@ -184,12 +191,70 @@ test("retry scheduling caps backoff at sixty seconds", async (t) => {
   );
 
   await scheduler.start();
-  await (scheduler as unknown as { execute(jobId: string): Promise<void> }).execute("job-retry-cap");
+  await (
+    scheduler as unknown as { execute(jobId: string): Promise<void> }
+  ).execute("job-retry-cap");
 
-  const job = (await scheduler.list()).find((item) => item.id === "job-retry-cap");
+  const job = (await scheduler.list()).find(
+    (item) => item.id === "job-retry-cap"
+  );
   assert.equal(job?.status, "scheduled");
   assert.equal(job?.attemptCount, 8);
   assert.equal(job?.scheduledAt, new Date(now + 60_000).toISOString());
+});
+
+test("registered scheduler handlers execute matching jobs and record run ids", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"] });
+  const now = Date.UTC(2026, 3, 28, 12, 20, 0);
+  t.mock.timers.setTime(now);
+
+  const database = new AppDatabase(":memory:");
+  t.after(() => database.close());
+
+  insertJob(database, {
+    id: "job-assignment-wakeup",
+    status: "scheduled",
+    scheduledAt: new Date(now).toISOString(),
+    createdAt: new Date(now - 1_000).toISOString(),
+    attemptCount: 0,
+    maxAttempts: 1,
+  });
+  database.run(
+    "UPDATE jobs SET name = ?, message = ? WHERE id = ?",
+    "assignment.wakeup",
+    JSON.stringify({ assignmentId: "asgn_123", reason: "test" }),
+    "job-assignment-wakeup"
+  );
+
+  let coordinatorCalled = false;
+  let handledMessage = "";
+  const scheduler = new SchedulerService(
+    database,
+    makeOrchestration(async () => {
+      coordinatorCalled = true;
+      return { sessionId: "session", runId: "generic-run", outputText: "no" };
+    })
+  );
+  scheduler.registerHandler("assignment.wakeup", async (job) => {
+    handledMessage = job.message;
+    return { runId: "coord_assignment_wakeup_1" };
+  });
+
+  await scheduler.start();
+  await (
+    scheduler as unknown as { execute(jobId: string): Promise<void> }
+  ).execute("job-assignment-wakeup");
+
+  const job = (await scheduler.list()).find(
+    (item) => item.id === "job-assignment-wakeup"
+  );
+  assert.equal(coordinatorCalled, false);
+  assert.equal(
+    handledMessage,
+    JSON.stringify({ assignmentId: "asgn_123", reason: "test" })
+  );
+  assert.equal(job?.status, "completed");
+  assert.equal(job?.lastRunId, "coord_assignment_wakeup_1");
 });
 
 test("schedule validation rejects maxAttempts above the allowed upper bound", () => {
@@ -199,7 +264,7 @@ test("schedule validation rejects maxAttempts above the allowed upper bound", ()
         name: "retry-job",
         message: "run me",
         delayMs: 1_000,
-        maxAttempts: 11
+        maxAttempts: 11,
       }),
     /maxAttempts must be less than or equal to 10/
   );
