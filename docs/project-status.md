@@ -4,7 +4,7 @@ This is the living status ledger for `codex-phantom`. Update it at the end of ea
 
 Last updated: 2026-06-11
 Branch: `jarvis/assignment-channel-intake`
-Latest verified implementation commit: pending
+Latest verified implementation commit: `637b869 feat(assignments): add channel assignment intake`
 
 ## Current State
 
