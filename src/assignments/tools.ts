@@ -2,6 +2,15 @@ import type { JsonValue } from "../shared/types.ts";
 import type { ToolRegistry } from "../tools/registry.ts";
 import type { AutonomousAssignmentService } from "./service.ts";
 import type {
+  AutonomousMutationLedger,
+  AutonomousMutationStatus,
+  AutonomousMutationTarget,
+} from "./mutation-ledger.ts";
+import {
+  AUTONOMOUS_MUTATION_STATUSES,
+  AUTONOMOUS_MUTATION_TARGETS,
+} from "./mutation-ledger.ts";
+import type {
   AssignmentAutonomyLevel,
   AssignmentLifecycleState,
   ListAssignmentsInput,
@@ -13,7 +22,8 @@ import {
 
 export function registerAssignmentTools(
   tools: ToolRegistry,
-  assignments: AutonomousAssignmentService
+  assignments: AutonomousAssignmentService,
+  mutations?: AutonomousMutationLedger
 ): void {
   tools.register({
     id: "assignment.list",
@@ -85,6 +95,45 @@ export function registerAssignmentTools(
       };
     },
   });
+
+  if (mutations) {
+    tools.register({
+      id: "assignment.mutations",
+      description:
+        "Read autonomous mutation ledger records for an assignment with optional run, target, status, and limit filters.",
+      scopes: ["read"],
+      kind: "in_process",
+      inputSchema: {
+        type: "object",
+        required: ["assignmentId"],
+        properties: {
+          assignmentId: { type: "string" },
+          runId: { type: "string" },
+          target: { type: "string" },
+          status: { type: "string" },
+          limit: { type: "integer" },
+        },
+      },
+      handler: (input) => {
+        const value = asObject(input);
+        const assignmentId = requiredString(value, "assignmentId");
+        if (!assignments.get(assignmentId)) {
+          throw new Error(
+            `Unknown assignment ${assignmentId}. Use assignment.list to find available assignments.`
+          );
+        }
+        return {
+          mutations: mutations.list({
+            assignmentId,
+            runId: optionalString(value.runId, "runId"),
+            target: optionalMutationTarget(value.target),
+            status: optionalMutationStatus(value.status),
+            limit: optionalPositiveInteger(value.limit, "limit"),
+          }),
+        };
+      },
+    });
+  }
 }
 
 function parseListInput(input: JsonValue): ListAssignmentsInput {
@@ -166,6 +215,38 @@ function optionalLifecycleState(
     throw new Error("lifecycleState must be a valid assignment state");
   }
   return state as AssignmentLifecycleState;
+}
+
+function optionalMutationTarget(
+  value: JsonValue | undefined
+): AutonomousMutationTarget | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (
+    typeof value !== "string" ||
+    !AUTONOMOUS_MUTATION_TARGETS.includes(value as AutonomousMutationTarget)
+  ) {
+    throw new Error(
+      "target must be prompt, memory_policy, tool, role, configuration, or project_file"
+    );
+  }
+  return value as AutonomousMutationTarget;
+}
+
+function optionalMutationStatus(
+  value: JsonValue | undefined
+): AutonomousMutationStatus | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (
+    typeof value !== "string" ||
+    !AUTONOMOUS_MUTATION_STATUSES.includes(value as AutonomousMutationStatus)
+  ) {
+    throw new Error("status must be planned, applied, failed, or rolled_back");
+  }
+  return value as AutonomousMutationStatus;
 }
 
 function optionalAutonomyLevel(

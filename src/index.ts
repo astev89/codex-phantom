@@ -33,6 +33,7 @@ import {
   ASSIGNMENT_WAKEUP_JOB_NAME,
   AssignmentWakeupPlanner,
 } from "./assignments/wakeup-planner.ts";
+import { AutonomousMutationLedger } from "./assignments/mutation-ledger.ts";
 import { CodexAdapter } from "./agent/codex-adapter.ts";
 import { AgentRuntime } from "./agent/runtime.ts";
 import { RunGraphStore } from "./orchestration/run-graph-store.ts";
@@ -63,6 +64,7 @@ const dynamicTools = new DynamicToolRegistry(database, tools);
 const governance = new ToolGovernanceService(database);
 const selfEvolution = new SelfEvolutionProposalStore(database);
 const assignments = new AutonomousAssignmentService(database);
+const assignmentMutations = new AutonomousMutationLedger(database, assignments);
 const runs = new RunGraphStore(database);
 const mcpAudit = new McpAuditStore(database);
 const rolePolicy = loadRolePolicyConfig(config.roleConfigPath);
@@ -105,7 +107,7 @@ tools.register({
       proposedBy: "agent",
     }) as unknown as JsonValue,
 });
-registerAssignmentTools(tools, assignments);
+registerAssignmentTools(tools, assignments, assignmentMutations);
 
 const adapter = new CodexAdapter(config);
 const runtime = new AgentRuntime(config, adapter, sessions, memory, tools);
@@ -203,7 +205,8 @@ const server = new HttpServer(
   runtimeChannels,
   assignments,
   assignmentWakeups,
-  assignmentIntake
+  assignmentIntake,
+  assignmentMutations
 );
 
 await memory.backfillEmbeddings();

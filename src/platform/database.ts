@@ -202,6 +202,33 @@ export class AppDatabase {
         FOREIGN KEY (run_id) REFERENCES runs(run_id)
       );
 
+      CREATE TABLE IF NOT EXISTS assignment_mutations (
+        id TEXT PRIMARY KEY,
+        assignment_id TEXT NOT NULL,
+        run_id TEXT,
+        target TEXT NOT NULL,
+        mutation_type TEXT NOT NULL,
+        autonomy_level TEXT NOT NULL,
+        status TEXT NOT NULL,
+        risk_class TEXT NOT NULL,
+        authorizing_policy_json TEXT NOT NULL,
+        rationale TEXT NOT NULL,
+        before_json TEXT NOT NULL,
+        after_json TEXT NOT NULL,
+        rollback_json TEXT NOT NULL,
+        affected_resources_json TEXT NOT NULL,
+        verification_json TEXT NOT NULL,
+        operator_notification_json TEXT NOT NULL,
+        error_message TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        applied_at TEXT,
+        failed_at TEXT,
+        rolled_back_at TEXT,
+        notified_at TEXT,
+        FOREIGN KEY (assignment_id) REFERENCES assignments(id)
+      );
+
       CREATE TABLE IF NOT EXISTS memory_entries (
         id TEXT PRIMARY KEY,
         category TEXT NOT NULL,
@@ -446,6 +473,11 @@ export class AppDatabase {
       CREATE INDEX IF NOT EXISTS idx_assignment_events_expires_at ON assignment_events(expires_at);
       CREATE INDEX IF NOT EXISTS idx_assignment_run_links_assignment ON assignment_run_links(assignment_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_assignment_run_links_run ON assignment_run_links(run_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_assignment_mutations_assignment ON assignment_mutations(assignment_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_assignment_mutations_run ON assignment_mutations(run_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_assignment_mutations_target ON assignment_mutations(target, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_assignment_mutations_status ON assignment_mutations(status, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_assignment_mutations_created ON assignment_mutations(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_memory_entries_category_created_at ON memory_entries(category, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_memory_lifecycle_links_target ON memory_lifecycle_links(target_memory_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_memory_lifecycle_links_source ON memory_lifecycle_links(source_memory_id, created_at DESC);

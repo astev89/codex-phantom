@@ -24,6 +24,7 @@ function createExportHarness(overrides: Partial<SourceRecords> = {}) {
     governance: [{ source: "governance" }],
     proposals: [{ id: "sep_1", source: "proposal" }],
     mutations: [{ id: "sem_1", source: "mutation" }],
+    autonomousMutations: [{ id: "asgnmut_1", source: "autonomous_mutation" }],
     bundles: [{ id: "tbi_1", source: "bundle" }],
     mcp: [{ source: "mcp" }],
     runs: [{ source: "run_event" }],
@@ -70,6 +71,12 @@ function createExportHarness(overrides: Partial<SourceRecords> = {}) {
       listMutations: (proposalId, limit) => {
         record("mutations", [proposalId, limit]);
         return records.mutations;
+      },
+    },
+    autonomousMutations: {
+      list: (options) => {
+        record("autonomousMutations", [options]);
+        return records.autonomousMutations;
       },
     },
     toolBundles: {
@@ -198,11 +205,17 @@ test("operator export service preserves governance kind tags", async () => {
     { source: "governance" },
     { id: "sep_1", source: "proposal", kind: "self_evolution_proposal" },
     { id: "sem_1", source: "mutation", kind: "self_evolution_mutation" },
+    {
+      id: "asgnmut_1",
+      source: "autonomous_mutation",
+      kind: "autonomous_mutation",
+    },
     { id: "tbi_1", source: "bundle", kind: "tool_bundle_import" },
   ]);
   assert.deepEqual(calls.governance, [[250]]);
   assert.deepEqual(calls.proposals, [[250]]);
   assert.deepEqual(calls.mutations, [[undefined, 250]]);
+  assert.deepEqual(calls.autonomousMutations, [[{ limit: 250 }]]);
   assert.deepEqual(calls.bundles, [[250]]);
 });
 
@@ -246,6 +259,11 @@ test("operator export service uses timeline sources for timeline and unknown sco
     { source: "governance" },
     { id: "sep_1", source: "proposal", kind: "self_evolution_proposal" },
     { id: "sem_1", source: "mutation", kind: "self_evolution_mutation" },
+    {
+      id: "asgnmut_1",
+      source: "autonomous_mutation",
+      kind: "autonomous_mutation",
+    },
     { id: "tbi_1", source: "bundle", kind: "tool_bundle_import" },
   ]);
   assert.deepEqual(calls.requests, [[50]]);
@@ -256,5 +274,6 @@ test("operator export service uses timeline sources for timeline and unknown sco
   assert.deepEqual(calls.governance, [[50]]);
   assert.deepEqual(calls.proposals, [[50]]);
   assert.deepEqual(calls.mutations, [[undefined, 50]]);
+  assert.deepEqual(calls.autonomousMutations, [[{ limit: 50 }]]);
   assert.deepEqual(calls.bundles, [[50]]);
 });

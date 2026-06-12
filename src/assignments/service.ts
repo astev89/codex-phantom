@@ -24,6 +24,7 @@ import type {
   FailAssignmentWakeupInput,
   LinkAssignmentRunInput,
   ListAssignmentsInput,
+  RecordAssignmentMutationEventInput,
   StartAssignmentWakeupInput,
 } from "./types.ts";
 
@@ -447,6 +448,34 @@ export class AutonomousAssignmentService {
     });
 
     return link;
+  }
+
+  recordMutationLedgerEvent(
+    input: RecordAssignmentMutationEventInput
+  ): AssignmentEventRecord {
+    this.getRequired(input.assignmentId);
+    const now = new Date().toISOString();
+    this.updateAssignment(input.assignmentId, {
+      updated_at: now,
+      last_activity_at: now,
+    });
+    return this.recordEvent({
+      assignmentId: input.assignmentId,
+      type: `mutation_${input.status}`,
+      importance: "milestone",
+      compactable: false,
+      payload: {
+        mutationId: input.mutationId,
+        status: input.status,
+        target: input.target,
+        mutationType: input.mutationType,
+        runId: input.runId ?? null,
+        riskClass: input.riskClass,
+        rationale: input.rationale,
+        errorMessage: input.errorMessage ?? null,
+      },
+      createdAt: now,
+    });
   }
 
   private insertRunLink(link: AssignmentRunLinkRecord, now: string): void {

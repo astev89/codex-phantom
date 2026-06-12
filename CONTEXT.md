@@ -208,6 +208,7 @@ _Avoid_: Implemented feature, feature complete
 - **Assignment policy** defaults v1 trusted local/dev assignments to `execute`, 5 wakeups, 60 total runtime minutes, 2 consecutive failures, 24 max idle hours, planner-chosen wakeups capped from 5 minutes to 4 hours, and progress notifications at create/start/progress/block/failure/completion plus at least every 30 active minutes.
 - **Assignment policy** enables broad self/project mutation only at `evolve` or higher, and keeps external destructive actions, secrets/auth changes, spending outside budget, and `operate` actions behind explicit delegation or approval gates.
 - **Delegated autonomous self-evolution** records every autonomous mutation in the **Autonomous mutation ledger**.
+- The **Autonomous mutation ledger** owns autonomous mutation evidence, assignment timeline links, operator read models, export visibility, and read-only MCP visibility; it does not itself execute mutation adapters.
 - If Phantom cannot construct a rollback payload or before snapshot for a mutation class, it cannot autonomously apply that mutation class.
 - **Autonomous assignment** uses an **Assignment step planner** on each wakeup instead of blindly re-running the full objective.
 - **Assignment step planner** chooses one outer next action per wakeup so the autonomous loop remains inspectable.

@@ -10,6 +10,7 @@ import { MetricsStore } from "../src/platform/metrics.ts";
 import { ToolRegistry } from "../src/tools/registry.ts";
 import { AutonomousAssignmentService } from "../src/assignments/service.ts";
 import { registerAssignmentTools } from "../src/assignments/tools.ts";
+import { AutonomousMutationLedger } from "../src/assignments/mutation-ledger.ts";
 
 test("McpServer authenticates without retaining the raw bearer token and records audit metrics", async () => {
   const tools = new ToolRegistry();
@@ -302,12 +303,22 @@ test("McpServer exposes read-only assignment tools with actionable missing-id er
   );
   const database = new AppDatabase(join(dataDir, "assignments.sqlite"));
   const assignments = new AutonomousAssignmentService(database);
+  const mutations = new AutonomousMutationLedger(database, assignments);
   const created = assignments.create({
     objective: "Track autonomous assignment MCP visibility",
     source: { channelId: "slack" },
   });
+  const mutation = mutations.recordPlanned({
+    assignmentId: created.assignment.id,
+    target: "configuration",
+    mutationType: "operator_settings",
+    autonomyLevel: "evolve",
+    authorizingPolicy: { rule: "mcp-test" },
+    rationale: "Expose assignment mutation ledger through MCP.",
+    riskClass: "low",
+  });
   const tools = new ToolRegistry();
-  registerAssignmentTools(tools, assignments);
+  registerAssignmentTools(tools, assignments, mutations);
   const mcp = new McpServer("secret", tools, new MetricsStore());
 
   try {
@@ -334,6 +345,7 @@ test("McpServer exposes read-only assignment tools with actionable missing-id er
     assert.deepEqual(listToolsJson.tools.map((tool) => tool.id).sort(), [
       "assignment.get",
       "assignment.list",
+      "assignment.mutations",
       "assignment.timeline",
     ]);
     assert.equal(
@@ -346,8 +358,12 @@ test("McpServer exposes read-only assignment tools with actionable missing-id er
     const timelineTool = listToolsJson.tools.find(
       (tool) => tool.id === "assignment.timeline"
     );
+    const mutationsTool = listToolsJson.tools.find(
+      (tool) => tool.id === "assignment.mutations"
+    );
     assert.equal(listTool?.inputSchema.properties?.limit?.type, "integer");
     assert.equal(timelineTool?.inputSchema.properties?.limit?.type, "integer");
+    assert.equal(mutationsTool?.inputSchema.properties?.limit?.type, "integer");
 
     const listCall = await mcp.handle(
       new Request("http://localhost/mcp", {
@@ -415,6 +431,28 @@ test("McpServer exposes read-only assignment tools with actionable missing-id er
     };
     assert.equal(timelineCallJson.output.timeline.events[0]?.type, "created");
 
+    const mutationsCall = await mcp.handle(
+      new Request("http://localhost/mcp", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer secret",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          method: "tools/call",
+          params: {
+            name: "assignment.mutations",
+            input: { assignmentId: created.assignment.id },
+          },
+        }),
+      })
+    );
+    assert.equal(mutationsCall.status, 200);
+    const mutationsCallJson = (await mutationsCall.json()) as {
+      output: { mutations: Array<{ id: string }> };
+    };
+    assert.equal(mutationsCallJson.output.mutations[0]?.id, mutation.id);
+
     const missingCall = await mcp.handle(
       new Request("http://localhost/mcp", {
         method: "POST",
@@ -434,6 +472,28 @@ test("McpServer exposes read-only assignment tools with actionable missing-id er
     assert.equal(missingCall.status, 400);
     const missingCallJson = (await missingCall.json()) as { error: string };
     assert.match(missingCallJson.error, /assignment\.list/);
+
+    const missingMutationsCall = await mcp.handle(
+      new Request("http://localhost/mcp", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer secret",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          method: "tools/call",
+          params: {
+            name: "assignment.mutations",
+            input: { assignmentId: "asgn_missing" },
+          },
+        }),
+      })
+    );
+    assert.equal(missingMutationsCall.status, 400);
+    const missingMutationsCallJson = (await missingMutationsCall.json()) as {
+      error: string;
+    };
+    assert.match(missingMutationsCallJson.error, /assignment\.list/);
   } finally {
     database.close();
   }

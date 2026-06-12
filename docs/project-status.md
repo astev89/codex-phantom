@@ -2,17 +2,35 @@
 
 This is the living status ledger for `codex-phantom`. Update it at the end of each development wave, after tests pass and before handing off or opening a PR.
 
-Last updated: 2026-06-11
-Branch: `jarvis/assignment-channel-intake`
-Latest verified implementation commit: `637b869 feat(assignments): add channel assignment intake`
+Last updated: 2026-06-12
+Branch: `jarvis/autonomous-mutation-ledger`
+Latest verified implementation commit: `feat(assignments): add autonomous mutation ledger`
 
 ## Current State
 
-`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, durable autonomous assignment records with operator controls, read-only MCP visibility, deterministic scheduler-backed wakeup planning, explicit channel/API assignment intake, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, module-backed operator exports, a Codex-native `/chat` product surface with durable/searchable attachment continuity, explicit artifacts, and bounded automatic artifact extraction, hybrid long-term memory with Qdrant-backed vector recall, SQLite fallback, lifecycle controls, restart-safe maintenance, decay/reinforcement-aware ranking, governed self-evolution proposals with mutation module-backed operator-approved apply/rollback for settings changes, governed internal tool bundles with preview, approval, enable, disable, and uninstall lifecycle, and a disabled-by-default Email runtime channel with bounded IMAP polling and audited SMTP replies.
+`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, durable autonomous assignment records with operator controls, deterministic scheduler-backed wakeup planning, explicit channel/API assignment intake, assignment-scoped autonomous mutation ledger evidence with read-only MCP/operator/export visibility, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, module-backed operator exports, a Codex-native `/chat` product surface with durable/searchable attachment continuity, explicit artifacts, and bounded automatic artifact extraction, hybrid long-term memory with Qdrant-backed vector recall, SQLite fallback, lifecycle controls, restart-safe maintenance, decay/reinforcement-aware ranking, governed self-evolution proposals with mutation module-backed operator-approved apply/rollback for settings changes, governed internal tool bundles with preview, approval, enable, disable, and uninstall lifecycle, and a disabled-by-default Email runtime channel with bounded IMAP polling and audited SMTP replies.
 
 The project is now past its first serious production-hardening pass. It is not yet equivalent to the original Phantom project, but the core runtime is materially safer to run: request sizes are bounded, secrets are rejected in production when defaults are used, outbound model calls have timeouts, scheduler jobs recover deterministically after restarts, MCP events are durably audited, external webhooks are signed, Slack sends retry transient failures, operator-console workflows have browser coverage, and the Docker image runs compiled JavaScript instead of stripped TypeScript.
 
 ## Just Completed
+
+Autonomous mutation ledger wave completed locally on 2026-06-12:
+
+- Added a deep autonomous mutation ledger Module for assignment-scoped planned, applied, failed, rolled-back, and operator-notified mutation evidence without executing autonomous mutations.
+- Added SQLite persistence for `assignment_mutations` with `asgnmut` ids, bounded read filters, rollback evidence requirements for applied records, and non-compactable assignment timeline milestone links.
+- Added operator-authenticated mutation read routes, global timeline/export visibility, and read-only MCP access through `assignment.mutations`.
+- Kept proposal-based self-evolution mutation behavior separate and unchanged while creating the audit surface needed for future delegated autonomous mutation adapters.
+
+Verification from this wave:
+
+```bash
+node --experimental-strip-types --test tests/assignment-mutation-ledger.test.ts tests/assignments.test.ts tests/server.test.ts tests/mcp.test.ts tests/operator-export.test.ts tests/self-evolution.test.ts tests/self-evolution-mutations.test.ts
+npm run typecheck
+npm test
+npm run build
+git diff --check
+npx gitnexus detect-changes --scope staged --repo codex-phantom
+```
 
 Assignment channel intake wave completed locally on 2026-06-11:
 
@@ -695,6 +713,14 @@ npm run build
 ## Next Tasks
 
 Use `docs/phantom-parity.md` as the canonical production-level parity roadmap. Keep this section limited to immediate handoff notes and proof gaps.
+
+### P1: Autonomous Self-Evolution Execution
+
+Suggested work:
+
+- Add safe delegated autonomous mutation adapters behind assignment policy for the first bounded mutation class.
+- Keep autonomous mutation execution separate from the ledger read model; every successful apply still needs rollback payload or before snapshot evidence.
+- Preserve proposal-based self-evolution apply/rollback behavior as its own governed path.
 
 ### P2: Channel And Parity Polish
 
