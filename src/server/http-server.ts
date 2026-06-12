@@ -82,6 +82,15 @@ import {
   ASSIGNMENT_LIFECYCLE_STATES,
 } from "../assignments/types.ts";
 import { AssignmentIntakeService } from "../assignments/intake.ts";
+import type {
+  AutonomousMutationStatus,
+  AutonomousMutationTarget,
+} from "../assignments/mutation-ledger.ts";
+import {
+  AUTONOMOUS_MUTATION_STATUSES,
+  AUTONOMOUS_MUTATION_TARGETS,
+  AutonomousMutationLedger,
+} from "../assignments/mutation-ledger.ts";
 import { renderOperatorConsole } from "./ui.ts";
 import { renderChatApp } from "./chat-ui.ts";
 import { OperatorSettingsStore } from "./settings.ts";
@@ -138,6 +147,7 @@ export class HttpServer {
   private readonly assignments: AutonomousAssignmentService;
   private readonly assignmentWakeups?: AssignmentWakeupPlanner;
   private readonly assignmentIntake: AssignmentIntakeService;
+  private readonly assignmentMutations: AutonomousMutationLedger;
   private readonly chatArtifacts: ChatArtifactService;
   private readonly governance: ToolGovernanceService;
   private readonly selfEvolution: SelfEvolutionProposalStore;
@@ -171,7 +181,8 @@ export class HttpServer {
     runtimeChannels = new RuntimeChannelCapabilities(),
     assignments?: AutonomousAssignmentService,
     assignmentWakeups?: AssignmentWakeupPlanner,
-    assignmentIntake?: AssignmentIntakeService
+    assignmentIntake?: AssignmentIntakeService,
+    assignmentMutations?: AutonomousMutationLedger
   ) {
     if (!assignments) {
       throw new Error("AutonomousAssignmentService is required");
@@ -232,6 +243,9 @@ export class HttpServer {
     this.assignmentIntake =
       assignmentIntake ??
       new AssignmentIntakeService(assignments, assignmentWakeups);
+    this.assignmentMutations =
+      assignmentMutations ??
+      new AutonomousMutationLedger(database, assignments);
     this.requestAudits = new RequestAuditStore(database);
     this.mcpAudit = new McpAuditStore(database);
     this.operatorExports = new OperatorExportService({
@@ -241,6 +255,7 @@ export class HttpServer {
       slackFeedback: this.slackFeedback,
       governance: this.governance,
       selfEvolution: this.selfEvolution,
+      autonomousMutations: this.assignmentMutations,
       toolBundles: this.toolBundles,
       mcpAudit: this.mcpAudit,
       runEvents: this.database,
@@ -509,9 +524,38 @@ export class HttpServer {
             undefined,
             settings.memoryTimelineLimit
           ),
+          autonomousMutations: this.assignmentMutations
+            .list({
+              limit: settings.memoryTimelineLimit,
+            })
+            .map((mutation) => ({
+              ...mutation,
+              kind: "autonomous_mutation",
+            })),
           toolBundleImports: this.toolBundles.list(
             settings.memoryTimelineLimit
           ),
+        });
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/admin/mutations") {
+        this.requireOperatorAuth(req);
+        this.json(res, 200, {
+          mutations: this.assignmentMutations.list({
+            assignmentId: url.searchParams.get("assignmentId") ?? undefined,
+            runId: url.searchParams.get("runId") ?? undefined,
+            target: parseAutonomousMutationTargetQuery(
+              url.searchParams.get("target")
+            ),
+            status: parseAutonomousMutationStatusQuery(
+              url.searchParams.get("status")
+            ),
+            limit: parseOptionalPositiveIntegerQuery(
+              url.searchParams.get("limit"),
+              "limit"
+            ),
+          }),
         });
         return;
       }
@@ -691,6 +735,40 @@ export class HttpServer {
               url.searchParams.get("parentAssignmentId") ?? undefined,
             sourceChannelId:
               url.searchParams.get("sourceChannelId") ?? undefined,
+            limit: parseOptionalPositiveIntegerQuery(
+              url.searchParams.get("limit"),
+              "limit"
+            ),
+          }),
+        });
+        return;
+      }
+
+      if (
+        req.method === "GET" &&
+        url.pathname.startsWith("/admin/assignments/") &&
+        trimTrailingSlash(url.pathname).endsWith("/mutations")
+      ) {
+        this.requireOperatorAuth(req);
+        const assignmentId = decodeURIComponent(
+          url.pathname
+            .replace("/admin/assignments/", "")
+            .replace("/mutations", "")
+            .replace(/\/$/, "")
+        );
+        if (!this.assignments.get(assignmentId)) {
+          throw new HttpError(404, "Assignment not found");
+        }
+        this.json(res, 200, {
+          mutations: this.assignmentMutations.list({
+            assignmentId,
+            runId: url.searchParams.get("runId") ?? undefined,
+            target: parseAutonomousMutationTargetQuery(
+              url.searchParams.get("target")
+            ),
+            status: parseAutonomousMutationStatusQuery(
+              url.searchParams.get("status")
+            ),
             limit: parseOptionalPositiveIntegerQuery(
               url.searchParams.get("limit"),
               "limit"
@@ -1927,6 +2005,40 @@ function parseAssignmentAutonomyQuery(
     );
   }
   return value as AssignmentAutonomyLevel;
+}
+
+function parseAutonomousMutationTargetQuery(
+  value: string | null
+): AutonomousMutationTarget | undefined {
+  if (!value) {
+    return undefined;
+  }
+  if (
+    !AUTONOMOUS_MUTATION_TARGETS.includes(value as AutonomousMutationTarget)
+  ) {
+    throw new HttpError(
+      400,
+      "target must be prompt, memory_policy, tool, role, configuration, or project_file"
+    );
+  }
+  return value as AutonomousMutationTarget;
+}
+
+function parseAutonomousMutationStatusQuery(
+  value: string | null
+): AutonomousMutationStatus | undefined {
+  if (!value) {
+    return undefined;
+  }
+  if (
+    !AUTONOMOUS_MUTATION_STATUSES.includes(value as AutonomousMutationStatus)
+  ) {
+    throw new HttpError(
+      400,
+      "status must be planned, applied, failed, or rolled_back"
+    );
+  }
+  return value as AutonomousMutationStatus;
 }
 
 function parseOptionalPositiveIntegerQuery(

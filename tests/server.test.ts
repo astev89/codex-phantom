@@ -48,6 +48,7 @@ import {
   ASSIGNMENT_WAKEUP_JOB_NAME,
   AssignmentWakeupPlanner,
 } from "../src/assignments/wakeup-planner.ts";
+import { AutonomousMutationLedger } from "../src/assignments/mutation-ledger.ts";
 
 class FakeAdapter implements AgentAdapter {
   readonly name = "fake-codex";
@@ -833,6 +834,10 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
   const governance = new ToolGovernanceService(database);
   const slackTransport = new FakeSlackTransport();
   const assignments = new AutonomousAssignmentService(database);
+  const assignmentMutations = new AutonomousMutationLedger(
+    database,
+    assignments
+  );
   const assignmentWakeups = new AssignmentWakeupPlanner({
     assignments,
     scheduler,
@@ -880,7 +885,9 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     memoryMaintenance,
     undefined,
     assignments,
-    assignmentWakeups
+    assignmentWakeups,
+    undefined,
+    assignmentMutations
   );
   const instance = await server.listen();
   const address = instance.address();
@@ -999,6 +1006,89 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assert.equal(assignmentCreateJson.assignment.autonomyLevel, "operate");
     assert.equal(assignmentCreateJson.assignment.policy.maxWakeups, 6);
     assert.deepEqual(assignmentCreateJson.runLinks, []);
+    const plannedMutation = assignmentMutations.recordPlanned({
+      assignmentId: assignmentCreateJson.assignment.id,
+      runId: "coord_operator_mutation",
+      target: "configuration",
+      mutationType: "operator_settings",
+      autonomyLevel: "evolve",
+      authorizingPolicy: { rule: "test-policy" },
+      rationale: "Expose mutation evidence in operator surfaces.",
+      riskClass: "low",
+      affectedResources: [{ type: "settings", id: "operator" }],
+    });
+    const appliedMutation = assignmentMutations.recordApplied(
+      plannedMutation.id,
+      {
+        before: { operatorSettings: { dashboardRefreshSeconds: 30 } },
+        after: { operatorSettings: { dashboardRefreshSeconds: 15 } },
+        rollback: { operatorSettings: { dashboardRefreshSeconds: 30 } },
+        verification: { attempted: true, result: "passed" },
+      }
+    );
+
+    const unauthenticatedMutations = await fetch(`${baseUrl}/admin/mutations`);
+    assert.equal(unauthenticatedMutations.status, 401);
+
+    const assignmentMutationsResponse = await fetch(
+      `${baseUrl}/admin/assignments/${assignmentCreateJson.assignment.id}/mutations`,
+      {
+        headers: {
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+      }
+    );
+    assert.equal(assignmentMutationsResponse.status, 200);
+    const assignmentMutationsJson =
+      (await assignmentMutationsResponse.json()) as {
+        mutations: Array<{ id: string; status: string; assignmentId: string }>;
+      };
+    assert.deepEqual(
+      assignmentMutationsJson.mutations.map((mutation) => mutation.id),
+      [appliedMutation.id]
+    );
+    assert.equal(
+      assignmentMutationsJson.mutations[0]?.assignmentId,
+      assignmentCreateJson.assignment.id
+    );
+
+    const globalMutationsResponse = await fetch(
+      `${baseUrl}/admin/mutations?assignmentId=${encodeURIComponent(
+        assignmentCreateJson.assignment.id
+      )}&runId=coord_operator_mutation&target=configuration&status=applied&limit=5`,
+      {
+        headers: {
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+      }
+    );
+    assert.equal(globalMutationsResponse.status, 200);
+    const globalMutationsJson = (await globalMutationsResponse.json()) as {
+      mutations: Array<{ id: string; target: string; status: string }>;
+    };
+    assert.deepEqual(
+      globalMutationsJson.mutations.map((mutation) => ({
+        id: mutation.id,
+        target: mutation.target,
+        status: mutation.status,
+      })),
+      [
+        {
+          id: appliedMutation.id,
+          target: "configuration",
+          status: "applied",
+        },
+      ]
+    );
+    const invalidMutationsLimit = await fetch(
+      `${baseUrl}/admin/mutations?limit=abc`,
+      {
+        headers: {
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+      }
+    );
+    assert.equal(invalidMutationsLimit.status, 400);
 
     const assignmentList = await fetch(
       `${baseUrl}/admin/assignments?lifecycleState=active&sourceChannelId=slack`,
@@ -3606,6 +3696,11 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       governanceAudit: Array<{ toolId: string; action: string }>;
       selfEvolutionProposals: Array<{ id: string; status: string }>;
       selfEvolutionMutations: Array<{ status: string }>;
+      autonomousMutations: Array<{
+        id: string;
+        status: string;
+        kind: string;
+      }>;
       toolBundleImports: Array<{
         id: string;
         status: string;
@@ -3635,6 +3730,14 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assert.ok(
       timelineJson.selfEvolutionMutations.some(
         (mutation) => mutation.status === "rolled_back"
+      )
+    );
+    assert.ok(
+      timelineJson.autonomousMutations.some(
+        (mutation) =>
+          mutation.id === appliedMutation.id &&
+          mutation.status === "applied" &&
+          mutation.kind === "autonomous_mutation"
       )
     );
     assert.ok(
@@ -3778,6 +3881,22 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     const channelExportText = await channelExportResponse.text();
     assert.match(channelExportText, /"channelId":"slack"/);
     assert.match(channelExportText, /"status":"delivered"/);
+
+    const governanceExportResponse = await fetch(
+      `http://127.0.0.1:${port}/admin/export?scope=governance&format=json`,
+      {
+        headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+      }
+    );
+    const governanceExportJson = (await governanceExportResponse.json()) as {
+      items: Array<{ id?: string; kind?: string }>;
+    };
+    assert.ok(
+      governanceExportJson.items.some(
+        (item) =>
+          item.kind === "autonomous_mutation" && item.id === appliedMutation.id
+      )
+    );
 
     const mcpExportResponse = await fetch(
       `http://127.0.0.1:${port}/admin/export?scope=mcp&format=json`,

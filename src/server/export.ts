@@ -69,6 +69,10 @@ type SelfEvolutionExportSource = {
   listMutations(proposalId?: string, limit?: number): unknown[];
 };
 
+type AutonomousMutationExportSource = {
+  list(options?: { limit?: number }): unknown[];
+};
+
 type RunEventExportSource = {
   all(sql: string): unknown[];
 };
@@ -84,6 +88,7 @@ export type OperatorExportServiceOptions = {
   slackFeedback: LimitedListExportSource;
   governance: GovernanceExportSource;
   selfEvolution: SelfEvolutionExportSource;
+  autonomousMutations: AutonomousMutationExportSource;
   toolBundles: LimitedListExportSource;
   mcpAudit: LimitedListExportSource;
   runEvents: RunEventExportSource;
@@ -166,6 +171,12 @@ export class OperatorExportService {
         ).map((mutation) => ({
           ...mutation,
           kind: "self_evolution_mutation",
+        })),
+        ...toExportRecords(
+          this.sources.autonomousMutations.list({ limit })
+        ).map((mutation) => ({
+          ...mutation,
+          kind: "autonomous_mutation",
         })),
         ...toExportRecords(this.sources.toolBundles.list(limit)).map(
           (importRecord) => ({

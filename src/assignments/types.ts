@@ -202,3 +202,21 @@ export type ApplyAssignmentWakeupDecisionInput = {
   reason: string;
   nextWakeupAt?: string;
 };
+
+export type AssignmentMutationMilestone =
+  | "planned"
+  | "applied"
+  | "failed"
+  | "rolled_back";
+
+export type RecordAssignmentMutationEventInput = {
+  assignmentId: string;
+  mutationId: string;
+  status: AssignmentMutationMilestone;
+  target: string;
+  mutationType: string;
+  runId?: string;
+  riskClass: string;
+  rationale: string;
+  errorMessage?: string;
+};
