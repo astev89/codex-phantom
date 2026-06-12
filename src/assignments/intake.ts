@@ -157,27 +157,15 @@ export class AssignmentIntakeService {
     if (!input.providerEventId) {
       return null;
     }
-    const matchingAssignment = this.assignments
-      .list({ sourceChannelId: input.channelId, limit: 100 })
-      .find((assignment) => {
-        const metadata = recordValue(assignment.metadata);
-        const intake = recordValue(metadata?.intake);
-        return intake?.providerEventId === input.providerEventId;
-      });
-    return matchingAssignment
-      ? this.assignments.get(matchingAssignment.id)
-      : null;
+    return this.assignments.findByIntakeProviderEvent({
+      channelId: input.channelId,
+      providerEventId: input.providerEventId,
+    });
   }
 }
 
 function normalizeText(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() !== ""
     ? value.trim()
-    : undefined;
-}
-
-function recordValue(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
     : undefined;
 }

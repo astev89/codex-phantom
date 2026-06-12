@@ -2121,10 +2121,69 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
         source: { channelId: string; conversationId: string };
       };
       nextJob: { name: string };
+      duplicate: boolean;
     };
+    const firstIdempotentAssignmentWebhookResponse = await fetch(
+      `http://127.0.0.1:${port}/channels/webhook`,
+      {
+        method: "POST",
+        headers: {
+          ...signedWebhookHeaders(
+            config.externalChannelSecret,
+            assignmentWebhookBody
+          ),
+          "Idempotency-Key": "hook-assignment-retry",
+        },
+        body: assignmentWebhookBody,
+      }
+    );
+    const duplicateAssignmentWebhookResponse = await fetch(
+      `http://127.0.0.1:${port}/channels/webhook`,
+      {
+        method: "POST",
+        headers: {
+          ...signedWebhookHeaders(
+            config.externalChannelSecret,
+            assignmentWebhookBody
+          ),
+          "Idempotency-Key": "hook-assignment-retry",
+        },
+        body: assignmentWebhookBody,
+      }
+    );
+    const firstIdempotentAssignmentWebhookJson =
+      (await firstIdempotentAssignmentWebhookResponse.json()) as {
+        status: string;
+        assignment: { id: string };
+        duplicate: boolean;
+      };
+    const duplicateAssignmentWebhookJson =
+      (await duplicateAssignmentWebhookResponse.json()) as {
+        status: string;
+        assignment: { id: string };
+        duplicate: boolean;
+      };
     assert.equal(assignmentWebhookResponse.status, 202);
     assert.equal(assignmentWebhookJson.status, "assignment_created");
     assert.match(assignmentWebhookJson.assignment.id, /^asgn_/);
+    assert.equal(assignmentWebhookJson.duplicate, false);
+    assert.equal(duplicateAssignmentWebhookResponse.status, 202);
+    assert.equal(firstIdempotentAssignmentWebhookResponse.status, 202);
+    assert.equal(
+      firstIdempotentAssignmentWebhookJson.status,
+      "assignment_created"
+    );
+    assert.equal(duplicateAssignmentWebhookJson.status, "assignment_created");
+    assert.equal(firstIdempotentAssignmentWebhookJson.duplicate, false);
+    assert.equal(duplicateAssignmentWebhookJson.duplicate, true);
+    assert.equal(
+      duplicateAssignmentWebhookJson.assignment.id,
+      firstIdempotentAssignmentWebhookJson.assignment.id
+    );
+    assert.notEqual(
+      firstIdempotentAssignmentWebhookJson.assignment.id,
+      assignmentWebhookJson.assignment.id
+    );
     assert.equal(assignmentWebhookJson.assignment.source.channelId, "webhook");
     assert.equal(
       assignmentWebhookJson.assignment.source.conversationId,
@@ -2133,6 +2192,29 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assert.equal(
       assignmentWebhookJson.nextJob.name,
       ASSIGNMENT_WAKEUP_JOB_NAME
+    );
+
+    const sessionBackedAssignmentResponse = await fetch(
+      `http://127.0.0.1:${port}/chat/message`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          sessionId: "session-backed-assignment",
+          message: "Keep going on this session-backed task.",
+          assignment: { create: true },
+        }),
+      }
+    );
+    const sessionBackedAssignmentStream =
+      await sessionBackedAssignmentResponse.text();
+    assert.equal(sessionBackedAssignmentResponse.status, 200);
+    assert.match(
+      sessionBackedAssignmentStream,
+      /"conversationId":"session-backed-assignment"/
     );
 
     await fetch(`http://127.0.0.1:${port}/scheduler/jobs`, {

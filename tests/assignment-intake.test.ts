@@ -202,3 +202,68 @@ test("AssignmentIntakeService is idempotent for repeated provider events", async
     database.close();
   }
 });
+
+test("AssignmentIntakeService deduplicates provider events beyond the assignment list window", async () => {
+  const database = new AppDatabase(":memory:");
+  const assignments = new AutonomousAssignmentService(database);
+  const { wakeups, jobs } = makeWakeups();
+  const intake = new AssignmentIntakeService(assignments, wakeups);
+  try {
+    const first = await intake.handle({
+      channelId: "webhook",
+      providerEventId: "evt_old_retry",
+      conversationId: "hook-old",
+      senderId: "webhook",
+      message: "Keep working on this webhook retry until it is complete.",
+      rawPayload: { retry: 1 },
+    });
+    assert.equal(first.kind, "assignment_created");
+    if (first.kind !== "assignment_created") {
+      throw new Error("expected assignment_created");
+    }
+    database.run(
+      "UPDATE assignments SET updated_at = ? WHERE id = ?",
+      "2000-01-01T00:00:00.000Z",
+      first.assignment.assignment.id
+    );
+
+    for (let index = 0; index < 105; index += 1) {
+      assignments.create({
+        objective: `Churn assignment ${index}`,
+        source: {
+          channelId: "webhook",
+          conversationId: `hook-churn-${index}`,
+        },
+        metadata: {
+          intake: {
+            providerEventId: `evt_churn_${index}`,
+            reason: "test_churn",
+          },
+        },
+      });
+    }
+
+    const duplicate = await intake.handle({
+      channelId: "webhook",
+      providerEventId: "evt_old_retry",
+      conversationId: "hook-old",
+      senderId: "webhook",
+      message: "Keep working on this webhook retry until it is complete.",
+      rawPayload: { retry: 2 },
+    });
+
+    assert.equal(duplicate.kind, "assignment_created");
+    if (duplicate.kind !== "assignment_created") {
+      throw new Error("expected assignment_created");
+    }
+    assert.equal(duplicate.duplicate, true);
+    assert.equal(
+      duplicate.assignment.assignment.id,
+      first.assignment.assignment.id
+    );
+    assert.equal(assignments.list({ sourceChannelId: "webhook" }).length, 100);
+    assert.equal(jobs.length, 1);
+  } finally {
+    database.close();
+  }
+});

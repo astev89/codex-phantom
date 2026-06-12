@@ -163,6 +163,22 @@ export class AutonomousAssignmentService {
     return rows.map(toAssignmentRecord);
   }
 
+  findByIntakeProviderEvent(input: {
+    channelId: string;
+    providerEventId: string;
+  }): AssignmentDetail | null {
+    const assignment = this.database.get<AssignmentRow>(
+      `SELECT * FROM assignments
+        WHERE json_extract(source_json, '$.channelId') = ?
+          AND json_extract(metadata_json, '$.intake.providerEventId') = ?
+        ORDER BY updated_at DESC
+        LIMIT 1`,
+      input.channelId,
+      input.providerEventId
+    );
+    return assignment ? this.get(assignment.id) : null;
+  }
+
   get(assignmentId: string): AssignmentDetail | null {
     const assignment = this.database.get<AssignmentRow>(
       "SELECT * FROM assignments WHERE id = ?",

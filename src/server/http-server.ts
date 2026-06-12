@@ -1155,13 +1155,15 @@ export class HttpServer {
         ): void => {
           res.write(formatSseEvent(wire.build(type, payload, options)));
         };
+        const webConversationId =
+          body.conversationId ?? body.sessionId ?? "web-chat";
         emitWire("request.started", {
-          conversationId: body.conversationId ?? "web-chat",
+          conversationId: webConversationId,
           attachmentCount: body.attachments?.length ?? 0,
         });
         const intake = await this.assignmentIntake.handle({
           channelId: "web",
-          conversationId: body.conversationId ?? body.sessionId ?? "web-chat",
+          conversationId: webConversationId,
           senderId: "operator",
           message: body.message,
           rawPayload: body as unknown as JsonValue,
@@ -1213,7 +1215,7 @@ export class HttpServer {
             {
               sessionId: body.sessionId,
               channelId: "web",
-              conversationId: body.conversationId ?? "web-chat",
+              conversationId: webConversationId,
               message: body.message,
               subagents: body.subagents,
               timeoutMs: body.timeoutMs,
@@ -1322,14 +1324,17 @@ export class HttpServer {
           throw new HttpError(401, "Unauthorized");
         }
         const body = validateWebhookBody(parseJsonBody(rawBody));
-        const webhookProviderEventId = `webhook:${requestId}`;
+        const webhookProviderEventId = buildWebhookProviderEventId(
+          req.headers["idempotency-key"],
+          requestId
+        );
         const intake = await this.assignmentIntake.handle({
           channelId: "webhook",
           providerEventId: webhookProviderEventId,
           conversationId: body.conversationId ?? "webhook",
           senderId: "webhook",
           message: body.message,
-          rawPayload: parseJsonBody(rawBody) as JsonValue,
+          rawPayload: body as unknown as JsonValue,
           assignment: body.assignment,
         });
         if (intake.kind === "assignment_created") {
@@ -1352,7 +1357,7 @@ export class HttpServer {
             conversationId: body.conversationId ?? "webhook",
             message: body.message,
             responseTarget: { type: "webhook" },
-            rawPayload: parseJsonBody(rawBody) as JsonValue,
+            rawPayload: body as unknown as JsonValue,
             subagents: body.subagents,
             timeoutMs: body.timeoutMs,
           },
@@ -2117,6 +2122,17 @@ function optionalMultipartField(
 ): string | undefined {
   const value = body.fields.get(field)?.trim();
   return value || undefined;
+}
+
+function buildWebhookProviderEventId(
+  idempotencyKey: string | string[] | undefined,
+  requestId: string
+): string {
+  const key = Array.isArray(idempotencyKey)
+    ? idempotencyKey[0]
+    : idempotencyKey;
+  const normalized = key?.trim();
+  return `webhook:${normalized || requestId}`;
 }
 
 function parseSelfEvolutionActionPath(pathname: string): {
