@@ -42,6 +42,11 @@ test("AutonomousAssignmentService creates an active assignment with default poli
         .activeProgressIntervalMinutes,
       30
     );
+    assert.deepEqual(created.assignment.policy.selfEvolution, {
+      enabled: true,
+      allowedMutationClasses: ["configuration.operator_settings"],
+      maxRiskClass: "medium",
+    });
 
     const timeline = assignments.timeline(created.assignment.id);
     assert.equal(timeline.assignmentId, created.assignment.id);
@@ -185,6 +190,9 @@ test("AutonomousAssignmentService persists context additions and policy changes 
           ...created.assignment.policy.notificationCadence,
           activeProgressIntervalMinutes: 45,
         },
+        selfEvolution: {
+          maxRiskClass: "low",
+        },
       },
     });
     assert.equal(withPolicy.assignment.policy.maxWakeups, 7);
@@ -193,6 +201,11 @@ test("AutonomousAssignmentService persists context additions and policy changes 
         .activeProgressIntervalMinutes,
       45
     );
+    assert.deepEqual(withPolicy.assignment.policy.selfEvolution, {
+      enabled: true,
+      allowedMutationClasses: ["configuration.operator_settings"],
+      maxRiskClass: "low",
+    });
 
     const events = assignments.timeline(created.assignment.id).events;
     const contextEvent = events.find((event) => event.type === "context_added");

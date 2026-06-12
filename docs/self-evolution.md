@@ -1,8 +1,8 @@
 # Governed Self-Evolution
 
-Governed self-evolution lets Codex Phantom change its own behavior under explicit policy, audit, rollback, and operator-interruption controls. ADR-0003 extends the target model beyond proposal-only HITL: autonomous assignments may use delegated autonomous self-evolution when assignment policy grants `evolve` or higher authority.
+Governed self-evolution lets Codex Phantom change its own behavior under explicit policy, audit, rollback, and operator-interruption controls. [ADR-0003](adr/0003-delegate-autonomous-assignments-and-self-evolution.md) extends the target model beyond proposal-only HITL: autonomous assignments may use delegated autonomous self-evolution when assignment policy grants `evolve` or higher authority.
 
-The current implementation is still narrower than that target. Today, Codex Phantom can create auditable proposals and can apply approved operator-settings mutations through operator-authenticated APIs. Prompt, memory policy, tool, role, project-file, and broader configuration mutation classes remain future work.
+The current implementation is still narrower than that target. Today, Codex Phantom can create auditable proposals, apply approved proposal-based operator-settings mutations through operator-authenticated APIs, and apply assignment-authorized autonomous operator-settings mutations for `evolve` assignments. Prompt, memory policy, tool, role, project-file, and broader configuration mutation classes remain future work.
 
 ## Proposal Scope
 
@@ -16,7 +16,7 @@ Supported proposal targets:
 
 Every proposal records a title, rationale, risk class, structured proposed change metadata, optional operator/agent identity, and timestamps. Risk classes are `low`, `medium`, `high`, and `critical`.
 
-Direct mutation remains out of scope for the current implementation slice. Proposal payloads that request immediate apply behavior, such as `applyNow: true` or `mutationMode: "direct"`, are rejected until assignment-scoped delegated mutation support exists.
+Direct proposal mutation remains out of scope. Proposal payloads that request immediate apply behavior, such as `applyNow: true` or `mutationMode: "direct"`, are rejected because proposal review/apply remains separate from assignment-scoped delegated mutation.
 
 ## Operator APIs
 
@@ -80,10 +80,41 @@ curl -X POST http://localhost:3210/admin/self-evolution/proposals/sep_123/rollba
   -d '{"rolledBackBy":"operator"}'
 ```
 
-Current apply support is intentionally narrow. Only `configuration` proposals with `proposedChange.operatorSettings` can apply. The mutation record captures `before`, `after`, and rollback metadata before the operator settings are changed. Prompt, memory policy, tool, role, project-file, and broader runtime configuration proposals remain auditable proposals until autonomous assignment policy and mutation-ledger support add safe mutation classes for them.
+Current proposal apply support is intentionally narrow. Only `configuration` proposals with `proposedChange.operatorSettings` can apply. The mutation record captures `before`, `after`, and rollback metadata before the operator settings are changed. Prompt, memory policy, tool, role, project-file, and broader runtime configuration proposals remain auditable proposals until safe mutation classes are added for them.
 
 Apply and rollback execution lives behind the self-evolution mutation module. HTTP routes validate operator requests and serialize responses; target adapters own mutation validation, before/after/rollback payload construction, failure audit, and rollback effects.
 
+## Assignment-Authorized Autonomous Apply
+
+Autonomous assignments with `autonomyLevel: "evolve"` can apply the first bounded delegated mutation class through assignment admin APIs. This path is separate from proposal apply and writes to the autonomous mutation ledger, not the proposal mutation table.
+
+Apply an autonomous operator-settings mutation:
+
+```bash
+curl -X POST http://localhost:3210/admin/assignments/asgn_123/mutations/apply \
+  -H "Authorization: Bearer $OPERATOR_BEARER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "target": "configuration",
+    "mutationType": "operator_settings",
+    "rationale": "Slow down operator-console refresh while autonomous work is active.",
+    "proposedChange": {
+      "operatorSettings": { "dashboardRefreshSeconds": 12 }
+    }
+  }'
+```
+
+Roll back an applied autonomous mutation:
+
+```bash
+curl -X POST http://localhost:3210/admin/assignments/asgn_123/mutations/asgnmut_123/rollback \
+  -H "Authorization: Bearer $OPERATOR_BEARER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"actor":"operator"}'
+```
+
+The default assignment self-evolution policy allows only low- or medium-risk `configuration.operator_settings` mutations, and only assignments at `evolve` authority may use it. Unsupported classes and malformed settings are rejected without changing settings and are audited as failed autonomous mutation evidence when policy permits the attempt to reach the mutation executor.
+
 ## Agent Tool
 
-The in-process tool `self_evolution.propose` creates the same durable proposal record with `proposedBy: "agent"`. In the current implementation, it does not approve, apply, write files, change prompts, update config, or alter tool policy. Apply and rollback remain operator-authenticated HTTP actions until delegated autonomous self-evolution is implemented through autonomous assignment policy.
+The in-process tool `self_evolution.propose` creates the same durable proposal record with `proposedBy: "agent"`. In the current implementation, it does not approve, apply, write files, change prompts, update config, or alter tool policy. Proposal apply/rollback and assignment-authorized autonomous apply/rollback remain operator-authenticated HTTP actions; read-only MCP assignment mutation tools remain read-only.

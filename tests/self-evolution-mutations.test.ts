@@ -159,6 +159,35 @@ test("self-evolution mutation service records failed apply attempts without muta
     "operatorSettings.dashboardRefreshSeconds must be a positive integer"
   );
 
+  const outOfRange = proposals.create({
+    target: "configuration",
+    title: "Out-of-range operator setting",
+    rationale: "Settings beyond supported bounds should fail before clamping.",
+    riskClass: "low",
+    proposedChange: {
+      summary: "Set an out-of-range memory timeline limit.",
+      operatorSettings: { memoryTimelineLimit: 999 },
+    },
+  });
+  proposals.approve(outOfRange.id, { reviewedBy: "operator" });
+
+  assert.throws(
+    () => service.applyProposal(outOfRange.id, { appliedBy: "operator" }),
+    (error) => {
+      assert.ok(error instanceof SelfEvolutionMutationError);
+      assert.equal(error.code, "apply_failed");
+      assert.match(error.message, /less than or equal to 100/);
+      assert.equal(error.mutation?.status, "failed");
+      return true;
+    }
+  );
+  assert.equal(settings.get().memoryTimelineLimit, 20);
+  assert.equal(proposals.get(outOfRange.id)?.status, "failed");
+  assert.equal(
+    proposals.get(outOfRange.id)?.applyError,
+    "operatorSettings.memoryTimelineLimit must be less than or equal to 100"
+  );
+
   database.close();
 });
 

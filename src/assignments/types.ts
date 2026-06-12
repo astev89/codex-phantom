@@ -57,6 +57,18 @@ export type AssignmentNotificationCadence = {
   activeProgressIntervalMinutes: number;
 };
 
+export type AssignmentSelfEvolutionRiskClass =
+  | "low"
+  | "medium"
+  | "high"
+  | "critical";
+
+export type AssignmentSelfEvolutionPolicy = {
+  enabled: boolean;
+  allowedMutationClasses: string[];
+  maxRiskClass: AssignmentSelfEvolutionRiskClass;
+};
+
 export type AssignmentPolicy = {
   maxWakeups: number;
   maxTotalRuntimeMinutes: number;
@@ -65,12 +77,14 @@ export type AssignmentPolicy = {
   wakeupDelayMinMinutes: number;
   wakeupDelayMaxMinutes: number;
   notificationCadence: AssignmentNotificationCadence;
+  selfEvolution: AssignmentSelfEvolutionPolicy;
 };
 
 export type AssignmentPolicyPatch = Partial<
-  Omit<AssignmentPolicy, "notificationCadence">
+  Omit<AssignmentPolicy, "notificationCadence" | "selfEvolution">
 > & {
   notificationCadence?: Partial<AssignmentNotificationCadence>;
+  selfEvolution?: Partial<AssignmentSelfEvolutionPolicy>;
 };
 
 export type AssignmentSource = {
@@ -218,5 +232,6 @@ export type RecordAssignmentMutationEventInput = {
   runId?: string;
   riskClass: string;
   rationale: string;
+  actor?: string;
   errorMessage?: string;
 };

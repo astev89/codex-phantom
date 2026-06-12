@@ -80,6 +80,7 @@ export type RecordAutonomousMutationInput = {
   rationale: string;
   riskClass: SelfEvolutionRiskClass;
   affectedResources?: JsonValue;
+  actor?: string;
 };
 
 export type RecordAppliedAutonomousMutationInput = {
@@ -99,6 +100,14 @@ export type RecordFailedAutonomousMutationInput =
     rollback?: JsonValue;
     verification?: JsonValue;
   };
+
+export type RecordFailedAutonomousMutationOutcomeInput = {
+  errorMessage: string;
+  before?: JsonValue;
+  after?: JsonValue;
+  rollback?: JsonValue;
+  verification?: JsonValue;
+};
 
 export type ListAutonomousMutationsInput = {
   assignmentId?: string;
@@ -243,7 +252,10 @@ export class AutonomousMutationLedger {
         now,
         id
       );
-      this.recordAssignmentEvent(id, "applied", current);
+      this.recordAssignmentEvent(id, "applied", {
+        ...current,
+        actor: actorFromAuthorizingPolicy(current.authorizingPolicy),
+      });
     });
     return this.getRequired(id);
   }
@@ -297,9 +309,54 @@ export class AutonomousMutationLedger {
     return this.getRequired(id);
   }
 
+  recordFailedOutcome(
+    id: string,
+    input: RecordFailedAutonomousMutationOutcomeInput
+  ): AutonomousMutationRecord {
+    const current = this.getRequired(id);
+    assertTransition(current.status, ["planned"], "failed");
+    const errorMessage = requireText(input.errorMessage, "errorMessage");
+    const now = new Date().toISOString();
+    this.database.transaction(() => {
+      this.database.run(
+        `
+          UPDATE assignment_mutations
+          SET status = 'failed',
+              before_json = ?,
+              after_json = ?,
+              rollback_json = ?,
+              verification_json = ?,
+              error_message = ?,
+              updated_at = ?,
+              failed_at = ?
+          WHERE id = ?
+        `,
+        encodeJson(toJsonOrNull(input.before)),
+        encodeJson(toJsonOrNull(input.after)),
+        encodeJson(toJsonOrNull(input.rollback)),
+        encodeJson(toJsonOrNull(input.verification)),
+        errorMessage,
+        now,
+        now,
+        id
+      );
+      this.recordAssignmentEvent(id, "failed", {
+        assignmentId: current.assignmentId,
+        runId: current.runId,
+        target: current.target,
+        mutationType: current.mutationType,
+        riskClass: current.riskClass,
+        rationale: current.rationale,
+        actor: actorFromAuthorizingPolicy(current.authorizingPolicy),
+        errorMessage,
+      });
+    });
+    return this.getRequired(id);
+  }
+
   recordRolledBack(
     id: string,
-    input: { verification?: JsonValue } = {}
+    input: { verification?: JsonValue; actor?: string } = {}
   ): AutonomousMutationRecord {
     const current = this.getRequired(id);
     assertTransition(current.status, ["applied"], "rolled_back");
@@ -319,7 +376,10 @@ export class AutonomousMutationLedger {
         now,
         id
       );
-      this.recordAssignmentEvent(id, "rolled_back", current);
+      this.recordAssignmentEvent(id, "rolled_back", {
+        ...current,
+        actor: normalizeOptionalText(input.actor),
+      });
     });
     return this.getRequired(id);
   }
@@ -389,6 +449,42 @@ export class AutonomousMutationLedger {
     return rows.map(toAutonomousMutationRecord);
   }
 
+  findNewerApplied(input: {
+    assignmentId: string;
+    target: AutonomousMutationTarget;
+    mutationType: string;
+    appliedAt: string;
+    id: string;
+  }): AutonomousMutationRecord | null {
+    assertTarget(input.target);
+    const row = this.database.get<AutonomousMutationRow>(
+      `
+        SELECT candidate.* FROM assignment_mutations AS candidate
+        JOIN assignment_mutations AS current ON current.id = ?
+        WHERE candidate.assignment_id = ?
+          AND candidate.target = ?
+          AND candidate.mutation_type = ?
+          AND candidate.status = 'applied'
+          AND (
+            candidate.applied_at > ?
+            OR (
+              candidate.applied_at = ?
+              AND candidate.rowid > current.rowid
+            )
+          )
+        ORDER BY candidate.applied_at DESC, candidate.rowid DESC
+        LIMIT 1
+      `,
+      requireText(input.id, "id"),
+      requireText(input.assignmentId, "assignmentId"),
+      input.target,
+      requireText(input.mutationType, "mutationType"),
+      requireText(input.appliedAt, "appliedAt"),
+      requireText(input.appliedAt, "appliedAt")
+    );
+    return row ? toAutonomousMutationRecord(row) : null;
+  }
+
   private getRequired(id: string): AutonomousMutationRecord {
     const mutation = this.get(id);
     if (!mutation) {
@@ -415,6 +511,7 @@ export class AutonomousMutationLedger {
       mutationType: string;
       riskClass: string;
       rationale: string;
+      actor?: string;
       errorMessage?: string;
     }
   ): void {
@@ -427,6 +524,7 @@ export class AutonomousMutationLedger {
       runId: input.runId,
       riskClass: input.riskClass,
       rationale: input.rationale,
+      actor: input.actor,
       errorMessage: input.errorMessage,
     });
   }
@@ -451,6 +549,7 @@ function normalizeBaseInput(
       input.affectedResources === undefined
         ? undefined
         : toJsonValue(input.affectedResources),
+    actor: normalizeOptionalText(input.actor),
   };
 }
 
@@ -516,6 +615,16 @@ function toJsonOrExisting(
 
 function hasJsonEvidence(value: JsonValue | undefined): boolean {
   return value !== undefined && value !== null;
+}
+
+function actorFromAuthorizingPolicy(value: JsonValue): string | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const actor = value.actor;
+  return typeof actor === "string" && actor.trim() !== ""
+    ? actor.trim()
+    : undefined;
 }
 
 function boundLimit(limit: number | undefined, max: number): number {

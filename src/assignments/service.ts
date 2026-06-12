@@ -472,6 +472,7 @@ export class AutonomousAssignmentService {
         runId: input.runId ?? null,
         riskClass: input.riskClass,
         rationale: input.rationale,
+        actor: input.actor ?? null,
         errorMessage: input.errorMessage ?? null,
       },
       createdAt: now,
@@ -622,6 +623,11 @@ export function defaultAssignmentPolicy(): AssignmentPolicy {
       onCompletion: true,
       activeProgressIntervalMinutes: 30,
     },
+    selfEvolution: {
+      enabled: true,
+      allowedMutationClasses: ["configuration.operator_settings"],
+      maxRiskClass: "medium",
+    },
   };
 }
 
@@ -638,12 +644,17 @@ function buildAssignmentPolicyPatch(
 ): AssignmentPolicy {
   const patch = stripUndefined(input ?? {});
   const notificationCadence = stripUndefined(input?.notificationCadence ?? {});
+  const selfEvolution = stripUndefined(input?.selfEvolution ?? {});
   const policy = {
     ...current,
     ...patch,
     notificationCadence: {
       ...current.notificationCadence,
       ...notificationCadence,
+    },
+    selfEvolution: {
+      ...current.selfEvolution,
+      ...selfEvolution,
     },
   };
   validatePositiveInteger(policy.maxWakeups, "maxWakeups");
@@ -673,6 +684,30 @@ function buildAssignmentPolicyPatch(
       "wakeupDelayMinMinutes must be less than or equal to wakeupDelayMaxMinutes"
     );
   }
+  if (typeof policy.selfEvolution.enabled !== "boolean") {
+    throw new AssignmentValidationError(
+      "selfEvolution.enabled must be boolean"
+    );
+  }
+  if (
+    !Array.isArray(policy.selfEvolution.allowedMutationClasses) ||
+    policy.selfEvolution.allowedMutationClasses.some(
+      (item) => typeof item !== "string" || item.trim() === ""
+    )
+  ) {
+    throw new AssignmentValidationError(
+      "selfEvolution.allowedMutationClasses must be non-empty strings"
+    );
+  }
+  if (
+    !["low", "medium", "high", "critical"].includes(
+      policy.selfEvolution.maxRiskClass
+    )
+  ) {
+    throw new AssignmentValidationError(
+      "selfEvolution.maxRiskClass must be low, medium, high, or critical"
+    );
+  }
   return policy;
 }
 
@@ -693,6 +728,14 @@ function hasPolicyPatch(input: AssignmentPolicyPatch | undefined): boolean {
       return false;
     }
     if (key === "notificationCadence") {
+      return (
+        value !== null &&
+        typeof value === "object" &&
+        !Array.isArray(value) &&
+        Object.values(value).some((item) => item !== undefined)
+      );
+    }
+    if (key === "selfEvolution") {
       return (
         value !== null &&
         typeof value === "object" &&

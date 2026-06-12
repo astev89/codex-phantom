@@ -1090,6 +1090,220 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     );
     assert.equal(invalidMutationsLimit.status, 400);
 
+    const autonomousAssignmentCreate = await fetch(
+      `${baseUrl}/admin/assignments`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          objective: "Autonomously tune operator settings",
+          autonomyLevel: "evolve",
+        }),
+      }
+    );
+    assert.equal(autonomousAssignmentCreate.status, 201);
+    const autonomousAssignmentJson =
+      (await autonomousAssignmentCreate.json()) as {
+        assignment: { id: string };
+      };
+    const autonomousApplyBody = {
+      target: "configuration",
+      mutationType: "operator_settings",
+      rationale: "Slow down the operator console from an evolve assignment.",
+      runId: "coord_http_autonomous_mutation",
+      proposedChange: {
+        operatorSettings: { dashboardRefreshSeconds: 14 },
+      },
+    };
+    const unauthenticatedApply = await fetch(
+      `${baseUrl}/admin/assignments/${autonomousAssignmentJson.assignment.id}/mutations/apply`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(autonomousApplyBody),
+      }
+    );
+    assert.equal(unauthenticatedApply.status, 401);
+
+    const autonomousApply = await fetch(
+      `${baseUrl}/admin/assignments/${autonomousAssignmentJson.assignment.id}/mutations/apply`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify(autonomousApplyBody),
+      }
+    );
+    assert.equal(autonomousApply.status, 200);
+    const autonomousApplyJson = (await autonomousApply.json()) as {
+      mutation: {
+        id: string;
+        status: string;
+        assignmentId: string;
+        authorizingPolicy: { actor?: string };
+        rollback: unknown;
+      };
+      assignment: { assignment: { id: string } };
+    };
+    assert.equal(autonomousApplyJson.mutation.status, "applied");
+    assert.equal(
+      autonomousApplyJson.mutation.assignmentId,
+      autonomousAssignmentJson.assignment.id
+    );
+    assert.equal(
+      autonomousApplyJson.assignment.assignment.id,
+      autonomousAssignmentJson.assignment.id
+    );
+    assert.equal(
+      autonomousApplyJson.mutation.authorizingPolicy.actor,
+      "operator"
+    );
+
+    const settingsAfterAutonomousApply = await fetch(
+      `${baseUrl}/admin/settings`,
+      {
+        headers: {
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+      }
+    );
+    assert.equal(settingsAfterAutonomousApply.status, 200);
+    const settingsAfterAutonomousApplyJson =
+      (await settingsAfterAutonomousApply.json()) as {
+        settings: { dashboardRefreshSeconds: number };
+      };
+    assert.equal(
+      settingsAfterAutonomousApplyJson.settings.dashboardRefreshSeconds,
+      14
+    );
+
+    const autonomousAssignmentMutations = await fetch(
+      `${baseUrl}/admin/assignments/${autonomousAssignmentJson.assignment.id}/mutations`,
+      {
+        headers: {
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+      }
+    );
+    assert.equal(autonomousAssignmentMutations.status, 200);
+    const autonomousAssignmentMutationsJson =
+      (await autonomousAssignmentMutations.json()) as {
+        mutations: Array<{ id: string; status: string }>;
+      };
+    assert.deepEqual(
+      autonomousAssignmentMutationsJson.mutations.map((mutation) => ({
+        id: mutation.id,
+        status: mutation.status,
+      })),
+      [{ id: autonomousApplyJson.mutation.id, status: "applied" }]
+    );
+
+    const autonomousTimeline = await fetch(`${baseUrl}/admin/timeline`, {
+      headers: {
+        Authorization: `Bearer ${config.operatorBearerToken}`,
+      },
+    });
+    assert.equal(autonomousTimeline.status, 200);
+    const autonomousTimelineJson = (await autonomousTimeline.json()) as {
+      autonomousMutations: Array<{ id: string; kind: string }>;
+    };
+    assert.ok(
+      autonomousTimelineJson.autonomousMutations.some(
+        (mutation) =>
+          mutation.id === autonomousApplyJson.mutation.id &&
+          mutation.kind === "autonomous_mutation"
+      )
+    );
+
+    const autonomousExport = await fetch(
+      `${baseUrl}/admin/export?scope=timeline`,
+      {
+        headers: {
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+      }
+    );
+    assert.equal(autonomousExport.status, 200);
+    const autonomousExportJson = (await autonomousExport.json()) as {
+      items: Array<{ id: string; kind: string }>;
+    };
+    assert.ok(
+      autonomousExportJson.items.some(
+        (item) =>
+          item.id === autonomousApplyJson.mutation.id &&
+          item.kind === "autonomous_mutation"
+      )
+    );
+
+    const autonomousRollback = await fetch(
+      `${baseUrl}/admin/assignments/${autonomousAssignmentJson.assignment.id}/mutations/${autonomousApplyJson.mutation.id}/rollback`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({}),
+      }
+    );
+    assert.equal(autonomousRollback.status, 200);
+    const autonomousRollbackJson = (await autonomousRollback.json()) as {
+      mutation: { id: string; status: string };
+    };
+    assert.deepEqual(
+      {
+        id: autonomousRollbackJson.mutation.id,
+        status: autonomousRollbackJson.mutation.status,
+      },
+      {
+        id: autonomousApplyJson.mutation.id,
+        status: "rolled_back",
+      }
+    );
+
+    const settingsAfterAutonomousRollback = await fetch(
+      `${baseUrl}/admin/settings`,
+      {
+        headers: {
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+      }
+    );
+    assert.equal(settingsAfterAutonomousRollback.status, 200);
+    const settingsAfterAutonomousRollbackJson =
+      (await settingsAfterAutonomousRollback.json()) as {
+        settings: { dashboardRefreshSeconds: number };
+      };
+    assert.equal(
+      settingsAfterAutonomousRollbackJson.settings.dashboardRefreshSeconds,
+      5
+    );
+
+    const autonomousAssignmentTimeline = await fetch(
+      `${baseUrl}/admin/assignments/${autonomousAssignmentJson.assignment.id}/timeline`,
+      {
+        headers: {
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+      }
+    );
+    assert.equal(autonomousAssignmentTimeline.status, 200);
+    const autonomousAssignmentTimelineJson =
+      (await autonomousAssignmentTimeline.json()) as {
+        timeline: { events: Array<{ type: string; payload: unknown }> };
+      };
+    assert.deepEqual(
+      autonomousAssignmentTimelineJson.timeline.events
+        .filter((event) => event.type.startsWith("mutation_"))
+        .map((event) => (event.payload as { actor?: string | null }).actor),
+      ["operator", "operator", "operator"]
+    );
+
     const assignmentList = await fetch(
       `${baseUrl}/admin/assignments?lifecycleState=active&sourceChannelId=slack`,
       {

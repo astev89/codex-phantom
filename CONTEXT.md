@@ -235,7 +235,7 @@ _Avoid_: Implemented feature, feature complete
 - High-frequency assignment progress/detail events may be compacted into summary events; autonomous mutation ledger entries are not compacted while rollback is promised.
 - The first **Autonomous assignment** core plus wakeup planner and intake slices deliberately exclude several **Deferred assignment slices**: autonomous mutation execution, child assignment execution, LLM planner policy, event compaction maintenance, full dashboard, production deployment automation, autonomous filesystem/project mutation, and changes to existing one-shot channel behavior.
 - **Deferred assignment slices** remain planned follow-up work rather than permanent exclusions.
-- **Deferred assignment slices** should proceed in this order after assignment channel intake: delegated mutation ledger, delegated autonomous self-evolution, child assignment execution, retention/compaction maintenance, then operator UX.
+- **Deferred assignment slices** should proceed in this order after the first delegated autonomous self-evolution execution path: safe mutation adapter expansion, planner-driven mutation decisions, child assignment execution, retention/compaction maintenance, then operator UX.
 - Public unauthenticated assignment endpoints, heavy UI changes, assignment templates, and multi-agent dashboards are not part of the v1 autonomous assignment surface.
 - `waiting` means Phantom knows when or how to resume; `blocked` means it cannot make meaningful progress without new information or access.
 - **Email channel parity** treats inbound IMAP and outbound SMTP as one all-or-nothing enabled capability; partial inbound-only or outbound-only modes are not parity-complete.
@@ -352,7 +352,7 @@ _Avoid_: Implemented feature, feature complete
 > **Domain expert:** "No — they are **Deferred assignment slices**. Slice one builds the durable assignment core so follow-up slices have a stable place to land."
 >
 > **Dev:** "What comes after assignment core?"
-> **Domain expert:** "Proceed through **Deferred assignment slices** in order: wakeup planner, channel intake, mutation ledger, delegated self-evolution, child execution, retention compaction, then operator UX."
+> **Domain expert:** "Proceed through **Deferred assignment slices** in order: wakeup planner, channel intake, mutation ledger, first delegated self-evolution execution, safe mutation adapter expansion, planner mutation decisions, child execution, retention compaction, then operator UX."
 >
 > **Dev:** "Can we group Email conversations by subject?"
 > **Domain expert:** "Only as a fallback — **Email thread identity** should use Message-ID, In-Reply-To, and References when those headers are present."
