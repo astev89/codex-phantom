@@ -21,6 +21,10 @@ import { ChannelRegistry } from "../src/channels/registry.ts";
 import { ChannelDeliveryStore } from "../src/channels/delivery-log.ts";
 import { AppDatabase } from "../src/platform/database.ts";
 import { Logger } from "../src/platform/logger.ts";
+import { AutonomousAssignmentService } from "../src/assignments/service.ts";
+import { AssignmentIntakeService } from "../src/assignments/intake.ts";
+import { ASSIGNMENT_WAKEUP_JOB_NAME } from "../src/assignments/wakeup-planner.ts";
+import type { JobRecord } from "../src/scheduler/service.ts";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -38,6 +42,10 @@ type FakeEmailPollTransport = {
 type FakeEmailSendTransport = {
   send(input: EmailSendInput): Promise<EmailSendResult>;
   close(): Promise<void>;
+};
+
+type ScheduledJob = JobRecord & {
+  delayMs?: number;
 };
 
 type AssertTrue<T extends true> = T;
@@ -258,6 +266,7 @@ async function withEmailChannelService(
     routerBehavior?: "accept" | "duplicate" | "throw";
     hideSeenMessages?: boolean;
     invokeCompletionCallbacks?: boolean;
+    enableAssignmentIntake?: boolean;
   },
   run: (input: {
     service: EmailChannelService;
@@ -266,6 +275,8 @@ async function withEmailChannelService(
     inboundRouter: StubInboundRouter;
     channels: ChannelRegistry;
     database: AppDatabase;
+    assignments: AutonomousAssignmentService;
+    assignmentJobs: ScheduledJob[];
   }) => Promise<void>
 ): Promise<void> {
   const dataDir = await mkdtemp(join(tmpdir(), "codex-phantom-email-service-"));
@@ -292,6 +303,31 @@ async function withEmailChannelService(
   const inboundRouter = new StubInboundRouter(options.routerBehavior, {
     invokeCompletionCallbacks: options.invokeCompletionCallbacks,
   });
+  const assignments = new AutonomousAssignmentService(database);
+  const assignmentJobs: ScheduledJob[] = [];
+  const assignmentIntake = options.enableAssignmentIntake
+    ? new AssignmentIntakeService(assignments, {
+        async scheduleNext(input) {
+          const job: ScheduledJob = {
+            id: `job_${assignmentJobs.length + 1}`,
+            name: ASSIGNMENT_WAKEUP_JOB_NAME,
+            message: JSON.stringify({
+              assignmentId: input.assignmentId,
+              reason: input.reason,
+            }),
+            scheduledAt: new Date().toISOString(),
+            subagents: [],
+            status: "scheduled",
+            createdAt: new Date().toISOString(),
+            attemptCount: 0,
+            maxAttempts: 1,
+            delayMs: input.force ? 0 : (input.delayMinutes ?? 0) * 60_000,
+          };
+          assignmentJobs.push(job);
+          return job;
+        },
+      })
+    : undefined;
   const service = new EmailChannelService({
     config,
     channels,
@@ -300,6 +336,7 @@ async function withEmailChannelService(
     pollTransport,
     sendTransport,
     logger,
+    assignmentIntake,
   });
 
   try {
@@ -313,6 +350,8 @@ async function withEmailChannelService(
       inboundRouter,
       channels,
       database,
+      assignments,
+      assignmentJobs,
     });
   } finally {
     await service.stop();
@@ -419,6 +458,44 @@ test("email channel pollOnce routes inbound messages with deterministic reply me
         references: ["<root@example.com>", "<parent@example.com>"],
         fromMessageProviderId: "provider-thread",
       });
+    }
+  );
+});
+
+test("email channel pollOnce creates assignments for persistent intake messages", async () => {
+  await withEmailChannelService(
+    {
+      channelEnabled: true,
+      enableAssignmentIntake: true,
+      messages: [
+        makeInboundMessage({
+          providerMessageId: "provider-assignment",
+          subject: "Deployment follow-up",
+          text: "Keep working on this deployment until it is complete.",
+        }),
+      ],
+    },
+    async ({
+      service,
+      inboundRouter,
+      pollTransport,
+      assignments,
+      assignmentJobs,
+    }) => {
+      const summary = await service.pollOnce();
+
+      assert.equal(summary.acceptedCount, 1);
+      assert.equal(summary.duplicateCount, 0);
+      assert.equal(inboundRouter.routed.length, 0);
+      assert.deepEqual(pollTransport.seen, ["provider-assignment"]);
+      const [assignment] = assignments.list({ sourceChannelId: "email" });
+      assert.ok(assignment);
+      assert.equal(assignment.source.channelId, "email");
+      assert.equal(assignment.source.userId, "sender@example.com");
+      assert.equal(assignment.source.conversationId, "<parent@example.com>");
+      assert.equal(assignmentJobs.length, 1);
+      assert.equal(assignmentJobs[0]?.name, ASSIGNMENT_WAKEUP_JOB_NAME);
+      assert.equal(assignmentJobs[0]?.delayMs, 0);
     }
   );
 });

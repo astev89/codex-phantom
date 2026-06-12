@@ -352,6 +352,7 @@ test("renderChatApp preserves fenced code blocks and safely injects title data",
   assert.match(html, /withoutCodeBlocks/);
   assert.match(html, /escapeHtml\(code\)/);
   assert.match(html, /CODE_BLOCK_/);
+  assert.match(html, /assignment\.created/);
 });
 
 test("slack delivery retries transient failures and records attempt counts", async () => {
@@ -1489,6 +1490,35 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assert.match(streamText, /"type":"final"/);
     assert.match(streamText, /assistant:hello from web/);
 
+    const assignmentStreamResponse = await fetch(
+      `http://127.0.0.1:${port}/chat/message`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          conversationId: "web-assignment",
+          message: "Monitor this deploy and check back later.",
+          assignment: {
+            create: true,
+            title: "Deploy monitor",
+            policy: { maxWakeups: 3 },
+          },
+        }),
+      }
+    );
+    assert.equal(assignmentStreamResponse.status, 200);
+    const assignmentStreamText = await assignmentStreamResponse.text();
+    assert.match(assignmentStreamText, /event: assignment.created/);
+    assert.match(assignmentStreamText, /"status":"assignment_created"/);
+    assert.match(assignmentStreamText, /"title":"Deploy monitor"/);
+    assert.match(assignmentStreamText, /"channelId":"web"/);
+    assert.match(assignmentStreamText, /"conversationId":"web-assignment"/);
+    assert.match(assignmentStreamText, /"name":"assignment\.wakeup"/);
+    assert.doesNotMatch(assignmentStreamText, /event: agent.event/);
+
     const chatPageResponse = await fetch(`http://127.0.0.1:${port}/chat`, {
       headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
     });
@@ -2067,6 +2097,125 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assert.equal(webhookJson.outputText, "assistant:hello from webhook");
     assert.equal(webhookJson.inboundEvent.channelId, "webhook");
     assert.equal(webhookJson.inboundEvent.status, "completed");
+
+    const assignmentWebhookBody = JSON.stringify({
+      conversationId: "hook-assignment",
+      message: "Keep working on the webhook deploy until it is green.",
+      assignment: { create: true },
+    });
+    const assignmentWebhookResponse = await fetch(
+      `http://127.0.0.1:${port}/channels/webhook`,
+      {
+        method: "POST",
+        headers: signedWebhookHeaders(
+          config.externalChannelSecret,
+          assignmentWebhookBody
+        ),
+        body: assignmentWebhookBody,
+      }
+    );
+    const assignmentWebhookJson = (await assignmentWebhookResponse.json()) as {
+      status: string;
+      assignment: {
+        id: string;
+        source: { channelId: string; conversationId: string };
+      };
+      nextJob: { name: string };
+      duplicate: boolean;
+    };
+    const firstIdempotentAssignmentWebhookResponse = await fetch(
+      `http://127.0.0.1:${port}/channels/webhook`,
+      {
+        method: "POST",
+        headers: {
+          ...signedWebhookHeaders(
+            config.externalChannelSecret,
+            assignmentWebhookBody
+          ),
+          "Idempotency-Key": "hook-assignment-retry",
+        },
+        body: assignmentWebhookBody,
+      }
+    );
+    const duplicateAssignmentWebhookResponse = await fetch(
+      `http://127.0.0.1:${port}/channels/webhook`,
+      {
+        method: "POST",
+        headers: {
+          ...signedWebhookHeaders(
+            config.externalChannelSecret,
+            assignmentWebhookBody
+          ),
+          "Idempotency-Key": "hook-assignment-retry",
+        },
+        body: assignmentWebhookBody,
+      }
+    );
+    const firstIdempotentAssignmentWebhookJson =
+      (await firstIdempotentAssignmentWebhookResponse.json()) as {
+        status: string;
+        assignment: { id: string };
+        duplicate: boolean;
+      };
+    const duplicateAssignmentWebhookJson =
+      (await duplicateAssignmentWebhookResponse.json()) as {
+        status: string;
+        assignment: { id: string };
+        duplicate: boolean;
+      };
+    assert.equal(assignmentWebhookResponse.status, 202);
+    assert.equal(assignmentWebhookJson.status, "assignment_created");
+    assert.match(assignmentWebhookJson.assignment.id, /^asgn_/);
+    assert.equal(assignmentWebhookJson.duplicate, false);
+    assert.equal(duplicateAssignmentWebhookResponse.status, 202);
+    assert.equal(firstIdempotentAssignmentWebhookResponse.status, 202);
+    assert.equal(
+      firstIdempotentAssignmentWebhookJson.status,
+      "assignment_created"
+    );
+    assert.equal(duplicateAssignmentWebhookJson.status, "assignment_created");
+    assert.equal(firstIdempotentAssignmentWebhookJson.duplicate, false);
+    assert.equal(duplicateAssignmentWebhookJson.duplicate, true);
+    assert.equal(
+      duplicateAssignmentWebhookJson.assignment.id,
+      firstIdempotentAssignmentWebhookJson.assignment.id
+    );
+    assert.notEqual(
+      firstIdempotentAssignmentWebhookJson.assignment.id,
+      assignmentWebhookJson.assignment.id
+    );
+    assert.equal(assignmentWebhookJson.assignment.source.channelId, "webhook");
+    assert.equal(
+      assignmentWebhookJson.assignment.source.conversationId,
+      "hook-assignment"
+    );
+    assert.equal(
+      assignmentWebhookJson.nextJob.name,
+      ASSIGNMENT_WAKEUP_JOB_NAME
+    );
+
+    const sessionBackedAssignmentResponse = await fetch(
+      `http://127.0.0.1:${port}/chat/message`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          sessionId: "session-backed-assignment",
+          message: "Keep going on this session-backed task.",
+          assignment: { create: true },
+        }),
+      }
+    );
+    const sessionBackedAssignmentStream =
+      await sessionBackedAssignmentResponse.text();
+    assert.equal(sessionBackedAssignmentResponse.status, 200);
+    assert.match(
+      sessionBackedAssignmentStream,
+      /"conversationId":"session-backed-assignment"/
+    );
 
     await fetch(`http://127.0.0.1:${port}/scheduler/jobs`, {
       method: "POST",
@@ -2868,6 +3017,80 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       finalSlackReply.blocks.some((block) =>
         JSON.stringify(block).includes(slackEventJson.inboundEventId)
       )
+    );
+
+    const slackAssignmentEventBody = JSON.stringify({
+      type: "event_callback",
+      event_id: "EvAssignment123",
+      event: {
+        type: "app_mention",
+        user: "U123",
+        channel: "C123456",
+        text: "<@B999> keep working on the rollout until it is complete",
+        ts: "1713900003.000100",
+        thread_ts: "1713900003.000000",
+      },
+    });
+    const slackAssignmentResponse = await fetch(
+      `http://127.0.0.1:${port}/channels/slack/events`,
+      {
+        method: "POST",
+        headers: signedSlackHeaders(
+          config.slackSigningSecret!,
+          slackAssignmentEventBody
+        ),
+        body: slackAssignmentEventBody,
+      }
+    );
+    const slackAssignmentJson = (await slackAssignmentResponse.json()) as {
+      status: string;
+      assignmentId: string;
+      duplicate: boolean;
+    };
+    assert.equal(slackAssignmentResponse.status, 202);
+    assert.equal(slackAssignmentJson.status, "assignment_created");
+    assert.match(slackAssignmentJson.assignmentId, /^asgn_/);
+    assert.equal(slackAssignmentJson.duplicate, false);
+    assert.ok(
+      slackTransport.sent.some(
+        (message) =>
+          message.channel === "C123456" &&
+          message.threadTs === "1713900003.000000" &&
+          message.text.includes(slackAssignmentJson.assignmentId)
+      )
+    );
+    const slackAssignmentAcknowledgementCount = slackTransport.sent.filter(
+      (message) => message.text.includes(slackAssignmentJson.assignmentId)
+    ).length;
+    const duplicateSlackAssignmentResponse = await fetch(
+      `http://127.0.0.1:${port}/channels/slack/events`,
+      {
+        method: "POST",
+        headers: signedSlackHeaders(
+          config.slackSigningSecret!,
+          slackAssignmentEventBody
+        ),
+        body: slackAssignmentEventBody,
+      }
+    );
+    const duplicateSlackAssignmentJson =
+      (await duplicateSlackAssignmentResponse.json()) as {
+        status: string;
+        assignmentId: string;
+        duplicate: boolean;
+      };
+    assert.equal(duplicateSlackAssignmentResponse.status, 202);
+    assert.equal(duplicateSlackAssignmentJson.status, "assignment_created");
+    assert.equal(
+      duplicateSlackAssignmentJson.assignmentId,
+      slackAssignmentJson.assignmentId
+    );
+    assert.equal(duplicateSlackAssignmentJson.duplicate, true);
+    assert.equal(
+      slackTransport.sent.filter((message) =>
+        message.text.includes(slackAssignmentJson.assignmentId)
+      ).length,
+      slackAssignmentAcknowledgementCount
     );
 
     const interactionPayload = {

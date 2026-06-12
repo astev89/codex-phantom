@@ -2,17 +2,35 @@
 
 This is the living status ledger for `codex-phantom`. Update it at the end of each development wave, after tests pass and before handing off or opening a PR.
 
-Last updated: 2026-06-10
-Branch: `jarvis/assignment-wakeup-planner`
-Latest verified implementation commit: `ca5d8ef fix(assignments): harden wakeup scheduling`
+Last updated: 2026-06-11
+Branch: `jarvis/assignment-channel-intake`
+Latest verified implementation commit: `637b869 feat(assignments): add channel assignment intake`
 
 ## Current State
 
-`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, durable autonomous assignment records with operator controls, read-only MCP visibility, and deterministic scheduler-backed wakeup planning, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, module-backed operator exports, a Codex-native `/chat` product surface with durable/searchable attachment continuity, explicit artifacts, and bounded automatic artifact extraction, hybrid long-term memory with Qdrant-backed vector recall, SQLite fallback, lifecycle controls, restart-safe maintenance, decay/reinforcement-aware ranking, governed self-evolution proposals with mutation module-backed operator-approved apply/rollback for settings changes, governed internal tool bundles with preview, approval, enable, disable, and uninstall lifecycle, and a disabled-by-default Email runtime channel with bounded IMAP polling and audited SMTP replies.
+`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, durable autonomous assignment records with operator controls, read-only MCP visibility, deterministic scheduler-backed wakeup planning, explicit channel/API assignment intake, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, module-backed operator exports, a Codex-native `/chat` product surface with durable/searchable attachment continuity, explicit artifacts, and bounded automatic artifact extraction, hybrid long-term memory with Qdrant-backed vector recall, SQLite fallback, lifecycle controls, restart-safe maintenance, decay/reinforcement-aware ranking, governed self-evolution proposals with mutation module-backed operator-approved apply/rollback for settings changes, governed internal tool bundles with preview, approval, enable, disable, and uninstall lifecycle, and a disabled-by-default Email runtime channel with bounded IMAP polling and audited SMTP replies.
 
 The project is now past its first serious production-hardening pass. It is not yet equivalent to the original Phantom project, but the core runtime is materially safer to run: request sizes are bounded, secrets are rejected in production when defaults are used, outbound model calls have timeouts, scheduler jobs recover deterministically after restarts, MCP events are durably audited, external webhooks are signed, Slack sends retry transient failures, operator-console workflows have browser coverage, and the Docker image runs compiled JavaScript instead of stripped TypeScript.
 
 ## Just Completed
+
+Assignment channel intake wave completed locally on 2026-06-11:
+
+- Added an assignment intake service that classifies explicit persistence intent, creates durable assignments from chat, webhook, Slack, and Email inputs, records source metadata, and schedules a due-now first wakeup through the assignment wakeup planner.
+- Preserved existing one-shot behavior by default: ordinary chat, webhook, Slack, and Email messages still route through their previous coordinator paths unless structured assignment input or persistence language is present.
+- Added visible assignment-created acknowledgements for chat SSE, signed webhook responses, and Slack threads, while keeping the full assignment notification lifecycle deferred.
+- Wired Email polling to create assignments for persistent intake messages without fabricating SMTP completion replies in this slice.
+
+Verification from this wave:
+
+```bash
+node --experimental-strip-types --test tests/assignment-intake.test.ts tests/email-channel.test.ts tests/server.test.ts tests/assignment-wakeup-planner.test.ts
+npm run typecheck
+npm test
+npm run build
+git diff --check
+GitNexus detect_changes(scope="staged")
+```
 
 Assignment wakeup planner wave completed locally on 2026-06-10:
 

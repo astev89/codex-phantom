@@ -403,6 +403,10 @@ export function renderChatApp(agentName: string): string {
               if (state.activeSessionId) localStorage.setItem('codex-phantom.chat.activeSessionId', state.activeSessionId);
               assistant.querySelector('.content').innerHTML = renderMarkdown(event.payload.outputText || assistantText);
             }
+            if (event.type === 'assignment.created') {
+              assistantText = event.payload.acknowledgementText || 'Assignment created';
+              assistant.querySelector('.content').innerHTML = renderMarkdown(assistantText);
+            }
             if (event.type === 'request.completed') {
               document.getElementById('status').textContent = 'Ready';
               broadcastSessionsChanged();
@@ -454,13 +458,17 @@ export function renderChatApp(agentName: string): string {
 }
 
 function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (char) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    "\"": "&quot;",
-    "'": "&#39;"
-  }[char] ?? char));
+  return value.replace(
+    /[&<>"']/g,
+    (char) =>
+      ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+      })[char] ?? char
+  );
 }
 
 function toScriptJson(value: string): string {
