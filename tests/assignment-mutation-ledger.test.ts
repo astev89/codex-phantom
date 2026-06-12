@@ -116,6 +116,10 @@ test("AutonomousMutationLedger records outcomes and enforces rollback evidence f
       messageTs: "1713900000.0",
     });
     assert.match(applied.notifiedAt ?? "", /^\d{4}-\d{2}-\d{2}T/);
+    assert.throws(
+      () => ledger.recordOperatorNotification(applied.id, null),
+      /operatorNotification must be a non-null JSON value/
+    );
 
     const notified = ledger.recordOperatorNotification(applied.id, {
       channelId: "slack",

@@ -329,6 +329,9 @@ export class AutonomousMutationLedger {
     operatorNotification: JsonValue
   ): AutonomousMutationRecord {
     this.getRequired(id);
+    if (!hasJsonEvidence(operatorNotification)) {
+      throw new Error("operatorNotification must be a non-null JSON value");
+    }
     const now = new Date().toISOString();
     this.database.run(
       `
