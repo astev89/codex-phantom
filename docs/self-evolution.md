@@ -140,6 +140,18 @@ curl -X POST http://localhost:3210/admin/assignments/asgn_123/mutations/asgnmut_
 
 The default assignment self-evolution policy allows only low- or medium-risk `configuration.operator_settings` mutations, and only assignments at `evolve` authority may use it. Unsupported classes, disallowed classes, malformed settings, and malformed assignment-policy patches are rejected without changing state and are audited as failed autonomous mutation evidence when policy permits the attempt to reach the mutation executor.
 
+## Planner-Driven Mutation Markers
+
+Assignment wakeups may request one bounded autonomous mutation by returning a single-line marker:
+
+```text
+ASSIGNMENT_MUTATION: {"target":"configuration","mutationType":"operator_settings","rationale":"Slow down refresh while autonomous work is active.","proposedChange":{"operatorSettings":{"dashboardRefreshSeconds":12}}}
+```
+
+Planner-driven mutation still uses the assignment-authorized autonomous executor. The marker is bound to the current assignment and coordinator run id, uses `actor: "planner"`, and must pass the same `evolve` authority, self-evolution allow-list, risk, validation, ledger, and rollback evidence checks as the admin/internal apply route. Failed mutation attempts do not fail the wakeup; the autonomous mutation ledger owns the failure evidence.
+
+This is not MCP write capability. MCP assignment mutation tooling remains read-only, and planner markers only cover mutation classes that already have built-in adapters and explicit assignment policy.
+
 ## Agent Tool
 
 The in-process tool `self_evolution.propose` creates the same durable proposal record with `proposedBy: "agent"`. In the current implementation, it does not approve, apply, write files, change prompts, update config, or alter tool policy. Proposal apply/rollback and assignment-authorized autonomous apply/rollback remain operator-authenticated HTTP actions; read-only MCP assignment mutation tools remain read-only.

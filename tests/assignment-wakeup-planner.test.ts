@@ -2,12 +2,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { AppDatabase } from "../src/platform/database.ts";
 import { AutonomousAssignmentService } from "../src/assignments/service.ts";
+import { AutonomousMutationExecutor } from "../src/assignments/autonomous-mutations.ts";
+import { AutonomousMutationLedger } from "../src/assignments/mutation-ledger.ts";
 import {
   ASSIGNMENT_WAKEUP_JOB_NAME,
   AssignmentWakeupPlanner,
 } from "../src/assignments/wakeup-planner.ts";
 import { RunGraphStore } from "../src/orchestration/run-graph-store.ts";
 import type { OrchestrationService } from "../src/orchestration/service.ts";
+import { OperatorSettingsStore } from "../src/server/settings.ts";
 import type { JobRecord } from "../src/scheduler/service.ts";
 
 type ScheduledJob = JobRecord & {
@@ -144,6 +147,240 @@ test("AssignmentWakeupPlanner runs a wakeup, links the run, and schedules the ne
       "wakeup_scheduled",
     ]
   );
+});
+
+test("AssignmentWakeupPlanner applies allowed autonomous mutation markers through the executor", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-06-16T12:00:00.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const database = new AppDatabase(":memory:");
+  t.after(() => database.close());
+  const assignments = new AutonomousAssignmentService(database);
+  const ledger = new AutonomousMutationLedger(database, assignments);
+  const settings = new OperatorSettingsStore(database);
+  const executor = new AutonomousMutationExecutor({
+    assignments,
+    ledger,
+    settings,
+  });
+  const runs = new RunGraphStore(database);
+  const { scheduler, jobs } = makeScheduler(now);
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, [
+      [
+        "Adjusted settings.",
+        'ASSIGNMENT_MUTATION: {"target":"configuration","mutationType":"operator_settings","rationale":"Slow down refresh during autonomous work.","proposedChange":{"operatorSettings":{"dashboardRefreshSeconds":13}}}',
+        "ASSIGNMENT_STATUS: continue",
+        "NEXT_WAKEUP_MINUTES: 8",
+      ].join("\n"),
+    ]),
+    mutations: executor,
+  });
+  const assignment = assignments.create({
+    objective: "Planner should tune operator settings",
+    autonomyLevel: "evolve",
+    policy: { wakeupDelayMinMinutes: 5, wakeupDelayMaxMinutes: 60 },
+  });
+
+  const result = await planner.wakeNow({
+    assignmentId: assignment.assignment.id,
+    actor: "scheduler",
+    reason: "scheduled wakeup",
+  });
+
+  assert.equal(result.status, "scheduled");
+  assert.equal(settings.get().dashboardRefreshSeconds, 13);
+  assert.equal(jobs[0]?.delayMs, 8 * 60_000);
+  const mutations = ledger.list({ assignmentId: assignment.assignment.id });
+  assert.equal(mutations.length, 1);
+  assert.equal(mutations[0]?.status, "applied");
+  assert.equal(mutations[0]?.runId, "coord_wakeup_1");
+  assert.equal(mutations[0]?.mutationType, "operator_settings");
+  assert.deepEqual(mutations[0]?.authorizingPolicy, {
+    rule: "assignment.policy.selfEvolution",
+    maxRiskClass: "medium",
+    allowedMutationClasses: ["configuration.operator_settings"],
+    mutationClass: "configuration.operator_settings",
+    actor: "planner",
+  });
+  assert.deepEqual(
+    assignments
+      .timeline(assignment.assignment.id)
+      .events.map((event) => event.type),
+    [
+      "created",
+      "wakeup_started",
+      "run_linked",
+      "wakeup_run_completed",
+      "mutation_planned",
+      "mutation_applied",
+      "wakeup_scheduled",
+    ]
+  );
+});
+
+test("AssignmentWakeupPlanner applies explicitly allowed assignment policy mutation markers", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-06-16T12:30:00.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const database = new AppDatabase(":memory:");
+  t.after(() => database.close());
+  const assignments = new AutonomousAssignmentService(database);
+  const ledger = new AutonomousMutationLedger(database, assignments);
+  const settings = new OperatorSettingsStore(database);
+  const executor = new AutonomousMutationExecutor({
+    assignments,
+    ledger,
+    settings,
+  });
+  const runs = new RunGraphStore(database);
+  const { scheduler } = makeScheduler(now);
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, [
+      [
+        "Widened wakeup budget.",
+        'ASSIGNMENT_MUTATION: {"target":"configuration","mutationType":"assignment_policy","rationale":"Give this assignment more wakeups.","proposedChange":{"assignmentPolicy":{"maxWakeups":7}}}',
+        "ASSIGNMENT_STATUS: complete",
+      ].join("\n"),
+    ]),
+    mutations: executor,
+  });
+  const assignment = assignments.create({
+    objective: "Planner should tune assignment policy",
+    autonomyLevel: "evolve",
+    policy: {
+      maxWakeups: 4,
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "configuration.assignment_policy",
+        ],
+      },
+    },
+  });
+
+  const result = await planner.wakeNow({
+    assignmentId: assignment.assignment.id,
+    actor: "scheduler",
+    reason: "scheduled wakeup",
+  });
+
+  const updated = assignments.getRequired(assignment.assignment.id).assignment;
+  assert.equal(result.status, "completed");
+  assert.equal(updated.policy.maxWakeups, 7);
+  assert.deepEqual(updated.policy.selfEvolution.allowedMutationClasses, [
+    "configuration.operator_settings",
+    "configuration.assignment_policy",
+  ]);
+  const mutations = ledger.list({ assignmentId: assignment.assignment.id });
+  assert.equal(mutations[0]?.status, "applied");
+  assert.equal(mutations[0]?.mutationType, "assignment_policy");
+  assert.equal(mutations[0]?.runId, "coord_wakeup_1");
+});
+
+test("AssignmentWakeupPlanner records denied autonomous mutation markers without failing the wakeup", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-06-16T13:00:00.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const database = new AppDatabase(":memory:");
+  t.after(() => database.close());
+  const assignments = new AutonomousAssignmentService(database);
+  const ledger = new AutonomousMutationLedger(database, assignments);
+  const settings = new OperatorSettingsStore(database);
+  const executor = new AutonomousMutationExecutor({
+    assignments,
+    ledger,
+    settings,
+  });
+  const runs = new RunGraphStore(database);
+  const { scheduler, jobs } = makeScheduler(now);
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, [
+      [
+        "Tried to widen policy.",
+        'ASSIGNMENT_MUTATION: {"target":"configuration","mutationType":"assignment_policy","rationale":"Try to widen wakeups.","proposedChange":{"assignmentPolicy":{"maxWakeups":9}}}',
+        "ASSIGNMENT_STATUS: continue",
+      ].join("\n"),
+    ]),
+    mutations: executor,
+  });
+  const assignment = assignments.create({
+    objective: "Planner should fail denied assignment policy mutation",
+    autonomyLevel: "evolve",
+  });
+
+  const result = await planner.wakeNow({
+    assignmentId: assignment.assignment.id,
+    reason: "scheduled wakeup",
+  });
+
+  assert.equal(result.status, "scheduled");
+  assert.equal(
+    assignments.getRequired(assignment.assignment.id).assignment.policy
+      .maxWakeups,
+    5
+  );
+  assert.equal(jobs.length, 1);
+  const mutations = ledger.list({ assignmentId: assignment.assignment.id });
+  assert.equal(mutations.length, 1);
+  assert.equal(mutations[0]?.status, "failed");
+  assert.equal(mutations[0]?.mutationType, "assignment_policy");
+  assert.equal(
+    mutations[0]?.errorMessage,
+    "Assignment self-evolution policy does not allow configuration.assignment_policy"
+  );
+});
+
+test("AssignmentWakeupPlanner ignores malformed autonomous mutation markers without failing the wakeup", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-06-16T13:30:00.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const database = new AppDatabase(":memory:");
+  t.after(() => database.close());
+  const assignments = new AutonomousAssignmentService(database);
+  const ledger = new AutonomousMutationLedger(database, assignments);
+  const settings = new OperatorSettingsStore(database);
+  const executor = new AutonomousMutationExecutor({
+    assignments,
+    ledger,
+    settings,
+  });
+  const runs = new RunGraphStore(database);
+  const { scheduler, jobs } = makeScheduler(now);
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, [
+      [
+        "Malformed mutation marker.",
+        "ASSIGNMENT_MUTATION: {not-json}",
+        "ASSIGNMENT_STATUS: continue",
+        "NEXT_WAKEUP_MINUTES: 6",
+      ].join("\n"),
+    ]),
+    mutations: executor,
+  });
+  const assignment = assignments.create({
+    objective: "Planner should ignore malformed marker",
+    autonomyLevel: "evolve",
+    policy: { wakeupDelayMinMinutes: 5, wakeupDelayMaxMinutes: 60 },
+  });
+
+  const result = await planner.wakeNow({
+    assignmentId: assignment.assignment.id,
+    reason: "scheduled wakeup",
+  });
+
+  assert.equal(result.status, "scheduled");
+  assert.equal(jobs[0]?.delayMs, 6 * 60_000);
+  assert.deepEqual(ledger.list({ assignmentId: assignment.assignment.id }), []);
+  assert.equal(settings.get().dashboardRefreshSeconds, 5);
 });
 
 test("AssignmentWakeupPlanner completes or blocks assignments without scheduling another wakeup", async (t) => {

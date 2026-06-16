@@ -34,6 +34,7 @@ import {
   AssignmentWakeupPlanner,
 } from "./assignments/wakeup-planner.ts";
 import { AutonomousMutationLedger } from "./assignments/mutation-ledger.ts";
+import { AutonomousMutationExecutor } from "./assignments/autonomous-mutations.ts";
 import { CodexAdapter } from "./agent/codex-adapter.ts";
 import { AgentRuntime } from "./agent/runtime.ts";
 import { RunGraphStore } from "./orchestration/run-graph-store.ts";
@@ -46,6 +47,7 @@ import { HttpServer } from "./server/http-server.ts";
 import { AppDatabase } from "./platform/database.ts";
 import { Logger } from "./platform/logger.ts";
 import { MetricsStore } from "./platform/metrics.ts";
+import { OperatorSettingsStore } from "./server/settings.ts";
 import type { JsonValue } from "./shared/types.ts";
 
 const config = loadConfig();
@@ -65,6 +67,12 @@ const governance = new ToolGovernanceService(database);
 const selfEvolution = new SelfEvolutionProposalStore(database);
 const assignments = new AutonomousAssignmentService(database);
 const assignmentMutations = new AutonomousMutationLedger(database, assignments);
+const operatorSettings = new OperatorSettingsStore(database);
+const assignmentMutationExecutor = new AutonomousMutationExecutor({
+  assignments,
+  ledger: assignmentMutations,
+  settings: operatorSettings,
+});
 const runs = new RunGraphStore(database);
 const mcpAudit = new McpAuditStore(database);
 const rolePolicy = loadRolePolicyConfig(config.roleConfigPath);
@@ -127,6 +135,7 @@ const assignmentWakeups = new AssignmentWakeupPlanner({
   assignments,
   scheduler,
   orchestration,
+  mutations: assignmentMutationExecutor,
 });
 const assignmentIntake = new AssignmentIntakeService(
   assignments,

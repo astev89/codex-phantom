@@ -1,4 +1,9 @@
 import type { OrchestrationService } from "../orchestration/service.ts";
+import {
+  AutonomousMutationExecutionError,
+  AutonomousMutationExecutor,
+  type ApplyAutonomousMutationInput,
+} from "./autonomous-mutations.ts";
 import type {
   JobRecord,
   SchedulerJobHandlerResult,
@@ -16,6 +21,11 @@ export const ASSIGNMENT_WAKEUP_JOB_NAME = "assignment.wakeup";
 const DEFAULT_NEXT_WAKEUP_MINUTES = 30;
 
 type AssignmentWakeupScheduler = Pick<SchedulerService, "list" | "schedule">;
+type AssignmentMutationExecutor = Pick<AutonomousMutationExecutor, "apply">;
+type PlannerMutationRequest = Pick<
+  ApplyAutonomousMutationInput,
+  "target" | "mutationType" | "rationale" | "riskClass" | "proposedChange"
+>;
 
 export type AssignmentWakeupResult = {
   status:
@@ -34,16 +44,19 @@ export class AssignmentWakeupPlanner {
   private readonly assignments: AutonomousAssignmentService;
   private readonly scheduler: AssignmentWakeupScheduler;
   private readonly orchestration: OrchestrationService;
+  private readonly mutations?: AssignmentMutationExecutor;
   private readonly activeWakeups = new Set<string>();
 
   constructor(input: {
     assignments: AutonomousAssignmentService;
     scheduler: AssignmentWakeupScheduler;
     orchestration: OrchestrationService;
+    mutations?: AssignmentMutationExecutor;
   }) {
     this.assignments = input.assignments;
     this.scheduler = input.scheduler;
     this.orchestration = input.orchestration;
+    this.mutations = input.mutations;
   }
 
   async wakeNow(input: {
@@ -100,6 +113,11 @@ export class AssignmentWakeupPlanner {
           outputText: result.outputText,
         });
         const marker = parsePlannerMarkers(result.outputText);
+        this.applyPlannerMutation({
+          assignmentId: input.assignmentId,
+          runId: result.runId,
+          mutation: marker.mutation,
+        });
         if (marker.status === "completed") {
           return {
             status: "completed",
@@ -239,6 +257,33 @@ export class AssignmentWakeupPlanner {
     });
     return result.runId ? { runId: result.runId } : {};
   }
+
+  private applyPlannerMutation(input: {
+    assignmentId: string;
+    runId: string;
+    mutation?: PlannerMutationRequest;
+  }): void {
+    if (!this.mutations || !input.mutation) {
+      return;
+    }
+    try {
+      this.mutations.apply({
+        assignmentId: input.assignmentId,
+        runId: input.runId,
+        target: input.mutation.target,
+        mutationType: input.mutation.mutationType,
+        rationale: input.mutation.rationale,
+        riskClass: input.mutation.riskClass,
+        proposedChange: input.mutation.proposedChange,
+        actor: "planner",
+      });
+    } catch (error) {
+      if (error instanceof AutonomousMutationExecutionError) {
+        return;
+      }
+      throw error;
+    }
+  }
 }
 
 function findScheduledWakeupJob(
@@ -296,12 +341,14 @@ function buildWakeupPrompt(
     )}`,
     "Return useful progress. Include one marker: ASSIGNMENT_STATUS: continue, ASSIGNMENT_STATUS: complete, or ASSIGNMENT_STATUS: blocked.",
     "Optionally include NEXT_WAKEUP_MINUTES: <integer> when more work should continue later.",
+    'Optionally include one autonomous mutation marker on a single line: ASSIGNMENT_MUTATION: {"target":"configuration","mutationType":"operator_settings","rationale":"...","proposedChange":{"operatorSettings":{...}}}. Mutations only apply when the assignment is evolve-authorized and assignment policy allows the class.',
   ].join("\n");
 }
 
 function parsePlannerMarkers(outputText: string): {
   status: "continue" | "completed" | "blocked";
   nextWakeupMinutes?: number;
+  mutation?: PlannerMutationRequest;
 } {
   const statusMatch = outputText.match(
     /ASSIGNMENT_STATUS:\s*(continue|complete|completed|blocked)/i
@@ -317,6 +364,51 @@ function parsePlannerMarkers(outputText: string): {
   return {
     status,
     nextWakeupMinutes: nextMatch ? Number(nextMatch[1]) : undefined,
+    mutation: parsePlannerMutationMarker(outputText),
+  };
+}
+
+function parsePlannerMutationMarker(
+  outputText: string
+): PlannerMutationRequest | undefined {
+  const mutationMatch = outputText.match(
+    /^ASSIGNMENT_MUTATION:\s*(\{.*\})\s*$/im
+  );
+  if (!mutationMatch?.[1]) {
+    return undefined;
+  }
+  let parsed: JsonValue;
+  try {
+    parsed = JSON.parse(mutationMatch[1]) as JsonValue;
+  } catch {
+    return undefined;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return undefined;
+  }
+  const value = parsed as Record<string, JsonValue>;
+  if (
+    typeof value.target !== "string" ||
+    typeof value.mutationType !== "string" ||
+    typeof value.rationale !== "string" ||
+    value.rationale.trim() === "" ||
+    value.proposedChange === undefined
+  ) {
+    return undefined;
+  }
+  const riskClass =
+    value.riskClass === "low" ||
+    value.riskClass === "medium" ||
+    value.riskClass === "high" ||
+    value.riskClass === "critical"
+      ? value.riskClass
+      : undefined;
+  return {
+    target: value.target as PlannerMutationRequest["target"],
+    mutationType: value.mutationType,
+    rationale: value.rationale.trim(),
+    riskClass,
+    proposedChange: value.proposedChange,
   };
 }
 
