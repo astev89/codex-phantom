@@ -1348,6 +1348,118 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       5
     );
 
+    const policyAssignmentCreate = await fetch(`${baseUrl}/admin/assignments`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.operatorBearerToken}`,
+      },
+      body: JSON.stringify({
+        objective: "Autonomously tune assignment policy",
+        autonomyLevel: "evolve",
+        policy: {
+          maxWakeups: 3,
+          selfEvolution: {
+            allowedMutationClasses: [
+              "configuration.operator_settings",
+              "configuration.assignment_policy",
+            ],
+          },
+        },
+      }),
+    });
+    assert.equal(policyAssignmentCreate.status, 201);
+    const policyAssignmentJson = (await policyAssignmentCreate.json()) as {
+      assignment: { id: string; policy: { maxWakeups: number } };
+    };
+    assert.equal(policyAssignmentJson.assignment.policy.maxWakeups, 3);
+
+    const policyApply = await fetch(
+      `${baseUrl}/admin/assignments/${policyAssignmentJson.assignment.id}/mutations/apply`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          target: "configuration",
+          mutationType: "assignment_policy",
+          rationale: "Let this assignment run a few more wakeups.",
+          proposedChange: {
+            assignmentPolicy: {
+              maxWakeups: 7,
+              notificationCadence: {
+                activeProgressIntervalMinutes: 45,
+              },
+            },
+          },
+        }),
+      }
+    );
+    assert.equal(policyApply.status, 200);
+    const policyApplyJson = (await policyApply.json()) as {
+      mutation: {
+        id: string;
+        status: string;
+        mutationType: string;
+        rollback: unknown;
+      };
+      assignment: {
+        assignment: {
+          policy: {
+            maxWakeups: number;
+            notificationCadence: { activeProgressIntervalMinutes: number };
+          };
+        };
+      };
+    };
+    assert.equal(policyApplyJson.mutation.status, "applied");
+    assert.equal(policyApplyJson.mutation.mutationType, "assignment_policy");
+    assert.equal(policyApplyJson.assignment.assignment.policy.maxWakeups, 7);
+    assert.equal(
+      policyApplyJson.assignment.assignment.policy.notificationCadence
+        .activeProgressIntervalMinutes,
+      45
+    );
+
+    const policyRollback = await fetch(
+      `${baseUrl}/admin/assignments/${policyAssignmentJson.assignment.id}/mutations/${policyApplyJson.mutation.id}/rollback`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({ actor: "operator" }),
+      }
+    );
+    assert.equal(policyRollback.status, 200);
+    const policyRollbackJson = (await policyRollback.json()) as {
+      mutation: { id: string; status: string };
+      assignment: {
+        assignment: {
+          policy: {
+            maxWakeups: number;
+            notificationCadence: { activeProgressIntervalMinutes: number };
+          };
+        };
+      };
+    };
+    assert.deepEqual(
+      {
+        id: policyRollbackJson.mutation.id,
+        status: policyRollbackJson.mutation.status,
+      },
+      { id: policyApplyJson.mutation.id, status: "rolled_back" }
+    );
+    assert.equal(policyRollbackJson.assignment.assignment.policy.maxWakeups, 3);
+    assert.equal(
+      policyRollbackJson.assignment.assignment.policy.notificationCadence
+        .activeProgressIntervalMinutes,
+      30
+    );
+
     const autonomousAssignmentTimeline = await fetch(
       `${baseUrl}/admin/assignments/${autonomousAssignmentJson.assignment.id}/timeline`,
       {

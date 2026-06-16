@@ -2,7 +2,7 @@
 
 Governed self-evolution lets Codex Phantom change its own behavior under explicit policy, audit, rollback, and operator-interruption controls. [ADR-0003](adr/0003-delegate-autonomous-assignments-and-self-evolution.md) extends the target model beyond proposal-only HITL: autonomous assignments may use delegated autonomous self-evolution when assignment policy grants `evolve` or higher authority.
 
-The current implementation is still narrower than that target. Today, Codex Phantom can create auditable proposals, apply approved proposal-based operator-settings mutations through operator-authenticated APIs, and apply assignment-authorized autonomous operator-settings mutations for `evolve` assignments. Prompt, memory policy, tool, role, project-file, and broader configuration mutation classes remain future work.
+The current implementation is still narrower than that target. Today, Codex Phantom can create auditable proposals, apply approved proposal-based operator-settings mutations through operator-authenticated APIs, and apply assignment-authorized autonomous operator-settings and assignment-policy mutations for `evolve` assignments. Prompt, memory policy, tool, role, project-file, and broader configuration mutation classes remain future work.
 
 ## Proposal Scope
 
@@ -86,7 +86,7 @@ Apply and rollback execution lives behind the self-evolution mutation module. HT
 
 ## Assignment-Authorized Autonomous Apply
 
-Autonomous assignments with `autonomyLevel: "evolve"` can apply the first bounded delegated mutation class through assignment admin APIs. This path is separate from proposal apply and writes to the autonomous mutation ledger, not the proposal mutation table.
+Autonomous assignments with `autonomyLevel: "evolve"` can apply bounded delegated mutation classes through assignment admin APIs. This path is separate from proposal apply and writes to the autonomous mutation ledger, not the proposal mutation table.
 
 Apply an autonomous operator-settings mutation:
 
@@ -104,6 +104,31 @@ curl -X POST http://localhost:3210/admin/assignments/asgn_123/mutations/apply \
   }'
 ```
 
+Apply an explicitly allowed assignment-policy mutation:
+
+```bash
+curl -X POST http://localhost:3210/admin/assignments/asgn_123/mutations/apply \
+  -H "Authorization: Bearer $OPERATOR_BEARER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "target": "configuration",
+    "mutationType": "assignment_policy",
+    "rationale": "Give this long-running assignment a wider wakeup budget.",
+    "proposedChange": {
+      "assignmentPolicy": {
+        "maxWakeups": 8,
+        "wakeupDelayMinMinutes": 10,
+        "wakeupDelayMaxMinutes": 120,
+        "notificationCadence": {
+          "activeProgressIntervalMinutes": 45
+        }
+      }
+    }
+  }'
+```
+
+`configuration.assignment_policy` is not in the default assignment self-evolution allow-list. Operators must explicitly include it in `assignment.policy.selfEvolution.allowedMutationClasses`. Autonomous assignment-policy mutations may tune execution bounds and notification cadence, but they cannot change `assignmentPolicy.selfEvolution`; mutation authority cannot be widened through this adapter.
+
 Roll back an applied autonomous mutation:
 
 ```bash
@@ -113,7 +138,7 @@ curl -X POST http://localhost:3210/admin/assignments/asgn_123/mutations/asgnmut_
   -d '{"actor":"operator"}'
 ```
 
-The default assignment self-evolution policy allows only low- or medium-risk `configuration.operator_settings` mutations, and only assignments at `evolve` authority may use it. Unsupported classes and malformed settings are rejected without changing settings and are audited as failed autonomous mutation evidence when policy permits the attempt to reach the mutation executor.
+The default assignment self-evolution policy allows only low- or medium-risk `configuration.operator_settings` mutations, and only assignments at `evolve` authority may use it. Unsupported classes, disallowed classes, malformed settings, and malformed assignment-policy patches are rejected without changing state and are audited as failed autonomous mutation evidence when policy permits the attempt to reach the mutation executor.
 
 ## Agent Tool
 
