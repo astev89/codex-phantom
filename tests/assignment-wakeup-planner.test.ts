@@ -4,6 +4,7 @@ import { AppDatabase } from "../src/platform/database.ts";
 import { AutonomousAssignmentService } from "../src/assignments/service.ts";
 import { AutonomousMutationExecutor } from "../src/assignments/autonomous-mutations.ts";
 import { AutonomousMutationLedger } from "../src/assignments/mutation-ledger.ts";
+import { MemoryPolicyStore } from "../src/memory/policy.ts";
 import {
   ASSIGNMENT_WAKEUP_JOB_NAME,
   AssignmentWakeupPlanner,
@@ -17,6 +18,7 @@ import { ToolBundleImportStore } from "../src/tools/bundles.ts";
 import { ToolBundleLifecycleService } from "../src/tools/bundle-lifecycle.ts";
 import { DynamicToolRegistry } from "../src/tools/dynamic-registry.ts";
 import { ToolRegistry } from "../src/tools/registry.ts";
+import { makeConfig } from "./helpers.ts";
 
 type ScheduledJob = JobRecord & {
   delayMs?: number;
@@ -503,6 +505,76 @@ test("AssignmentWakeupPlanner applies explicitly allowed prompt runtime guidance
       "prompt.runtime_guidance",
     ],
     mutationClass: "prompt.runtime_guidance",
+    actor: "planner",
+  });
+});
+
+test("AssignmentWakeupPlanner applies explicitly allowed memory policy mutation markers", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-06-16T12:42:00.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const database = new AppDatabase(":memory:");
+  t.after(() => database.close());
+  const assignments = new AutonomousAssignmentService(database);
+  const ledger = new AutonomousMutationLedger(database, assignments);
+  const settings = new OperatorSettingsStore(database);
+  const memoryPolicy = new MemoryPolicyStore(database, makeConfig());
+  const executor = new AutonomousMutationExecutor({
+    assignments,
+    ledger,
+    settings,
+    memoryPolicy,
+  });
+  const runs = new RunGraphStore(database);
+  const { scheduler } = makeScheduler(now);
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, [
+      [
+        "Reduced memory retrieval bounds.",
+        'ASSIGNMENT_MUTATION: {"target":"memory_policy","mutationType":"runtime_bounds","rationale":"Reduce memory context for this work.","proposedChange":{"memoryPolicy":{"memoryPerCategoryLimit":1,"memorySummaryLimit":1}}}',
+        "ASSIGNMENT_STATUS: complete",
+      ].join("\n"),
+    ]),
+    mutations: executor,
+  });
+  const assignment = assignments.create({
+    objective: "Planner should tune memory policy",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "memory_policy.runtime_bounds",
+        ],
+      },
+    },
+  });
+
+  const result = await planner.wakeNow({
+    assignmentId: assignment.assignment.id,
+    actor: "scheduler",
+    reason: "scheduled wakeup",
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(memoryPolicy.get().memoryPerCategoryLimit, 1);
+  assert.equal(memoryPolicy.get().memorySummaryLimit, 1);
+  const mutations = ledger.list({ assignmentId: assignment.assignment.id });
+  assert.equal(mutations.length, 1);
+  assert.equal(mutations[0]?.status, "applied");
+  assert.equal(mutations[0]?.target, "memory_policy");
+  assert.equal(mutations[0]?.mutationType, "runtime_bounds");
+  assert.equal(mutations[0]?.runId, "coord_wakeup_1");
+  assert.deepEqual(mutations[0]?.authorizingPolicy, {
+    rule: "assignment.policy.selfEvolution",
+    maxRiskClass: "medium",
+    allowedMutationClasses: [
+      "configuration.operator_settings",
+      "memory_policy.runtime_bounds",
+    ],
+    mutationClass: "memory_policy.runtime_bounds",
     actor: "planner",
   });
 });

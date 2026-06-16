@@ -18,6 +18,7 @@ import type {
 } from "../src/agent/types.ts";
 import { SessionStore } from "../src/chat/session-store.ts";
 import { MemoryMaintenanceService } from "../src/memory/maintenance.ts";
+import { MemoryPolicyStore } from "../src/memory/policy.ts";
 import { MemoryStore } from "../src/memory/store.ts";
 import { PromptRuntimeGuidanceStore } from "../src/prompts/runtime-guidance.ts";
 import { ToolRegistry } from "../src/tools/registry.ts";
@@ -790,6 +791,7 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
   const database = new AppDatabase(join(dataDir, "server.sqlite"));
   const sessions = new SessionStore(database);
   const channels = new ChannelRegistry(database, config);
+  const memoryPolicy = new MemoryPolicyStore(database, config);
   const memory = new MemoryStore(
     database,
     config,
@@ -799,7 +801,8 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       available: false,
       configured: false,
     }),
-    makeFakeVectorStore({ backend: "sqlite_fallback", available: true })
+    makeFakeVectorStore({ backend: "sqlite_fallback", available: true }),
+    memoryPolicy
   );
   const tools = new ToolRegistry();
   tools.register({
@@ -891,7 +894,8 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assignmentWakeups,
     undefined,
     assignmentMutations,
-    promptGuidance
+    promptGuidance,
+    memoryPolicy
   );
   const instance = await server.listen();
   const address = instance.address();
@@ -1537,6 +1541,197 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       }
     );
     assert.equal(promptGuidance.get().text, "Prefer neutral summaries.");
+
+    const memoryPolicyBefore = {
+      memoryTopK: memoryPolicy.get().memoryTopK,
+      memoryPerCategoryLimit: memoryPolicy.get().memoryPerCategoryLimit,
+      memorySummaryLimit: memoryPolicy.get().memorySummaryLimit,
+      memorySummaryTriggerCount: memoryPolicy.get().memorySummaryTriggerCount,
+      memorySummaryClusterSize: memoryPolicy.get().memorySummaryClusterSize,
+      semanticPruneLimit: memoryPolicy.get().semanticPruneLimit,
+      proceduralPruneLimit: memoryPolicy.get().proceduralPruneLimit,
+      episodicPruneLimit: memoryPolicy.get().episodicPruneLimit,
+    };
+    const memoryPolicyAssignmentCreate = await fetch(
+      `${baseUrl}/admin/assignments`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          objective: "Autonomously tune memory policy bounds",
+          autonomyLevel: "evolve",
+          policy: {
+            selfEvolution: {
+              allowedMutationClasses: [
+                "configuration.operator_settings",
+                "memory_policy.runtime_bounds",
+              ],
+            },
+          },
+        }),
+      }
+    );
+    assert.equal(memoryPolicyAssignmentCreate.status, 201);
+    const memoryPolicyAssignmentJson =
+      (await memoryPolicyAssignmentCreate.json()) as {
+        assignment: { id: string };
+      };
+
+    const memoryPolicyApply = await fetch(
+      `${baseUrl}/admin/assignments/${memoryPolicyAssignmentJson.assignment.id}/mutations/apply`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          target: "memory_policy",
+          mutationType: "runtime_bounds",
+          rationale: "Reduce memory retrieval context for autonomous work.",
+          runId: "coord_http_memory_policy",
+          actor: "operator",
+          proposedChange: {
+            memoryPolicy: {
+              memoryPerCategoryLimit: 1,
+              memorySummaryLimit: 1,
+            },
+          },
+        }),
+      }
+    );
+    assert.equal(memoryPolicyApply.status, 200);
+    const memoryPolicyApplyJson = (await memoryPolicyApply.json()) as {
+      mutation: {
+        id: string;
+        status: string;
+        target: string;
+        mutationType: string;
+        before: typeof memoryPolicyBefore;
+        after: typeof memoryPolicyBefore;
+        rollback: unknown;
+        affectedResources: unknown;
+      };
+    };
+    assert.equal(memoryPolicyApplyJson.mutation.status, "applied");
+    assert.equal(memoryPolicyApplyJson.mutation.target, "memory_policy");
+    assert.equal(memoryPolicyApplyJson.mutation.mutationType, "runtime_bounds");
+    assert.deepEqual(memoryPolicyApplyJson.mutation.before, memoryPolicyBefore);
+    assert.deepEqual(memoryPolicyApplyJson.mutation.after, {
+      ...memoryPolicyBefore,
+      memoryPerCategoryLimit: 1,
+      memorySummaryLimit: 1,
+    });
+    assert.deepEqual(memoryPolicyApplyJson.mutation.rollback, {
+      memoryPolicy: memoryPolicyBefore,
+    });
+    assert.deepEqual(memoryPolicyApplyJson.mutation.affectedResources, [
+      { type: "memory_policy", id: "runtime_bounds" },
+    ]);
+    assert.equal(memoryPolicy.get().memoryPerCategoryLimit, 1);
+    assert.equal(memoryPolicy.get().memorySummaryLimit, 1);
+
+    const memoryPolicyAssignmentMutations = await fetch(
+      `${baseUrl}/admin/assignments/${memoryPolicyAssignmentJson.assignment.id}/mutations`,
+      {
+        headers: {
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+      }
+    );
+    assert.equal(memoryPolicyAssignmentMutations.status, 200);
+    const memoryPolicyAssignmentMutationsJson =
+      (await memoryPolicyAssignmentMutations.json()) as {
+        mutations: Array<{ id: string; status: string }>;
+      };
+    assert.deepEqual(
+      memoryPolicyAssignmentMutationsJson.mutations.map((mutation) => ({
+        id: mutation.id,
+        status: mutation.status,
+      })),
+      [{ id: memoryPolicyApplyJson.mutation.id, status: "applied" }]
+    );
+
+    const memoryPolicyGlobalMutations = await fetch(
+      `${baseUrl}/admin/mutations?assignmentId=${encodeURIComponent(
+        memoryPolicyAssignmentJson.assignment.id
+      )}&runId=coord_http_memory_policy&target=memory_policy&status=applied`,
+      {
+        headers: {
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+      }
+    );
+    assert.equal(memoryPolicyGlobalMutations.status, 200);
+    const memoryPolicyGlobalMutationsJson =
+      (await memoryPolicyGlobalMutations.json()) as {
+        mutations: Array<{ id: string; target: string; mutationType: string }>;
+      };
+    assert.deepEqual(
+      memoryPolicyGlobalMutationsJson.mutations.map((mutation) => ({
+        id: mutation.id,
+        target: mutation.target,
+        mutationType: mutation.mutationType,
+      })),
+      [
+        {
+          id: memoryPolicyApplyJson.mutation.id,
+          target: "memory_policy",
+          mutationType: "runtime_bounds",
+        },
+      ]
+    );
+
+    const memoryPolicyTimeline = await fetch(`${baseUrl}/admin/timeline`, {
+      headers: {
+        Authorization: `Bearer ${config.operatorBearerToken}`,
+      },
+    });
+    assert.equal(memoryPolicyTimeline.status, 200);
+    const memoryPolicyTimelineJson = (await memoryPolicyTimeline.json()) as {
+      autonomousMutations: Array<{ id: string; kind: string }>;
+    };
+    assert.ok(
+      memoryPolicyTimelineJson.autonomousMutations.some(
+        (mutation) =>
+          mutation.id === memoryPolicyApplyJson.mutation.id &&
+          mutation.kind === "autonomous_mutation"
+      )
+    );
+
+    const memoryPolicyRollback = await fetch(
+      `${baseUrl}/admin/assignments/${memoryPolicyAssignmentJson.assignment.id}/mutations/${memoryPolicyApplyJson.mutation.id}/rollback`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({ actor: "operator" }),
+      }
+    );
+    assert.equal(memoryPolicyRollback.status, 200);
+    const memoryPolicyRollbackJson = (await memoryPolicyRollback.json()) as {
+      mutation: { id: string; status: string };
+    };
+    assert.deepEqual(
+      {
+        id: memoryPolicyRollbackJson.mutation.id,
+        status: memoryPolicyRollbackJson.mutation.status,
+      },
+      { id: memoryPolicyApplyJson.mutation.id, status: "rolled_back" }
+    );
+    assert.equal(
+      memoryPolicy.get().memoryPerCategoryLimit,
+      memoryPolicyBefore.memoryPerCategoryLimit
+    );
+    assert.equal(
+      memoryPolicy.get().memorySummaryLimit,
+      memoryPolicyBefore.memorySummaryLimit
+    );
 
     const policyAssignmentCreate = await fetch(`${baseUrl}/admin/assignments`, {
       method: "POST",

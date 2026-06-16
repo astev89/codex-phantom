@@ -18,6 +18,7 @@ export type MemoryRetrievalPolicyInput = {
   queryText: string;
   queryEmbedding: number[] | null;
   vectorScores?: Map<string, number>;
+  memoryTopK?: number;
   memorySummaryLimit: number;
   memoryPerCategoryLimit: number;
   nowMs?: number;
@@ -47,23 +48,28 @@ export function buildMemoryRetrievalContext(
     .filter((entry) => entry.score > 0)
     .sort((left, right) => right.score - left.score);
 
-  const summaries = scoredRows
+  const boundedRows =
+    input.memoryTopK === undefined
+      ? scoredRows
+      : scoredRows.slice(0, input.memoryTopK);
+
+  const summaries = boundedRows
     .filter((entry) => entry.row.is_summary === 1)
     .slice(0, input.memorySummaryLimit)
     .map(toMemoryEntry);
-  const episodic = scoredRows
+  const episodic = boundedRows
     .filter(
       (entry) => entry.row.category === "episodic" && entry.row.is_summary === 0
     )
     .slice(0, input.memoryPerCategoryLimit)
     .map(toMemoryEntry);
-  const semantic = scoredRows
+  const semantic = boundedRows
     .filter(
       (entry) => entry.row.category === "semantic" && entry.row.is_summary === 0
     )
     .slice(0, input.memoryPerCategoryLimit)
     .map(toMemoryEntry);
-  const procedural = scoredRows
+  const procedural = boundedRows
     .filter(
       (entry) =>
         entry.row.category === "procedural" && entry.row.is_summary === 0

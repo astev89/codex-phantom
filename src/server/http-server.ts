@@ -56,6 +56,7 @@ import { RunGraphStore } from "../orchestration/run-graph-store.ts";
 import { AppDatabase } from "../platform/database.ts";
 import { Logger } from "../platform/logger.ts";
 import { MetricsStore } from "../platform/metrics.ts";
+import { MemoryPolicyStore } from "../memory/policy.ts";
 import { MemoryStore } from "../memory/store.ts";
 import type { MemoryMaintenanceService } from "../memory/maintenance.ts";
 import { DynamicToolRegistry } from "../tools/dynamic-registry.ts";
@@ -166,6 +167,7 @@ export class HttpServer {
   private readonly governance: ToolGovernanceService;
   private readonly selfEvolution: SelfEvolutionProposalStore;
   private readonly selfEvolutionMutations: SelfEvolutionMutationService;
+  private readonly memoryPolicy: MemoryPolicyStore;
   private readonly promptGuidance: PromptRuntimeGuidanceStore;
   private readonly slack: SlackChannel;
   private readonly settings: OperatorSettingsStore;
@@ -198,7 +200,8 @@ export class HttpServer {
     assignmentWakeups?: AssignmentWakeupPlanner,
     assignmentIntake?: AssignmentIntakeService,
     assignmentMutations?: AutonomousMutationLedger,
-    promptGuidance?: PromptRuntimeGuidanceStore
+    promptGuidance?: PromptRuntimeGuidanceStore,
+    memoryPolicy?: MemoryPolicyStore
   ) {
     if (!assignments) {
       throw new Error("AutonomousAssignmentService is required");
@@ -239,6 +242,7 @@ export class HttpServer {
     this.governance = governance;
     this.selfEvolution = new SelfEvolutionProposalStore(database);
     this.settings = new OperatorSettingsStore(database);
+    this.memoryPolicy = memoryPolicy ?? new MemoryPolicyStore(database, config);
     this.promptGuidance =
       promptGuidance ?? new PromptRuntimeGuidanceStore(database);
     this.slack = new SlackChannel(
@@ -268,6 +272,7 @@ export class HttpServer {
       assignments,
       ledger: this.assignmentMutations,
       settings: this.settings,
+      memoryPolicy: this.memoryPolicy,
       promptGuidance: this.promptGuidance,
       toolBundles: this.toolBundleLifecycle,
     });

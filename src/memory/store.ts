@@ -10,6 +10,11 @@ import type {
 import type { EmbeddingService } from "./embedding.ts";
 import { MemoryLifecycleService } from "./lifecycle.ts";
 import {
+  defaultMemoryPolicy,
+  type MemoryPolicyStore,
+  type MemoryPolicyValues,
+} from "./policy.ts";
+import {
   dedupeStrings,
   MEMORY_ROW_COLUMNS,
   type MemoryRow,
@@ -37,17 +42,20 @@ export class MemoryStore {
   private readonly primaryVectorStore: VectorStore;
   private readonly fallbackVectorStore: VectorStore;
   private readonly lifecycle: MemoryLifecycleService;
+  private readonly memoryPolicy?: MemoryPolicyStore;
 
   constructor(
     database: AppDatabase,
     config: AppConfig,
     embeddings: EmbeddingService,
     primaryVectorStore?: VectorStore,
-    fallbackVectorStore?: VectorStore
+    fallbackVectorStore?: VectorStore,
+    memoryPolicy?: MemoryPolicyStore
   ) {
     this.database = database;
     this.config = config;
     this.embeddings = embeddings;
+    this.memoryPolicy = memoryPolicy;
     this.primaryVectorStore =
       primaryVectorStore ?? new QdrantVectorStore(config);
     this.fallbackVectorStore =
@@ -63,6 +71,7 @@ export class MemoryStore {
   }
 
   async query(input: string): Promise<MemoryContextEnvelope> {
+    const policy = this.currentPolicy();
     const queryEmbedding = (await this.embedOrNull([input]))?.[0] ?? null;
     const activeVectorStore =
       queryEmbedding && this.primaryVectorStore.isAvailable()
@@ -70,7 +79,7 @@ export class MemoryStore {
         : this.fallbackVectorStore;
 
     const results = queryEmbedding
-      ? await activeVectorStore.search(queryEmbedding, this.config.memoryTopK)
+      ? await activeVectorStore.search(queryEmbedding, policy.memoryTopK)
       : [];
 
     const ids = results.map((result) => result.id);
@@ -98,8 +107,9 @@ export class MemoryStore {
       queryText: input,
       queryEmbedding,
       vectorScores: new Map(results.map((item) => [item.id, item.score])),
-      memorySummaryLimit: this.config.memorySummaryLimit,
-      memoryPerCategoryLimit: this.config.memoryPerCategoryLimit,
+      memoryTopK: policy.memoryTopK,
+      memorySummaryLimit: policy.memorySummaryLimit,
+      memoryPerCategoryLimit: policy.memoryPerCategoryLimit,
     });
     this.lifecycle.persistDecayScores(retrieval.decayUpdates);
     this.lifecycle.markAccessed(retrieval.returnedEntries);
@@ -128,6 +138,7 @@ export class MemoryStore {
     record: MemoryTurnRecord,
     generateInsights: (record: MemoryTurnRecord) => Promise<MemoryInsightSet>
   ): Promise<void> {
+    const policy = this.currentPolicy();
     const insights = await generateInsights(record);
     const entries: StoreMemoryEntryInput[] = [];
 
@@ -173,18 +184,41 @@ export class MemoryStore {
       await this.storeEntries(entries);
     }
 
-    await this.lifecycle.compactEpisodicMemories(record, insights.summary);
-    await this.lifecycle.pruneByCategory("semantic", 80);
-    await this.lifecycle.pruneByCategory("procedural", 60);
-    await this.lifecycle.pruneByCategory("episodic", 120);
+    await this.lifecycle.compactEpisodicMemories(record, insights.summary, {
+      triggerCount: policy.memorySummaryTriggerCount,
+      clusterSize: policy.memorySummaryClusterSize,
+    });
+    await this.lifecycle.pruneByCategory("semantic", policy.semanticPruneLimit);
+    await this.lifecycle.pruneByCategory(
+      "procedural",
+      policy.proceduralPruneLimit
+    );
+    await this.lifecycle.pruneByCategory("episodic", policy.episodicPruneLimit);
   }
 
   async runMaintenance(): Promise<MemoryMaintenanceOutcome> {
-    const summary = await this.lifecycle.compactEpisodicMemories();
+    const policy = this.currentPolicy();
+    const summary = await this.lifecycle.compactEpisodicMemories(
+      undefined,
+      undefined,
+      {
+        triggerCount: policy.memorySummaryTriggerCount,
+        clusterSize: policy.memorySummaryClusterSize,
+      }
+    );
     const prunedIds = [
-      ...(await this.lifecycle.pruneByCategory("semantic", 80)),
-      ...(await this.lifecycle.pruneByCategory("procedural", 60)),
-      ...(await this.lifecycle.pruneByCategory("episodic", 120)),
+      ...(await this.lifecycle.pruneByCategory(
+        "semantic",
+        policy.semanticPruneLimit
+      )),
+      ...(await this.lifecycle.pruneByCategory(
+        "procedural",
+        policy.proceduralPruneLimit
+      )),
+      ...(await this.lifecycle.pruneByCategory(
+        "episodic",
+        policy.episodicPruneLimit
+      )),
     ];
 
     return {
@@ -195,6 +229,10 @@ export class MemoryStore {
       promotedMemoryIds: summary ? [summary.summaryMemoryId] : [],
       prunedMemoryIds: prunedIds,
     };
+  }
+
+  private currentPolicy(): MemoryPolicyValues {
+    return this.memoryPolicy?.get() ?? defaultMemoryPolicy(this.config);
   }
 
   async backfillEmbeddings(): Promise<void> {

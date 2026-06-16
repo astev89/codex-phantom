@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { MemoryMaintenanceService } from "../src/memory/maintenance.ts";
+import { MemoryPolicyStore } from "../src/memory/policy.ts";
 import { MemoryStore } from "../src/memory/store.ts";
 import { AppDatabase } from "../src/platform/database.ts";
 import {
@@ -76,6 +77,72 @@ test("scheduled memory maintenance summarizes, promotes, and prunes bounded acti
     "SELECT COUNT(*) AS count FROM memory_entries WHERE category = 'semantic'"
   )?.count;
   assert.equal(activeSemanticCount, 80);
+  database.close();
+});
+
+test("memory maintenance uses policy overlay for summary and prune bounds", async () => {
+  const database = new AppDatabase(":memory:");
+  const config = makeConfig(".", { semanticRetrievalEnabled: false });
+  const memoryPolicy = new MemoryPolicyStore(database, config);
+  memoryPolicy.update(
+    {
+      memorySummaryTriggerCount: 4,
+      memorySummaryClusterSize: 3,
+      semanticPruneLimit: 10,
+    },
+    "operator"
+  );
+  const memory = new MemoryStore(
+    database,
+    config,
+    makeDisabledEmbeddings(),
+    makeFakeVectorStore({
+      backend: "qdrant",
+      available: false,
+      configured: false,
+    }),
+    makeFakeVectorStore({ backend: "sqlite_fallback", available: true }),
+    memoryPolicy
+  );
+
+  for (let index = 0; index < 4; index += 1) {
+    await memory.recordTurn({
+      sessionId: "session-policy-maintenance",
+      runId: `run-policy-${index}`,
+      queryText: "policy maintenance",
+      recentMessagesText: "recent policy maintenance conversation",
+      userInput: `policy maintenance note ${index}`,
+      assistantOutput: `policy maintenance result ${index}`,
+    });
+  }
+
+  for (let index = 0; index < 12; index += 1) {
+    await memory.storeEntry({
+      category: "semantic",
+      content: `policy bounded semantic fact ${index}`,
+      sourceType: "semantic_fact",
+      importance: index < 10 ? 0.9 : 0.1,
+      isFact: true,
+    });
+  }
+
+  const outcome = await memory.runMaintenance();
+
+  assert.equal(outcome.summarizedCount, 3);
+  assert.equal(outcome.promotedCount, 1);
+  assert.equal(outcome.summaryMemoryIds.length, 1);
+  assert.equal(outcome.prunedCount, 2);
+
+  const linkedRawCount = database.get<{ count: number }>(
+    "SELECT COUNT(*) AS count FROM memory_entries WHERE parent_summary_id = ?",
+    outcome.summaryMemoryIds[0]
+  )?.count;
+  assert.equal(linkedRawCount, 3);
+
+  const activeSemanticCount = database.get<{ count: number }>(
+    "SELECT COUNT(*) AS count FROM memory_entries WHERE category = 'semantic'"
+  )?.count;
+  assert.equal(activeSemanticCount, 10);
   database.close();
 });
 
