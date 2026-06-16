@@ -13,6 +13,12 @@ import {
   normalizeRuntimeGuidanceText,
   type PromptRuntimeGuidanceStore,
 } from "../prompts/runtime-guidance.ts";
+import {
+  rolePolicyRuntimeSnapshot,
+  type RolePolicyRuntimeStore,
+  type RolePolicyPatch,
+  type RolePolicyOverrides,
+} from "../orchestration/role-policy-runtime.ts";
 import type { SelfEvolutionRiskClass } from "../self-evolution/proposals.ts";
 import type {
   AutonomousMutationRecord,
@@ -71,6 +77,7 @@ export type AutonomousMutationExecutorOptions = {
   settings: OperatorSettingsMutationPort;
   memoryPolicy?: MemoryPolicyStore;
   promptGuidance?: PromptRuntimeGuidanceStore;
+  rolePolicy?: RolePolicyRuntimeStore;
   toolBundles?: ToolBundleLifecycleService;
   adapters?: AutonomousMutationAdapter[];
 };
@@ -106,8 +113,9 @@ const TOOL_BUNDLE_ENABLE_MUTATION_CLASS = "tool.bundle_enable";
 const PROMPT_RUNTIME_GUIDANCE_MUTATION_CLASS = "prompt.runtime_guidance";
 const MEMORY_POLICY_RUNTIME_BOUNDS_MUTATION_CLASS =
   "memory_policy.runtime_bounds";
+const ROLE_PERMISSION_POLICY_MUTATION_CLASS = "role.permission_policy";
 const UNSUPPORTED_MUTATION_ERROR =
-  "Only configuration.operator_settings, configuration.assignment_policy, tool.bundle_enable, prompt.runtime_guidance, and memory_policy.runtime_bounds autonomous mutations are supported in this slice";
+  "Only configuration.operator_settings, configuration.assignment_policy, tool.bundle_enable, prompt.runtime_guidance, memory_policy.runtime_bounds, and role.permission_policy autonomous mutations are supported in this slice";
 const RISK_ORDER: SelfEvolutionRiskClass[] = [
   "low",
   "medium",
@@ -138,6 +146,13 @@ export class AutonomousMutationExecutor {
           ? [
               createMemoryPolicyRuntimeBoundsAutonomousMutationAdapter(
                 options.memoryPolicy
+              ),
+            ]
+          : []),
+        ...(options.rolePolicy
+          ? [
+              createRolePermissionPolicyAutonomousMutationAdapter(
+                options.rolePolicy
               ),
             ]
           : []),
@@ -655,6 +670,61 @@ function createMemoryPolicyRuntimeBoundsAutonomousMutationAdapter(
         input.actor ?? "autonomous_mutation_rollback"
       );
       return { verificationMethod: "memory_policy_runtime_bounds_rollback" };
+    },
+  };
+}
+
+function createRolePermissionPolicyAutonomousMutationAdapter(
+  rolePolicy: RolePolicyRuntimeStore
+): AutonomousMutationAdapter {
+  const affectedResources = [{ type: "role_policy", id: "runtime" }];
+  return {
+    target: "role",
+    mutationType: "permission_policy",
+    mutationClass: ROLE_PERMISSION_POLICY_MUTATION_CLASS,
+    affectedResources,
+    rollbackConflictScope: "global",
+    apply(input) {
+      const proposedChange = asJsonObject(
+        input.proposedChange,
+        "proposedChange"
+      );
+      const rolePolicyPatch = asJsonObject(
+        proposedChange.rolePolicy,
+        "proposedChange.rolePolicy"
+      );
+      const before = rolePolicyRuntimeSnapshot(rolePolicy.get());
+      const after = rolePolicyRuntimeSnapshot(
+        rolePolicy.update(
+          rolePolicyPatch as unknown as RolePolicyPatch,
+          input.request.actor ?? "autonomous_mutation"
+        )
+      );
+      return {
+        before: before as unknown as JsonValue,
+        after: after as unknown as JsonValue,
+        rollback: {
+          rolePolicy: { overrides: before.overrides },
+        } as unknown as JsonValue,
+        affectedResources,
+        verificationMethod: "role_permission_policy_update",
+      };
+    },
+    rollback(input) {
+      const rollback = asJsonObject(input.rollback, "rollback");
+      const rolePolicyRollback = asJsonObject(
+        rollback.rolePolicy,
+        "rollback.rolePolicy"
+      );
+      const overrides = asJsonObject(
+        rolePolicyRollback.overrides,
+        "rollback.rolePolicy.overrides"
+      );
+      rolePolicy.replaceOverrides(
+        overrides as unknown as RolePolicyOverrides,
+        input.actor ?? "autonomous_mutation_rollback"
+      );
+      return { verificationMethod: "role_permission_policy_rollback" };
     },
   };
 }

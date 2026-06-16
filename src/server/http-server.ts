@@ -53,6 +53,8 @@ import { McpServer } from "../mcp/server.ts";
 import { McpAuditStore } from "../mcp/audit.ts";
 import type { AgentRunEvent } from "../agent/types.ts";
 import { RunGraphStore } from "../orchestration/run-graph-store.ts";
+import { loadRolePolicyConfig } from "../orchestration/role-config.ts";
+import { RolePolicyRuntimeStore } from "../orchestration/role-policy-runtime.ts";
 import { AppDatabase } from "../platform/database.ts";
 import { Logger } from "../platform/logger.ts";
 import { MetricsStore } from "../platform/metrics.ts";
@@ -169,6 +171,7 @@ export class HttpServer {
   private readonly selfEvolutionMutations: SelfEvolutionMutationService;
   private readonly memoryPolicy: MemoryPolicyStore;
   private readonly promptGuidance: PromptRuntimeGuidanceStore;
+  private readonly rolePolicy: RolePolicyRuntimeStore;
   private readonly slack: SlackChannel;
   private readonly settings: OperatorSettingsStore;
   private readonly requestAudits: RequestAuditStore;
@@ -201,7 +204,8 @@ export class HttpServer {
     assignmentIntake?: AssignmentIntakeService,
     assignmentMutations?: AutonomousMutationLedger,
     promptGuidance?: PromptRuntimeGuidanceStore,
-    memoryPolicy?: MemoryPolicyStore
+    memoryPolicy?: MemoryPolicyStore,
+    rolePolicy?: RolePolicyRuntimeStore
   ) {
     if (!assignments) {
       throw new Error("AutonomousAssignmentService is required");
@@ -245,6 +249,12 @@ export class HttpServer {
     this.memoryPolicy = memoryPolicy ?? new MemoryPolicyStore(database, config);
     this.promptGuidance =
       promptGuidance ?? new PromptRuntimeGuidanceStore(database);
+    this.rolePolicy =
+      rolePolicy ??
+      new RolePolicyRuntimeStore(
+        database,
+        loadRolePolicyConfig(config.roleConfigPath)
+      );
     this.slack = new SlackChannel(
       config,
       channels,
@@ -274,6 +284,7 @@ export class HttpServer {
       settings: this.settings,
       memoryPolicy: this.memoryPolicy,
       promptGuidance: this.promptGuidance,
+      rolePolicy: this.rolePolicy,
       toolBundles: this.toolBundleLifecycle,
     });
     this.selfEvolutionMutations = new SelfEvolutionMutationService({

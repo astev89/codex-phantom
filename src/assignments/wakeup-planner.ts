@@ -467,7 +467,7 @@ function buildWakeupPrompt(
   ];
   if (shouldAllowPlannerMutationMarkers(detail)) {
     lines.push(
-      'Optionally include one autonomous mutation marker on a single line, for example ASSIGNMENT_MUTATION: {"target":"configuration","mutationType":"operator_settings","rationale":"...","proposedChange":{"operatorSettings":{...}}} or ASSIGNMENT_MUTATION: {"target":"memory_policy","mutationType":"runtime_bounds","rationale":"...","proposedChange":{"memoryPolicy":{...}}}. Mutations only apply when the assignment is evolve-authorized and assignment policy allows the class.'
+      'Optionally include one autonomous mutation marker on a single line, for example ASSIGNMENT_MUTATION: {"target":"configuration","mutationType":"operator_settings","rationale":"...","proposedChange":{"operatorSettings":{...}}}, ASSIGNMENT_MUTATION: {"target":"memory_policy","mutationType":"runtime_bounds","rationale":"...","proposedChange":{"memoryPolicy":{...}}}, or ASSIGNMENT_MUTATION: {"target":"role","mutationType":"permission_policy","rationale":"...","proposedChange":{"rolePolicy":{"roles":{"explorer":{"allowedMcpServers":["docs"]}}}}}. Mutations only apply when the assignment is evolve-authorized and assignment policy allows the class.'
     );
   }
   if (shouldAllowPlannerChildMarkers(detail)) {

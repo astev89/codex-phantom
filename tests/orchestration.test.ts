@@ -12,6 +12,7 @@ import { AppDatabase } from "../src/platform/database.ts";
 import { PromptRuntimeGuidanceStore } from "../src/prompts/runtime-guidance.ts";
 import { RunGraphStore } from "../src/orchestration/run-graph-store.ts";
 import { loadRolePolicyConfig } from "../src/orchestration/role-config.ts";
+import { RolePolicyRuntimeStore } from "../src/orchestration/role-policy-runtime.ts";
 import { OrchestrationService } from "../src/orchestration/service.ts";
 import { buildScopedPolicy } from "../src/orchestration/roles.ts";
 import { ToolRegistry } from "../src/tools/registry.ts";
@@ -404,6 +405,126 @@ roles:
   assert.deepEqual(policy.fileGlobs, ["docs/**/*"]);
   assert.deepEqual(policy.allowedToolIds, ["echo.summary"]);
   assert.deepEqual(policy.allowedMcpServers, ["docs"]);
+});
+
+test("runtime role policy overlay narrows newly spawned subagents", async () => {
+  const database = new AppDatabase(":memory:");
+  const config = makeConfig();
+  const requests: AgentRunRequest[] = [];
+  const adapter: AgentAdapter = {
+    name: "capturing",
+    capabilities: {
+      supportsResume: true,
+      supportsStreaming: true,
+      supportsToolStreaming: true,
+      supportsStructuredOutput: true,
+      supportsParallelToolCalls: false,
+      supportsReasoningEffort: true,
+    },
+    async run(request) {
+      requests.push(request);
+      return {
+        runId: request.runId,
+        outputText: "role policy observed",
+        transcript: [
+          { role: "user", content: request.messages.at(-1)?.content ?? "" },
+          { role: "assistant", content: "role policy observed" },
+        ],
+        toolCalls: [],
+      };
+    },
+  };
+  const registry = new ToolRegistry();
+  registry.register({
+    id: "echo.summary",
+    description: "echo",
+    scopes: ["read"],
+    kind: "in_process",
+    allowedRoles: ["coordinator", "explorer"],
+    handler: async (input) => input,
+  });
+  registry.register({
+    id: "memory.query",
+    description: "memory",
+    scopes: ["read"],
+    kind: "in_process",
+    allowedRoles: ["coordinator", "explorer"],
+    handler: async () => ({ ok: true }),
+  });
+  const runtime = new AgentRuntime(
+    config,
+    adapter,
+    new SessionStore(database),
+    new MemoryStore(
+      database,
+      config,
+      makeDisabledEmbeddings(),
+      makeFakeVectorStore({
+        backend: "qdrant",
+        available: false,
+        configured: false,
+      }),
+      makeFakeVectorStore({ backend: "sqlite_fallback", available: true })
+    ),
+    registry
+  );
+  const rolePolicy = new RolePolicyRuntimeStore(
+    database,
+    loadRolePolicyConfig(config.roleConfigPath)
+  );
+  rolePolicy.update(
+    {
+      roles: {
+        explorer: {
+          mode: "read_only",
+          fileGlobs: ["docs/**/*"],
+          allowedToolIds: ["echo.summary"],
+          allowedMcpServers: ["docs"],
+        },
+      },
+    },
+    "operator"
+  );
+  const runs = new RunGraphStore(database);
+  const orchestration = new OrchestrationService(
+    runtime,
+    registry,
+    runs,
+    rolePolicy
+  );
+
+  await orchestration.runCoordinator(
+    {
+      channelId: "web",
+      conversationId: "conv",
+      message: "inspect docs",
+      subagents: [{ role: "explorer", objective: "read docs only" }],
+    },
+    async () => {}
+  );
+
+  const explorerRequest = requests.find(
+    (request) => request.role === "explorer"
+  );
+  assert.deepEqual(explorerRequest?.permissionPolicy.fileGlobs, ["docs/**/*"]);
+  assert.deepEqual(explorerRequest?.permissionPolicy.allowedToolIds, [
+    "echo.summary",
+  ]);
+  assert.deepEqual(explorerRequest?.permissionPolicy.allowedMcpServers, [
+    "docs",
+  ]);
+  assert.throws(
+    () =>
+      rolePolicy.update({
+        roles: {
+          explorer: {
+            allowedMcpServers: ["repo"],
+          },
+        },
+      }),
+    /rolePolicy\.roles\.explorer\.allowedMcpServers cannot include repo/
+  );
+  database.close();
 });
 
 test("invalid YAML role policy fails with actionable errors", async () => {

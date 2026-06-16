@@ -5,6 +5,8 @@ import { AutonomousAssignmentService } from "../src/assignments/service.ts";
 import { AutonomousMutationExecutor } from "../src/assignments/autonomous-mutations.ts";
 import { AutonomousMutationLedger } from "../src/assignments/mutation-ledger.ts";
 import { MemoryPolicyStore } from "../src/memory/policy.ts";
+import { loadRolePolicyConfig } from "../src/orchestration/role-config.ts";
+import { RolePolicyRuntimeStore } from "../src/orchestration/role-policy-runtime.ts";
 import {
   ASSIGNMENT_WAKEUP_JOB_NAME,
   AssignmentWakeupPlanner,
@@ -575,6 +577,82 @@ test("AssignmentWakeupPlanner applies explicitly allowed memory policy mutation 
       "memory_policy.runtime_bounds",
     ],
     mutationClass: "memory_policy.runtime_bounds",
+    actor: "planner",
+  });
+});
+
+test("AssignmentWakeupPlanner applies explicitly allowed role policy mutation markers", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-06-16T12:42:00.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const database = new AppDatabase(":memory:");
+  t.after(() => database.close());
+  const assignments = new AutonomousAssignmentService(database);
+  const ledger = new AutonomousMutationLedger(database, assignments);
+  const settings = new OperatorSettingsStore(database);
+  const rolePolicy = new RolePolicyRuntimeStore(
+    database,
+    loadRolePolicyConfig(makeConfig().roleConfigPath)
+  );
+  const executor = new AutonomousMutationExecutor({
+    assignments,
+    ledger,
+    settings,
+    rolePolicy,
+  });
+  const runs = new RunGraphStore(database);
+  const { scheduler } = makeScheduler(now);
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, [
+      [
+        "Narrowed explorer role permissions.",
+        'ASSIGNMENT_MUTATION: {"target":"role","mutationType":"permission_policy","rationale":"Limit explorer subagents to docs reads.","proposedChange":{"rolePolicy":{"roles":{"explorer":{"fileGlobs":["docs/**/*"],"allowedToolIds":["echo.summary"],"allowedMcpServers":["docs"]}}}}}',
+        "ASSIGNMENT_STATUS: complete",
+      ].join("\n"),
+    ]),
+    mutations: executor,
+  });
+  const assignment = assignments.create({
+    objective: "Planner should tune role policy",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "role.permission_policy",
+        ],
+      },
+    },
+  });
+
+  const result = await planner.wakeNow({
+    assignmentId: assignment.assignment.id,
+    actor: "scheduler",
+    reason: "scheduled wakeup",
+  });
+
+  assert.equal(result.status, "completed");
+  assert.deepEqual(rolePolicy.get().overrides.explorer, {
+    fileGlobs: ["docs/**/*"],
+    allowedToolIds: ["echo.summary"],
+    allowedMcpServers: ["docs"],
+  });
+  const mutations = ledger.list({ assignmentId: assignment.assignment.id });
+  assert.equal(mutations.length, 1);
+  assert.equal(mutations[0]?.status, "applied");
+  assert.equal(mutations[0]?.target, "role");
+  assert.equal(mutations[0]?.mutationType, "permission_policy");
+  assert.equal(mutations[0]?.runId, "coord_wakeup_1");
+  assert.deepEqual(mutations[0]?.authorizingPolicy, {
+    rule: "assignment.policy.selfEvolution",
+    maxRiskClass: "medium",
+    allowedMutationClasses: [
+      "configuration.operator_settings",
+      "role.permission_policy",
+    ],
+    mutationClass: "role.permission_policy",
     actor: "planner",
   });
 });

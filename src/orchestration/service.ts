@@ -7,6 +7,7 @@ import {
   compiledRolePolicyConfig,
   type LoadedRolePolicyConfig,
 } from "./role-config.ts";
+import type { RolePolicyRuntimeProvider } from "./role-policy-runtime.ts";
 import { buildScopedPolicy } from "./roles.ts";
 import { RunGraphStore } from "./run-graph-store.ts";
 import type { RunNode, SubagentRequest } from "./types.ts";
@@ -28,13 +29,17 @@ export class OrchestrationService {
   private readonly runtime: AgentRuntime;
   private readonly tools: ToolRegistry;
   private readonly graphStore: RunGraphStore;
-  private readonly rolePolicy: LoadedRolePolicyConfig;
+  private readonly rolePolicy:
+    | LoadedRolePolicyConfig
+    | RolePolicyRuntimeProvider;
 
   constructor(
     runtime: AgentRuntime,
     tools: ToolRegistry,
     graphStore: RunGraphStore,
-    rolePolicy: LoadedRolePolicyConfig = compiledRolePolicyConfig()
+    rolePolicy:
+      | LoadedRolePolicyConfig
+      | RolePolicyRuntimeProvider = compiledRolePolicyConfig()
   ) {
     this.runtime = runtime;
     this.tools = tools;
@@ -47,7 +52,7 @@ export class OrchestrationService {
   }
 
   getRolePolicyStatus(): LoadedRolePolicyConfig["status"] {
-    return this.rolePolicy.status;
+    return this.currentRolePolicyConfig().status;
   }
 
   async runCoordinator(
@@ -181,7 +186,7 @@ export class OrchestrationService {
     const policy = buildScopedPolicy(
       parent.permissionPolicy,
       request,
-      this.rolePolicy.baselines
+      this.currentRolePolicyConfig().baselines
     );
     const node: RunNode = {
       runId,
@@ -289,5 +294,12 @@ export class OrchestrationService {
         outputText: message,
       };
     }
+  }
+
+  private currentRolePolicyConfig(): LoadedRolePolicyConfig {
+    if ("getConfig" in this.rolePolicy) {
+      return this.rolePolicy.getConfig();
+    }
+    return this.rolePolicy;
   }
 }

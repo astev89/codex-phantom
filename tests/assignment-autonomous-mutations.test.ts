@@ -8,6 +8,11 @@ import {
 import { AutonomousMutationLedger } from "../src/assignments/mutation-ledger.ts";
 import { AutonomousAssignmentService } from "../src/assignments/service.ts";
 import { MemoryPolicyStore, memoryPolicyValues } from "../src/memory/policy.ts";
+import { loadRolePolicyConfig } from "../src/orchestration/role-config.ts";
+import {
+  RolePolicyRuntimeStore,
+  rolePolicyRuntimeSnapshot,
+} from "../src/orchestration/role-policy-runtime.ts";
 import { AppDatabase } from "../src/platform/database.ts";
 import { PromptRuntimeGuidanceStore } from "../src/prompts/runtime-guidance.ts";
 import { OperatorSettingsStore } from "../src/server/settings.ts";
@@ -88,6 +93,24 @@ function createMemoryPolicyHarness() {
     memoryPolicy,
   });
   return { assignments, database, executor, ledger, memoryPolicy, settings };
+}
+
+function createRolePolicyHarness() {
+  const database = new AppDatabase(":memory:");
+  const assignments = new AutonomousAssignmentService(database);
+  const ledger = new AutonomousMutationLedger(database, assignments);
+  const settings = new OperatorSettingsStore(database);
+  const rolePolicy = new RolePolicyRuntimeStore(
+    database,
+    loadRolePolicyConfig(makeConfig().roleConfigPath)
+  );
+  const executor = new AutonomousMutationExecutor({
+    assignments,
+    ledger,
+    settings,
+    rolePolicy,
+  });
+  return { assignments, database, executor, ledger, rolePolicy, settings };
 }
 
 function previewApprovedReadOnlyBundle(toolBundles: ToolBundleImportStore) {
@@ -1017,6 +1040,381 @@ test("AutonomousMutationExecutor blocks stale memory policy rollback across assi
   database.close();
 });
 
+test("AutonomousMutationExecutor applies explicit role permission policy mutations", () => {
+  const { assignments, database, executor, ledger, rolePolicy } =
+    createRolePolicyHarness();
+  const before = rolePolicyRuntimeSnapshot(rolePolicy.get());
+  const assignment = assignments.create({
+    objective: "Narrow explorer role policy",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "role.permission_policy",
+        ],
+      },
+    },
+  });
+
+  const applied = executor.apply({
+    assignmentId: assignment.assignment.id,
+    runId: "coord_role_policy",
+    target: "role",
+    mutationType: "permission_policy",
+    rationale: "Limit explorer subagents to docs reads for this assignment.",
+    actor: "alice",
+    proposedChange: {
+      rolePolicy: {
+        roles: {
+          explorer: {
+            mode: "read_only",
+            fileGlobs: ["docs/**/*"],
+            allowedToolIds: ["echo.summary"],
+            allowedMcpServers: ["docs"],
+          },
+        },
+      },
+    },
+  });
+
+  assert.deepEqual(rolePolicy.get().overrides, {
+    explorer: {
+      mode: "read_only",
+      fileGlobs: ["docs/**/*"],
+      allowedToolIds: ["echo.summary"],
+      allowedMcpServers: ["docs"],
+    },
+  });
+  assert.deepEqual(rolePolicy.get().baselines.explorer, {
+    mode: "read_only",
+    fileGlobs: ["docs/**/*"],
+    allowedToolIds: ["echo.summary"],
+    allowedMcpServers: ["docs"],
+  });
+  assert.equal(applied.mutation.status, "applied");
+  assert.equal(applied.mutation.target, "role");
+  assert.equal(applied.mutation.mutationType, "permission_policy");
+  assert.deepEqual(applied.mutation.authorizingPolicy, {
+    rule: "assignment.policy.selfEvolution",
+    maxRiskClass: "medium",
+    allowedMutationClasses: [
+      "configuration.operator_settings",
+      "role.permission_policy",
+    ],
+    mutationClass: "role.permission_policy",
+    actor: "alice",
+  });
+  assert.deepEqual(applied.mutation.before, before);
+  assert.deepEqual(
+    applied.mutation.after,
+    rolePolicyRuntimeSnapshot(rolePolicy.get())
+  );
+  assert.deepEqual(applied.mutation.rollback, {
+    rolePolicy: { overrides: before.overrides },
+  });
+  assert.deepEqual(applied.mutation.affectedResources, [
+    { type: "role_policy", id: "runtime" },
+  ]);
+  assert.deepEqual(applied.mutation.verification, {
+    attempted: true,
+    result: "passed",
+    method: "role_permission_policy_update",
+  });
+  assert.deepEqual(
+    ledger.list({ assignmentId: assignment.assignment.id }).map((mutation) => ({
+      id: mutation.id,
+      status: mutation.status,
+    })),
+    [{ id: applied.mutation.id, status: "applied" }]
+  );
+
+  const rolledBack = executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: applied.mutation.id,
+    actor: "bob",
+  });
+
+  assert.deepEqual(rolePolicyRuntimeSnapshot(rolePolicy.get()), before);
+  assert.equal(rolledBack.mutation.status, "rolled_back");
+  assert.deepEqual(rolledBack.mutation.verification, {
+    attempted: true,
+    result: "passed",
+    method: "role_permission_policy_rollback",
+  });
+  assert.deepEqual(
+    assignments
+      .timeline(assignment.assignment.id)
+      .events.map((event) => event.type),
+    ["created", "mutation_planned", "mutation_applied", "mutation_rolled_back"]
+  );
+
+  database.close();
+});
+
+test("AutonomousMutationExecutor keeps role permission policy mutations explicitly opt-in", () => {
+  const { assignments, database, executor, ledger, rolePolicy } =
+    createRolePolicyHarness();
+  const before = rolePolicyRuntimeSnapshot(rolePolicy.get());
+  const assignment = assignments.create({
+    objective: "Default policy should not mutate role policy",
+    autonomyLevel: "evolve",
+  });
+
+  assert.throws(
+    () =>
+      executor.apply({
+        assignmentId: assignment.assignment.id,
+        target: "role",
+        mutationType: "permission_policy",
+        rationale: "Try role policy mutation without explicit opt-in.",
+        proposedChange: {
+          rolePolicy: {
+            roles: {
+              explorer: { allowedMcpServers: ["docs"] },
+            },
+          },
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 403);
+      assert.equal(error.mutation?.status, "failed");
+      assert.match(error.message, /does not allow role\.permission_policy/);
+      return true;
+    }
+  );
+
+  assert.deepEqual(rolePolicyRuntimeSnapshot(rolePolicy.get()), before);
+  assert.deepEqual(
+    ledger.list({ assignmentId: assignment.assignment.id }).map((mutation) => ({
+      status: mutation.status,
+      mutationType: mutation.mutationType,
+      authorizingPolicy: mutation.authorizingPolicy,
+      errorMessage: mutation.errorMessage,
+    })),
+    [
+      {
+        status: "failed",
+        mutationType: "permission_policy",
+        authorizingPolicy: {
+          rule: "assignment.policy.selfEvolution",
+          maxRiskClass: "medium",
+          allowedMutationClasses: ["configuration.operator_settings"],
+          mutationClass: "role.permission_policy",
+        },
+        errorMessage:
+          "Assignment self-evolution policy does not allow role.permission_policy",
+      },
+    ]
+  );
+  database.close();
+});
+
+test("AutonomousMutationExecutor rejects malformed role policy mutations without changing policy", () => {
+  const { assignments, database, executor, ledger, rolePolicy } =
+    createRolePolicyHarness();
+  const before = rolePolicyRuntimeSnapshot(rolePolicy.get());
+  const assignment = assignments.create({
+    objective: "Reject unsafe role policy",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "role.permission_policy",
+        ],
+      },
+    },
+  });
+
+  assert.throws(
+    () =>
+      executor.apply({
+        assignmentId: assignment.assignment.id,
+        target: "role",
+        mutationType: "permission_policy",
+        rationale: "Try an unsupported role.",
+        proposedChange: {
+          rolePolicy: {
+            roles: {
+              coordinator: { allowedMcpServers: ["repo"] },
+            },
+          },
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 400);
+      assert.equal(error.mutation?.status, "failed");
+      assert.match(error.message, /rolePolicy\.roles\.coordinator/);
+      return true;
+    }
+  );
+
+  assert.throws(
+    () =>
+      executor.apply({
+        assignmentId: assignment.assignment.id,
+        target: "role",
+        mutationType: "permission_policy",
+        rationale: "Try widening explorer MCP access.",
+        proposedChange: {
+          rolePolicy: {
+            roles: {
+              explorer: { allowedMcpServers: ["repo"] },
+            },
+          },
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 400);
+      assert.equal(error.mutation?.status, "failed");
+      assert.match(
+        error.message,
+        /rolePolicy\.roles\.explorer\.allowedMcpServers cannot include repo/
+      );
+      return true;
+    }
+  );
+
+  assert.throws(
+    () =>
+      executor.apply({
+        assignmentId: assignment.assignment.id,
+        target: "role",
+        mutationType: "permission_policy",
+        rationale: "Try escalating read-only explorer to write scope.",
+        proposedChange: {
+          rolePolicy: {
+            roles: {
+              explorer: { mode: "scoped_write" },
+            },
+          },
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 400);
+      assert.equal(error.mutation?.status, "failed");
+      assert.match(
+        error.message,
+        /rolePolicy\.roles\.explorer\.mode cannot exceed baseline read_only/
+      );
+      return true;
+    }
+  );
+
+  assert.deepEqual(rolePolicyRuntimeSnapshot(rolePolicy.get()), before);
+  assert.deepEqual(
+    ledger
+      .list({ assignmentId: assignment.assignment.id })
+      .map((mutation) => ({
+        target: mutation.target,
+        mutationType: mutation.mutationType,
+        status: mutation.status,
+        errorMessage: mutation.errorMessage,
+      }))
+      .sort((left, right) =>
+        String(left.errorMessage).localeCompare(String(right.errorMessage))
+      ),
+    [
+      {
+        target: "role",
+        mutationType: "permission_policy",
+        status: "failed",
+        errorMessage: "rolePolicy.roles.coordinator is not supported",
+      },
+      {
+        target: "role",
+        mutationType: "permission_policy",
+        status: "failed",
+        errorMessage:
+          "rolePolicy.roles.explorer.allowedMcpServers cannot include repo",
+      },
+      {
+        target: "role",
+        mutationType: "permission_policy",
+        status: "failed",
+        errorMessage:
+          "rolePolicy.roles.explorer.mode cannot exceed baseline read_only",
+      },
+    ]
+  );
+
+  database.close();
+});
+
+test("AutonomousMutationExecutor blocks stale role policy rollback across assignments", () => {
+  const { assignments, database, executor, rolePolicy } =
+    createRolePolicyHarness();
+  const selfEvolution = {
+    allowedMutationClasses: [
+      "configuration.operator_settings",
+      "role.permission_policy",
+    ],
+  };
+  const first = assignments.create({
+    objective: "First role policy mutation",
+    autonomyLevel: "evolve",
+    policy: { selfEvolution },
+  });
+  const second = assignments.create({
+    objective: "Second role policy mutation",
+    autonomyLevel: "evolve",
+    policy: { selfEvolution },
+  });
+
+  const firstApplied = executor.apply({
+    assignmentId: first.assignment.id,
+    target: "role",
+    mutationType: "permission_policy",
+    rationale: "Set first role policy override.",
+    proposedChange: {
+      rolePolicy: {
+        roles: { explorer: { allowedMcpServers: ["docs"] } },
+      },
+    },
+  });
+  const secondApplied = executor.apply({
+    assignmentId: second.assignment.id,
+    target: "role",
+    mutationType: "permission_policy",
+    rationale: "Set second role policy override.",
+    proposedChange: {
+      rolePolicy: {
+        roles: { explorer: { allowedToolIds: ["echo.summary"] } },
+      },
+    },
+  });
+
+  assert.equal(secondApplied.mutation.status, "applied");
+  assert.deepEqual(rolePolicy.get().overrides.explorer, {
+    allowedMcpServers: ["docs"],
+    allowedToolIds: ["echo.summary"],
+  });
+  assert.throws(
+    () =>
+      executor.rollback({
+        assignmentId: first.assignment.id,
+        mutationId: firstApplied.mutation.id,
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 409);
+      assert.match(error.message, /newer applied role\.permission_policy/);
+      return true;
+    }
+  );
+  assert.deepEqual(rolePolicy.get().overrides.explorer, {
+    allowedMcpServers: ["docs"],
+    allowedToolIds: ["echo.summary"],
+  });
+
+  database.close();
+});
+
 test("AutonomousMutationExecutor blocks stale prompt runtime guidance rollback across assignments", () => {
   const { assignments, database, executor, promptGuidance } =
     createPromptGuidanceHarness();
@@ -1766,7 +2164,7 @@ test("AutonomousMutationExecutor audits unsupported and malformed autonomous mut
         mutationType: "tool_bundle_enable",
         status: "failed",
         errorMessage:
-          "Only configuration.operator_settings, configuration.assignment_policy, tool.bundle_enable, prompt.runtime_guidance, and memory_policy.runtime_bounds autonomous mutations are supported in this slice",
+          "Only configuration.operator_settings, configuration.assignment_policy, tool.bundle_enable, prompt.runtime_guidance, memory_policy.runtime_bounds, and role.permission_policy autonomous mutations are supported in this slice",
       },
     ]
   );

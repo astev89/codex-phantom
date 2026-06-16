@@ -20,6 +20,11 @@ import { SessionStore } from "../src/chat/session-store.ts";
 import { MemoryMaintenanceService } from "../src/memory/maintenance.ts";
 import { MemoryPolicyStore } from "../src/memory/policy.ts";
 import { MemoryStore } from "../src/memory/store.ts";
+import { loadRolePolicyConfig } from "../src/orchestration/role-config.ts";
+import {
+  RolePolicyRuntimeStore,
+  rolePolicyRuntimeSnapshot,
+} from "../src/orchestration/role-policy-runtime.ts";
 import { PromptRuntimeGuidanceStore } from "../src/prompts/runtime-guidance.ts";
 import { ToolRegistry } from "../src/tools/registry.ts";
 import { DynamicToolRegistry } from "../src/tools/dynamic-registry.ts";
@@ -813,6 +818,10 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     handler: async (input) => input,
   });
   const promptGuidance = new PromptRuntimeGuidanceStore(database);
+  const rolePolicy = new RolePolicyRuntimeStore(
+    database,
+    loadRolePolicyConfig(config.roleConfigPath)
+  );
 
   const runtime = new AgentRuntime(
     config,
@@ -895,7 +904,8 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     undefined,
     assignmentMutations,
     promptGuidance,
-    memoryPolicy
+    memoryPolicy,
+    rolePolicy
   );
   const instance = await server.listen();
   const address = instance.address();
@@ -1731,6 +1741,194 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assert.equal(
       memoryPolicy.get().memorySummaryLimit,
       memoryPolicyBefore.memorySummaryLimit
+    );
+
+    const rolePolicyBefore = rolePolicyRuntimeSnapshot(rolePolicy.get());
+    const rolePolicyAssignmentCreate = await fetch(
+      `${baseUrl}/admin/assignments`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          objective: "Autonomously tune role policy",
+          autonomyLevel: "evolve",
+          policy: {
+            selfEvolution: {
+              allowedMutationClasses: [
+                "configuration.operator_settings",
+                "role.permission_policy",
+              ],
+            },
+          },
+        }),
+      }
+    );
+    assert.equal(rolePolicyAssignmentCreate.status, 201);
+    const rolePolicyAssignmentJson =
+      (await rolePolicyAssignmentCreate.json()) as {
+        assignment: { id: string };
+      };
+
+    const rolePolicyApply = await fetch(
+      `${baseUrl}/admin/assignments/${rolePolicyAssignmentJson.assignment.id}/mutations/apply`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          target: "role",
+          mutationType: "permission_policy",
+          rationale: "Limit explorer subagents to docs reads.",
+          runId: "coord_http_role_policy",
+          actor: "operator",
+          proposedChange: {
+            rolePolicy: {
+              roles: {
+                explorer: {
+                  fileGlobs: ["docs/**/*"],
+                  allowedToolIds: ["echo.summary"],
+                  allowedMcpServers: ["docs"],
+                },
+              },
+            },
+          },
+        }),
+      }
+    );
+    assert.equal(rolePolicyApply.status, 200);
+    const rolePolicyApplyJson = (await rolePolicyApply.json()) as {
+      mutation: {
+        id: string;
+        status: string;
+        target: string;
+        mutationType: string;
+        before: typeof rolePolicyBefore;
+        after: typeof rolePolicyBefore;
+        rollback: unknown;
+        affectedResources: unknown;
+      };
+    };
+    assert.equal(rolePolicyApplyJson.mutation.status, "applied");
+    assert.equal(rolePolicyApplyJson.mutation.target, "role");
+    assert.equal(
+      rolePolicyApplyJson.mutation.mutationType,
+      "permission_policy"
+    );
+    assert.deepEqual(rolePolicyApplyJson.mutation.before, rolePolicyBefore);
+    assert.deepEqual(rolePolicy.get().overrides.explorer, {
+      fileGlobs: ["docs/**/*"],
+      allowedToolIds: ["echo.summary"],
+      allowedMcpServers: ["docs"],
+    });
+    assert.deepEqual(rolePolicyApplyJson.mutation.after, {
+      overrides: rolePolicy.get().overrides,
+      baselines: rolePolicy.get().baselines,
+    });
+    assert.deepEqual(rolePolicyApplyJson.mutation.rollback, {
+      rolePolicy: { overrides: rolePolicyBefore.overrides },
+    });
+    assert.deepEqual(rolePolicyApplyJson.mutation.affectedResources, [
+      { type: "role_policy", id: "runtime" },
+    ]);
+
+    const rolePolicyAssignmentMutations = await fetch(
+      `${baseUrl}/admin/assignments/${rolePolicyAssignmentJson.assignment.id}/mutations`,
+      {
+        headers: {
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+      }
+    );
+    assert.equal(rolePolicyAssignmentMutations.status, 200);
+    const rolePolicyAssignmentMutationsJson =
+      (await rolePolicyAssignmentMutations.json()) as {
+        mutations: Array<{ id: string; status: string }>;
+      };
+    assert.deepEqual(
+      rolePolicyAssignmentMutationsJson.mutations.map((mutation) => ({
+        id: mutation.id,
+        status: mutation.status,
+      })),
+      [{ id: rolePolicyApplyJson.mutation.id, status: "applied" }]
+    );
+
+    const rolePolicyGlobalMutations = await fetch(
+      `${baseUrl}/admin/mutations?assignmentId=${encodeURIComponent(
+        rolePolicyAssignmentJson.assignment.id
+      )}&runId=coord_http_role_policy&target=role&status=applied`,
+      {
+        headers: {
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+      }
+    );
+    assert.equal(rolePolicyGlobalMutations.status, 200);
+    const rolePolicyGlobalMutationsJson =
+      (await rolePolicyGlobalMutations.json()) as {
+        mutations: Array<{ id: string; target: string; mutationType: string }>;
+      };
+    assert.deepEqual(
+      rolePolicyGlobalMutationsJson.mutations.map((mutation) => ({
+        id: mutation.id,
+        target: mutation.target,
+        mutationType: mutation.mutationType,
+      })),
+      [
+        {
+          id: rolePolicyApplyJson.mutation.id,
+          target: "role",
+          mutationType: "permission_policy",
+        },
+      ]
+    );
+
+    const rolePolicyTimeline = await fetch(`${baseUrl}/admin/timeline`, {
+      headers: {
+        Authorization: `Bearer ${config.operatorBearerToken}`,
+      },
+    });
+    assert.equal(rolePolicyTimeline.status, 200);
+    const rolePolicyTimelineJson = (await rolePolicyTimeline.json()) as {
+      autonomousMutations: Array<{ id: string; kind: string }>;
+    };
+    assert.ok(
+      rolePolicyTimelineJson.autonomousMutations.some(
+        (mutation) =>
+          mutation.id === rolePolicyApplyJson.mutation.id &&
+          mutation.kind === "autonomous_mutation"
+      )
+    );
+
+    const rolePolicyRollback = await fetch(
+      `${baseUrl}/admin/assignments/${rolePolicyAssignmentJson.assignment.id}/mutations/${rolePolicyApplyJson.mutation.id}/rollback`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({ actor: "operator" }),
+      }
+    );
+    assert.equal(rolePolicyRollback.status, 200);
+    const rolePolicyRollbackJson = (await rolePolicyRollback.json()) as {
+      mutation: { id: string; status: string };
+    };
+    assert.deepEqual(
+      {
+        id: rolePolicyRollbackJson.mutation.id,
+        status: rolePolicyRollbackJson.mutation.status,
+      },
+      { id: rolePolicyApplyJson.mutation.id, status: "rolled_back" }
+    );
+    assert.deepEqual(
+      rolePolicyRuntimeSnapshot(rolePolicy.get()),
+      rolePolicyBefore
     );
 
     const policyAssignmentCreate = await fetch(`${baseUrl}/admin/assignments`, {
