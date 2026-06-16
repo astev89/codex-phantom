@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  type AutonomousMutationAdapter,
   AutonomousMutationExecutionError,
   AutonomousMutationExecutor,
 } from "../src/assignments/autonomous-mutations.ts";
@@ -54,6 +55,7 @@ test("AutonomousMutationExecutor applies bounded operator settings mutations for
     rule: "assignment.policy.selfEvolution",
     maxRiskClass: "medium",
     allowedMutationClasses: ["configuration.operator_settings"],
+    mutationClass: "configuration.operator_settings",
     actor: "alice",
   });
   assert.deepEqual(result.mutation.before, {
@@ -90,6 +92,164 @@ test("AutonomousMutationExecutor applies bounded operator settings mutations for
       .filter((event) => event.type.startsWith("mutation_"))
       .map((event) => (event.payload as { actor?: string }).actor),
     ["alice", "alice"]
+  );
+
+  database.close();
+});
+
+test("AutonomousMutationExecutor supports injected autonomous mutation adapters", () => {
+  const database = new AppDatabase(":memory:");
+  const assignments = new AutonomousAssignmentService(database);
+  const ledger = new AutonomousMutationLedger(database, assignments);
+  const settings = new OperatorSettingsStore(database);
+  const fakeState = { value: "before" };
+  const fakeAdapter: AutonomousMutationAdapter = {
+    target: "configuration",
+    mutationType: "fake_settings",
+    mutationClass: "configuration.fake_settings",
+    affectedResources: [{ type: "settings", id: "fake" }],
+    apply(input) {
+      const proposedChange = input.proposedChange as {
+        fakeSettings?: { value?: string };
+      };
+      const nextValue = proposedChange.fakeSettings?.value;
+      if (!nextValue) {
+        throw new Error("fakeSettings.value is required");
+      }
+      const before = { value: fakeState.value };
+      fakeState.value = nextValue;
+      return {
+        before,
+        after: { value: fakeState.value },
+        rollback: { fakeSettings: before },
+        affectedResources: [{ type: "settings", id: "fake" }],
+        verificationMethod: "fake_settings_update",
+      };
+    },
+    rollback(input) {
+      const rollback = input.rollback as { fakeSettings?: { value?: string } };
+      const previousValue = rollback.fakeSettings?.value;
+      if (!previousValue) {
+        throw new Error("rollback.fakeSettings.value is required");
+      }
+      fakeState.value = previousValue;
+      return {
+        verificationMethod: "fake_settings_rollback",
+      };
+    },
+  };
+  const executor = new AutonomousMutationExecutor({
+    assignments,
+    ledger,
+    settings,
+    adapters: [fakeAdapter],
+  });
+  const assignment = assignments.create({
+    objective: "Apply injected mutation adapter",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: ["configuration.fake_settings"],
+      },
+    },
+  });
+
+  const applied = executor.apply({
+    assignmentId: assignment.assignment.id,
+    target: "configuration",
+    mutationType: "fake_settings",
+    rationale: "Exercise the adapter registry.",
+    proposedChange: {
+      fakeSettings: { value: "after" },
+    },
+  });
+
+  assert.equal(fakeState.value, "after");
+  assert.equal(applied.mutation.status, "applied");
+  assert.equal(applied.mutation.mutationType, "fake_settings");
+  assert.deepEqual(applied.mutation.authorizingPolicy, {
+    rule: "assignment.policy.selfEvolution",
+    maxRiskClass: "medium",
+    allowedMutationClasses: ["configuration.fake_settings"],
+    mutationClass: "configuration.fake_settings",
+  });
+  assert.deepEqual(applied.mutation.rollback, {
+    fakeSettings: { value: "before" },
+  });
+  assert.deepEqual(applied.mutation.affectedResources, [
+    { type: "settings", id: "fake" },
+  ]);
+  assert.deepEqual(applied.mutation.verification, {
+    attempted: true,
+    result: "passed",
+    method: "fake_settings_update",
+  });
+
+  const defaultOnlyExecutor = new AutonomousMutationExecutor({
+    assignments,
+    ledger,
+    settings,
+  });
+  assert.throws(
+    () =>
+      defaultOnlyExecutor.rollback({
+        assignmentId: assignment.assignment.id,
+        mutationId: applied.mutation.id,
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 400);
+      assert.match(error.message, /Only configuration\.operator_settings/);
+      return true;
+    }
+  );
+  assert.equal(fakeState.value, "after");
+
+  const rolledBack = executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: applied.mutation.id,
+  });
+
+  assert.equal(fakeState.value, "before");
+  assert.equal(rolledBack.mutation.status, "rolled_back");
+  assert.deepEqual(rolledBack.mutation.verification, {
+    attempted: true,
+    result: "passed",
+    method: "fake_settings_rollback",
+  });
+
+  database.close();
+});
+
+test("AutonomousMutationExecutor rejects duplicate autonomous mutation adapters", () => {
+  const database = new AppDatabase(":memory:");
+  const assignments = new AutonomousAssignmentService(database);
+  const ledger = new AutonomousMutationLedger(database, assignments);
+  const settings = new OperatorSettingsStore(database);
+  const adapter: AutonomousMutationAdapter = {
+    target: "configuration",
+    mutationType: "fake_settings",
+    mutationClass: "configuration.fake_settings",
+    affectedResources: [{ type: "settings", id: "fake" }],
+    apply() {
+      return {
+        before: { value: "before" },
+        after: { value: "after" },
+        rollback: { fakeSettings: { value: "before" } },
+      };
+    },
+    rollback() {},
+  };
+
+  assert.throws(
+    () =>
+      new AutonomousMutationExecutor({
+        assignments,
+        ledger,
+        settings,
+        adapters: [adapter, adapter],
+      }),
+    /Duplicate autonomous mutation adapter for configuration\.fake_settings/
   );
 
   database.close();
@@ -301,11 +461,18 @@ test("AutonomousMutationExecutor audits self-evolution policy denials as failed"
     ledger.list({ assignmentId: disabled.assignment.id }).map((mutation) => ({
       status: mutation.status,
       errorMessage: mutation.errorMessage,
+      authorizingPolicy: mutation.authorizingPolicy,
     })),
     [
       {
         status: "failed",
         errorMessage: "Assignment self-evolution policy is disabled",
+        authorizingPolicy: {
+          rule: "assignment.policy.selfEvolution",
+          maxRiskClass: "medium",
+          allowedMutationClasses: ["configuration.operator_settings"],
+          mutationClass: "configuration.operator_settings",
+        },
       },
     ]
   );
@@ -313,12 +480,19 @@ test("AutonomousMutationExecutor audits self-evolution policy denials as failed"
     ledger.list({ assignmentId: disallowed.assignment.id }).map((mutation) => ({
       status: mutation.status,
       errorMessage: mutation.errorMessage,
+      authorizingPolicy: mutation.authorizingPolicy,
     })),
     [
       {
         status: "failed",
         errorMessage:
           "Assignment self-evolution policy does not allow configuration.operator_settings",
+        authorizingPolicy: {
+          rule: "assignment.policy.selfEvolution",
+          maxRiskClass: "medium",
+          allowedMutationClasses: [],
+          mutationClass: "configuration.operator_settings",
+        },
       },
     ]
   );
