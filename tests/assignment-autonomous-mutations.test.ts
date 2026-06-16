@@ -199,7 +199,10 @@ test("AutonomousMutationExecutor supports injected autonomous mutation adapters"
     (error) => {
       assert.ok(error instanceof AutonomousMutationExecutionError);
       assert.equal(error.status, 400);
-      assert.match(error.message, /Only configuration\.operator_settings/);
+      assert.match(
+        error.message,
+        /No autonomous mutation adapter is available/
+      );
       return true;
     }
   );
@@ -342,6 +345,94 @@ test("AutonomousMutationExecutor applies explicit assignment policy mutations", 
       "mutation_applied",
       "policy_changed",
       "mutation_rolled_back",
+    ]
+  );
+  assert.deepEqual(
+    assignments
+      .timeline(assignment.assignment.id)
+      .events.filter(
+        (event) =>
+          event.type === "policy_changed" ||
+          event.type === "mutation_rolled_back"
+      )
+      .map((event) => (event.payload as { actor?: string | null }).actor),
+    ["alice", "bob", "bob"]
+  );
+
+  database.close();
+});
+
+test("AutonomousMutationExecutor rolls back assignment policy mutations after operator tightens self-evolution policy", () => {
+  const { assignments, database, executor } = createHarness();
+  const assignment = assignments.create({
+    objective: "Roll back assignment policy after authority tightening",
+    autonomyLevel: "evolve",
+    policy: {
+      maxWakeups: 4,
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "configuration.assignment_policy",
+        ],
+      },
+    },
+  });
+  const applied = executor.apply({
+    assignmentId: assignment.assignment.id,
+    target: "configuration",
+    mutationType: "assignment_policy",
+    rationale: "Temporarily increase wakeups.",
+    proposedChange: {
+      assignmentPolicy: { maxWakeups: 9 },
+    },
+  });
+  assert.equal(
+    assignments.getRequired(assignment.assignment.id).assignment.policy
+      .maxWakeups,
+    9
+  );
+
+  assignments.control(assignment.assignment.id, {
+    action: "change_policy",
+    actor: "operator",
+    reason: "Tighten mutation authority after the temporary change.",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: ["configuration.operator_settings"],
+      },
+    },
+  });
+
+  const rolledBack = executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: applied.mutation.id,
+    actor: "operator",
+  });
+
+  const policy = assignments.getRequired(assignment.assignment.id).assignment
+    .policy;
+  assert.equal(rolledBack.mutation.status, "rolled_back");
+  assert.equal(policy.maxWakeups, 4);
+  assert.deepEqual(policy.selfEvolution.allowedMutationClasses, [
+    "configuration.operator_settings",
+  ]);
+  assert.deepEqual(
+    assignments
+      .timeline(assignment.assignment.id)
+      .events.filter(
+        (event) =>
+          event.type === "policy_changed" ||
+          event.type === "mutation_rolled_back"
+      )
+      .map((event) => ({
+        type: event.type,
+        actor: (event.payload as { actor?: string | null }).actor,
+      })),
+    [
+      { type: "policy_changed", actor: "autonomous_mutation" },
+      { type: "policy_changed", actor: "operator" },
+      { type: "policy_changed", actor: "operator" },
+      { type: "mutation_rolled_back", actor: "operator" },
     ]
   );
 

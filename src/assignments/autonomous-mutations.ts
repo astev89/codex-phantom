@@ -82,6 +82,7 @@ export type AutonomousMutationAdapter = {
     assignment: AssignmentRecord;
     mutation: AutonomousMutationRecord;
     rollback: JsonValue;
+    actor?: string;
   }): { verificationMethod?: string } | void;
 };
 
@@ -199,7 +200,7 @@ export class AutonomousMutationExecutor {
     if (!adapter) {
       throw new AutonomousMutationExecutionError(
         400,
-        "Only configuration.operator_settings autonomous mutations can be rolled back in this slice"
+        "No autonomous mutation adapter is available for rollback"
       );
     }
     if (mutation.status !== "applied") {
@@ -226,6 +227,7 @@ export class AutonomousMutationExecutor {
         assignment: assignment.assignment,
         mutation,
         rollback: mutation.rollback,
+        actor: input.actor,
       });
       return {
         assignment: this.assignments.getRequired(assignment.assignment.id),
@@ -443,20 +445,13 @@ function createAssignmentPolicyAutonomousMutationAdapter(
         rollback.assignmentPolicy,
         "rollback.assignmentPolicy"
       );
-      const rollbackPolicy = toAssignmentPolicyPatch(assignmentPolicy, {
-        allowSelfEvolution: true,
-      });
-      if (
-        JSON.stringify(rollbackPolicy.selfEvolution) !==
-        JSON.stringify(input.assignment.policy.selfEvolution)
-      ) {
-        throw new Error(
-          "rollback.assignmentPolicy.selfEvolution must match the current assignment self-evolution policy"
-        );
-      }
+      const rollbackPolicy = toAssignmentPolicyPatch(
+        withoutSelfEvolution(assignmentPolicy),
+        { allowSelfEvolution: false }
+      );
       assignments.control(input.assignment.id, {
         action: "change_policy",
-        actor: "autonomous_mutation_rollback",
+        actor: input.actor ?? "autonomous_mutation_rollback",
         reason: `Rollback autonomous mutation ${input.mutation.id}`,
         policy: rollbackPolicy,
       });
@@ -578,6 +573,14 @@ function toAssignmentPolicyPatch(
   }
 
   return patch as AssignmentPolicyPatch;
+}
+
+function withoutSelfEvolution(
+  value: Record<string, JsonValue>
+): Record<string, JsonValue> {
+  return Object.fromEntries(
+    Object.entries(value).filter(([key]) => key !== "selfEvolution")
+  ) as Record<string, JsonValue>;
 }
 
 function toNotificationCadencePatch(
