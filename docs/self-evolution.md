@@ -119,6 +119,10 @@ curl -X POST http://localhost:3210/admin/assignments/asgn_123/mutations/apply \
         "maxWakeups": 8,
         "wakeupDelayMinMinutes": 10,
         "wakeupDelayMaxMinutes": 120,
+        "childAssignments": {
+          "maxDepth": 2,
+          "maxActiveChildren": 2
+        },
         "notificationCadence": {
           "activeProgressIntervalMinutes": 45
         }

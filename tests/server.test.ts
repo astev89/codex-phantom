@@ -988,7 +988,10 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
         objective: "Keep working on Slack autonomy parity",
         autonomyLevel: "operate",
         source: { channelId: "slack", conversationId: "phantom-test-0-0-1" },
-        policy: { maxWakeups: 6 },
+        policy: {
+          maxWakeups: 6,
+          childAssignments: { maxDepth: 3, maxActiveChildren: 2 },
+        },
       }),
     });
     assert.equal(assignmentCreate.status, 201);
@@ -997,7 +1000,10 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
         id: string;
         lifecycleState: string;
         autonomyLevel: string;
-        policy: { maxWakeups: number };
+        policy: {
+          maxWakeups: number;
+          childAssignments: { maxDepth: number; maxActiveChildren: number };
+        };
       };
       runLinks: unknown[];
     };
@@ -1005,6 +1011,10 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assert.equal(assignmentCreateJson.assignment.lifecycleState, "active");
     assert.equal(assignmentCreateJson.assignment.autonomyLevel, "operate");
     assert.equal(assignmentCreateJson.assignment.policy.maxWakeups, 6);
+    assert.deepEqual(assignmentCreateJson.assignment.policy.childAssignments, {
+      maxDepth: 3,
+      maxActiveChildren: 2,
+    });
     assert.deepEqual(assignmentCreateJson.runLinks, []);
     const plannedMutation = assignmentMutations.recordPlanned({
       assignmentId: assignmentCreateJson.assignment.id,
@@ -1630,6 +1640,9 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
             notificationCadence: {
               activeProgressIntervalMinutes: 60,
             },
+            childAssignments: {
+              maxActiveChildren: 1,
+            },
           },
         }),
       }
@@ -1642,6 +1655,10 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
             onFailure: boolean;
             activeProgressIntervalMinutes: number;
           };
+          childAssignments: {
+            maxDepth: number;
+            maxActiveChildren: number;
+          };
         };
       };
     };
@@ -1653,6 +1670,13 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       changeOnlyIntervalJson.assignment.policy.notificationCadence
         .activeProgressIntervalMinutes,
       60
+    );
+    assert.deepEqual(
+      changeOnlyIntervalJson.assignment.policy.childAssignments,
+      {
+        maxDepth: 3,
+        maxActiveChildren: 1,
+      }
     );
     const assignmentTimeline = await fetch(
       `${baseUrl}/admin/assignments/${assignmentCreateJson.assignment.id}/timeline`,

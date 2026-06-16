@@ -524,6 +524,7 @@ function toAssignmentPolicyPatch(
     "wakeupDelayMinMinutes",
     "wakeupDelayMaxMinutes",
     "notificationCadence",
+    "childAssignments",
     ...(options.allowSelfEvolution ? ["selfEvolution"] : []),
   ]);
 
@@ -557,6 +558,12 @@ function toAssignmentPolicyPatch(
         value.notificationCadence,
         "assignmentPolicy.notificationCadence"
       )
+    );
+  }
+
+  if (value.childAssignments !== undefined) {
+    patch.childAssignments = toChildAssignmentPolicyPatch(
+      asJsonObject(value.childAssignments, "assignmentPolicy.childAssignments")
     );
   }
 
@@ -625,6 +632,32 @@ function toNotificationCadencePatch(
     );
   }
   return patch as AssignmentPolicyPatch["notificationCadence"];
+}
+
+function toChildAssignmentPolicyPatch(
+  value: Record<string, JsonValue>
+): AssignmentPolicyPatch["childAssignments"] {
+  const patch: Record<string, unknown> = {};
+  const allowedKeys = new Set(["maxDepth", "maxActiveChildren"]);
+  for (const key of Object.keys(value)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `assignmentPolicy.childAssignments.${key} is not supported`
+      );
+    }
+  }
+  if (value.maxDepth !== undefined) {
+    patch.maxDepth = value.maxDepth;
+  }
+  if (value.maxActiveChildren !== undefined) {
+    patch.maxActiveChildren = value.maxActiveChildren;
+  }
+  if (Object.keys(patch).length === 0) {
+    throw new Error(
+      "assignmentPolicy.childAssignments must contain at least one supported field"
+    );
+  }
+  return patch as AssignmentPolicyPatch["childAssignments"];
 }
 
 function toSelfEvolutionPolicyPatch(

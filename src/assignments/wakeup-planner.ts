@@ -12,14 +12,20 @@ import type {
 import type { JsonValue } from "../shared/types.ts";
 import type {
   AssignmentDetail,
+  AssignmentAutonomyLevel,
   AssignmentEventRecord,
   AssignmentRecord,
+  PromoteChildAssignmentInput,
 } from "./types.ts";
+import { ASSIGNMENT_AUTONOMY_LEVELS } from "./types.ts";
 import {
   AUTONOMOUS_MUTATION_TARGETS,
   type AutonomousMutationTarget,
 } from "./mutation-ledger.ts";
-import { AutonomousAssignmentService } from "./service.ts";
+import {
+  AssignmentValidationError,
+  AutonomousAssignmentService,
+} from "./service.ts";
 
 export const ASSIGNMENT_WAKEUP_JOB_NAME = "assignment.wakeup";
 const DEFAULT_NEXT_WAKEUP_MINUTES = 30;
@@ -29,6 +35,16 @@ type AssignmentMutationExecutor = Pick<AutonomousMutationExecutor, "apply">;
 type PlannerMutationRequest = Pick<
   ApplyAutonomousMutationInput,
   "target" | "mutationType" | "rationale" | "riskClass" | "proposedChange"
+>;
+type PlannerChildRequest = Pick<
+  PromoteChildAssignmentInput,
+  | "objective"
+  | "title"
+  | "autonomyLevel"
+  | "rationale"
+  | "waitForChild"
+  | "metadata"
+  | "context"
 >;
 
 export type AssignmentWakeupResult = {
@@ -92,12 +108,33 @@ export class AssignmentWakeupPlanner {
 
     this.activeWakeups.add(input.assignmentId);
     try {
-      const started = this.assignments.startWakeup({
-        assignmentId: input.assignmentId,
-        actor: input.actor,
-        reason: input.reason,
-        source: input.source,
-      });
+      let started: AssignmentDetail;
+      try {
+        started = this.assignments.startWakeup({
+          assignmentId: input.assignmentId,
+          actor: input.actor,
+          reason: input.reason,
+          source: input.source,
+        });
+      } catch (error) {
+        if (isActiveChildReservationError(error)) {
+          const nextJob = await this.scheduleNext({
+            assignmentId: input.assignmentId,
+            reason: "Waiting for active child assignment",
+          });
+          return {
+            status: "scheduled",
+            nextJob,
+            assignment: this.assignments.applyWakeupDecision({
+              assignmentId: input.assignmentId,
+              decision: "waiting",
+              reason: "Waiting for active child assignment",
+              nextWakeupAt: nextJob.scheduledAt,
+            }),
+          };
+        }
+        throw error;
+      }
 
       try {
         const result = await this.orchestration.runCoordinator(
@@ -118,12 +155,36 @@ export class AssignmentWakeupPlanner {
         });
         const marker = parsePlannerMarkers(result.outputText, {
           allowMutations: shouldAllowPlannerMutationMarkers(completed),
+          allowChildren: shouldAllowPlannerChildMarkers(completed),
         });
         const afterMutation = this.applyPlannerMutation({
           assignmentId: input.assignmentId,
           runId: result.runId,
           mutation: marker.mutation,
         });
+        const afterChild = await this.applyPlannerChild({
+          assignmentId: input.assignmentId,
+          child: marker.child,
+        });
+        const afterPlannerActions = afterChild.assignment ?? afterMutation;
+        if (afterChild.waitForChild) {
+          const nextJob = await this.scheduleNext({
+            assignmentId: input.assignmentId,
+            reason: "Waiting for child assignment",
+            delayMinutes: marker.nextWakeupMinutes,
+          });
+          return {
+            status: "scheduled",
+            runId: result.runId,
+            nextJob,
+            assignment: this.assignments.applyWakeupDecision({
+              assignmentId: input.assignmentId,
+              decision: "waiting",
+              reason: "Planner promoted child assignment",
+              nextWakeupAt: nextJob.scheduledAt,
+            }),
+          };
+        }
         if (marker.status === "completed") {
           return {
             status: "completed",
@@ -147,8 +208,8 @@ export class AssignmentWakeupPlanner {
           };
         }
         if (
-          afterMutation.assignment.wakeupCount >=
-          afterMutation.assignment.policy.maxWakeups
+          afterPlannerActions.assignment.wakeupCount >=
+          afterPlannerActions.assignment.policy.maxWakeups
         ) {
           return {
             status: "expired",
@@ -291,6 +352,61 @@ export class AssignmentWakeupPlanner {
     }
     return this.assignments.getRequired(input.assignmentId);
   }
+
+  private async applyPlannerChild(input: {
+    assignmentId: string;
+    child?: PlannerChildRequest;
+  }): Promise<{
+    assignment?: AssignmentDetail;
+    childJob?: JobRecord;
+    waitForChild: boolean;
+  }> {
+    if (!input.child) {
+      return {
+        assignment: this.assignments.getRequired(input.assignmentId),
+        waitForChild: false,
+      };
+    }
+    try {
+      const promoted = this.assignments.promoteChild({
+        parentAssignmentId: input.assignmentId,
+        objective: input.child.objective,
+        title: input.child.title,
+        autonomyLevel: input.child.autonomyLevel,
+        rationale: input.child.rationale,
+        waitForChild: input.child.waitForChild,
+        metadata: input.child.metadata,
+        context: input.child.context,
+        actor: "planner",
+      });
+      const childJob = await this.scheduleNext({
+        assignmentId: promoted.child.assignment.id,
+        reason: "Planner promoted child assignment",
+        delayMinutes: 0,
+        force: true,
+      });
+      return {
+        assignment: promoted.parent,
+        childJob,
+        waitForChild: input.child.waitForChild === true,
+      };
+    } catch (error) {
+      if (error instanceof AssignmentValidationError) {
+        this.assignments.recordChildPromotionFailure({
+          assignmentId: input.assignmentId,
+          actor: "planner",
+          objective: input.child.objective,
+          rationale: input.child.rationale,
+          errorMessage: error.message,
+        });
+        return {
+          assignment: this.assignments.getRequired(input.assignmentId),
+          waitForChild: false,
+        };
+      }
+      throw error;
+    }
+  }
 }
 
 function findScheduledWakeupJob(
@@ -354,16 +470,22 @@ function buildWakeupPrompt(
       'Optionally include one autonomous mutation marker on a single line: ASSIGNMENT_MUTATION: {"target":"configuration","mutationType":"operator_settings","rationale":"...","proposedChange":{"operatorSettings":{...}}}. Mutations only apply when the assignment is evolve-authorized and assignment policy allows the class.'
     );
   }
+  if (shouldAllowPlannerChildMarkers(detail)) {
+    lines.push(
+      'Optionally include one child-assignment marker on a single line: ASSIGNMENT_CHILD: {"objective":"...","title":"...","rationale":"...","waitForChild":true}. Child assignments inherit parent policy and cannot exceed parent autonomy, depth, or active-child limits.'
+    );
+  }
   return lines.join("\n");
 }
 
 function parsePlannerMarkers(
   outputText: string,
-  options: { allowMutations?: boolean } = {}
+  options: { allowMutations?: boolean; allowChildren?: boolean } = {}
 ): {
   status: "continue" | "completed" | "blocked";
   nextWakeupMinutes?: number;
   mutation?: PlannerMutationRequest;
+  child?: PlannerChildRequest;
 } {
   const statusMatch = outputText.match(
     /ASSIGNMENT_STATUS:\s*(continue|complete|completed|blocked)/i
@@ -383,6 +505,10 @@ function parsePlannerMarkers(
       options.allowMutations === true
         ? parsePlannerMutationMarker(outputText)
         : undefined,
+    child:
+      options.allowChildren === true
+        ? parsePlannerChildMarker(outputText)
+        : undefined,
   };
 }
 
@@ -393,6 +519,54 @@ function shouldAllowPlannerMutationMarkers(detail: AssignmentDetail): boolean {
     policy.enabled &&
     policy.allowedMutationClasses.length > 0
   );
+}
+
+function shouldAllowPlannerChildMarkers(detail: AssignmentDetail): boolean {
+  return (
+    autonomyRank(detail.assignment.autonomyLevel) >= autonomyRank("execute") &&
+    detail.assignment.policy.childAssignments.maxDepth > 0 &&
+    detail.assignment.policy.childAssignments.maxActiveChildren > 0
+  );
+}
+
+function parsePlannerChildMarker(
+  outputText: string
+): PlannerChildRequest | undefined {
+  const childMatch = outputText.match(/^ASSIGNMENT_CHILD:\s*(\{.*\})\s*$/im);
+  if (!childMatch?.[1]) {
+    return undefined;
+  }
+  let parsed: JsonValue;
+  try {
+    parsed = JSON.parse(childMatch[1]) as JsonValue;
+  } catch {
+    return undefined;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return undefined;
+  }
+  const value = parsed as Record<string, JsonValue>;
+  if (
+    typeof value.objective !== "string" ||
+    value.objective.trim() === "" ||
+    typeof value.rationale !== "string" ||
+    value.rationale.trim() === ""
+  ) {
+    return undefined;
+  }
+  const autonomyLevel = parseAssignmentAutonomyLevel(value.autonomyLevel);
+  return {
+    objective: value.objective.trim(),
+    title:
+      typeof value.title === "string" && value.title.trim() !== ""
+        ? value.title.trim()
+        : undefined,
+    rationale: value.rationale.trim(),
+    autonomyLevel,
+    waitForChild: value.waitForChild === true,
+    metadata: value.metadata,
+    context: Array.isArray(value.context) ? value.context : undefined,
+  };
 }
 
 function parsePlannerMutationMarker(
@@ -443,6 +617,19 @@ function parsePlannerMutationMarker(
   };
 }
 
+function parseAssignmentAutonomyLevel(
+  value: JsonValue | undefined
+): AssignmentAutonomyLevel | undefined {
+  return typeof value === "string" &&
+    ASSIGNMENT_AUTONOMY_LEVELS.includes(value as AssignmentAutonomyLevel)
+    ? (value as AssignmentAutonomyLevel)
+    : undefined;
+}
+
+function autonomyRank(level: AssignmentAutonomyLevel): number {
+  return ASSIGNMENT_AUTONOMY_LEVELS.indexOf(level);
+}
+
 function parseWakeupJobPayload(message: string): {
   assignmentId: string;
   reason?: string;
@@ -488,5 +675,14 @@ function isIdleExpired(assignment: AssignmentRecord): boolean {
   return (
     Date.now() - Date.parse(assignment.lastActivityAt) >
     assignment.policy.maxIdleHours * 60 * 60 * 1000
+  );
+}
+
+function isActiveChildReservationError(error: unknown): boolean {
+  return (
+    error instanceof AssignmentValidationError &&
+    (error.message ===
+      "Assignment wakeup budget is reserved for active child assignments" ||
+      error.message === "Assignment is waiting for active child assignment")
   );
 }
