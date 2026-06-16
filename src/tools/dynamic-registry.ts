@@ -58,6 +58,23 @@ export class DynamicToolRegistry {
       .map((row) => toDynamicToolRecord(row));
   }
 
+  get(id: string): DynamicToolRecord | null {
+    const row = this.database.get<DynamicToolRow>(
+      `
+        SELECT id, description, scopes_json, input_schema_json, response_template, created_at, updated_at,
+               approval_state, approved_by, approved_at, governance_notes
+        FROM dynamic_tools
+        WHERE id = ?
+      `,
+      id
+    );
+    return row ? toDynamicToolRecord(row) : null;
+  }
+
+  has(id: string): boolean {
+    return this.tools.has(id) || this.get(id) !== null;
+  }
+
   register(input: RegisterDynamicToolInput): DynamicToolRecord {
     const record = normalizeInput(input);
     const now = new Date().toISOString();
@@ -129,35 +146,48 @@ export class DynamicToolRegistry {
   ): DynamicToolRecord {
     const record = normalizeInput(input);
     const now = new Date().toISOString();
-    this.database.run(
-      `
-        INSERT INTO dynamic_tools (
-          id, description, scopes_json, input_schema_json, response_template, created_at, updated_at,
-          approval_state, approved_by, approved_at, governance_notes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-          description = excluded.description,
-          scopes_json = excluded.scopes_json,
-          input_schema_json = excluded.input_schema_json,
-          response_template = excluded.response_template,
-          approval_state = 'approved',
-          approved_by = excluded.approved_by,
-          approved_at = excluded.approved_at,
-          governance_notes = excluded.governance_notes,
-          updated_at = excluded.updated_at
-      `,
-      record.id,
-      record.description,
-      encodeJson(record.scopes),
-      record.inputSchema ? encodeJson(record.inputSchema) : null,
-      record.responseTemplate,
-      now,
-      now,
-      "approved",
-      approval.approvedBy,
-      now,
-      approval.notes ?? "approved internal tool bundle"
-    );
+    this.database.transaction(() => {
+      this.database.run(
+        `
+          INSERT INTO dynamic_tools (
+            id, description, scopes_json, input_schema_json, response_template, created_at, updated_at,
+            approval_state, approved_by, approved_at, governance_notes
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            description = excluded.description,
+            scopes_json = excluded.scopes_json,
+            input_schema_json = excluded.input_schema_json,
+            response_template = excluded.response_template,
+            approval_state = 'approved',
+            approved_by = excluded.approved_by,
+            approved_at = excluded.approved_at,
+            governance_notes = excluded.governance_notes,
+            updated_at = excluded.updated_at
+        `,
+        record.id,
+        record.description,
+        encodeJson(record.scopes),
+        record.inputSchema ? encodeJson(record.inputSchema) : null,
+        record.responseTemplate,
+        now,
+        now,
+        "approved",
+        approval.approvedBy,
+        now,
+        approval.notes ?? "approved internal tool bundle"
+      );
+      this.database.run(
+        `
+          INSERT INTO tool_governance_audit (tool_id, action, actor, notes, created_at)
+          VALUES (?, ?, ?, ?, ?)
+        `,
+        record.id,
+        "approved",
+        approval.approvedBy,
+        approval.notes ?? "approved internal tool bundle",
+        now
+      );
+    });
     const stored = this.database.get<DynamicToolRow>(
       `
         SELECT id, description, scopes_json, input_schema_json, response_template, created_at, updated_at,

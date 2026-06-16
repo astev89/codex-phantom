@@ -17,6 +17,7 @@ import type {
   AssignmentSelfEvolutionPolicy,
 } from "./types.ts";
 import { AutonomousAssignmentService } from "./service.ts";
+import type { ToolBundleLifecycleService } from "../tools/bundle-lifecycle.ts";
 
 export class AutonomousMutationExecutionError extends Error {
   readonly status: number;
@@ -59,6 +60,7 @@ export type AutonomousMutationExecutorOptions = {
   assignments: AutonomousAssignmentService;
   ledger: AutonomousMutationLedger;
   settings: OperatorSettingsMutationPort;
+  toolBundles?: ToolBundleLifecycleService;
   adapters?: AutonomousMutationAdapter[];
 };
 
@@ -88,8 +90,9 @@ export type AutonomousMutationAdapter = {
 
 const OPERATOR_SETTINGS_MUTATION_CLASS = "configuration.operator_settings";
 const ASSIGNMENT_POLICY_MUTATION_CLASS = "configuration.assignment_policy";
+const TOOL_BUNDLE_ENABLE_MUTATION_CLASS = "tool.bundle_enable";
 const UNSUPPORTED_MUTATION_ERROR =
-  "Only configuration.operator_settings and configuration.assignment_policy autonomous mutations are supported in this slice";
+  "Only configuration.operator_settings, configuration.assignment_policy, and tool.bundle_enable autonomous mutations are supported in this slice";
 const RISK_ORDER: SelfEvolutionRiskClass[] = [
   "low",
   "medium",
@@ -109,6 +112,13 @@ export class AutonomousMutationExecutor {
       options.adapters ?? [
         createOperatorSettingsAutonomousMutationAdapter(options.settings),
         createAssignmentPolicyAutonomousMutationAdapter(options.assignments),
+        ...(options.toolBundles
+          ? [
+              createToolBundleEnableAutonomousMutationAdapter(
+                options.toolBundles
+              ),
+            ]
+          : []),
       ]
     );
   }
@@ -460,6 +470,68 @@ function createAssignmentPolicyAutonomousMutationAdapter(
   };
 }
 
+function createToolBundleEnableAutonomousMutationAdapter(
+  toolBundles: ToolBundleLifecycleService
+): AutonomousMutationAdapter {
+  return {
+    target: "tool",
+    mutationType: "bundle_enable",
+    mutationClass: TOOL_BUNDLE_ENABLE_MUTATION_CLASS,
+    affectedResources: [{ type: "tool_bundle_import" }],
+    apply(input) {
+      const proposedChange = asJsonObject(
+        input.proposedChange,
+        "proposedChange"
+      );
+      const toolBundle = asJsonObject(
+        proposedChange.toolBundle,
+        "proposedChange.toolBundle"
+      );
+      const importId = requiredString(
+        toolBundle.importId,
+        "toolBundle.importId"
+      );
+      const before = toolBundles.get(importId);
+      if (!before) {
+        throw new Error("Tool bundle import not found");
+      }
+      const after = toolBundles.enable(
+        importId,
+        input.request.actor ?? "autonomous_mutation",
+        input.request.rationale
+      );
+      const affectedResources = [
+        { type: "tool_bundle_import", id: importId },
+        ...toolBundles.listToolIds(after).map((id) => ({ type: "tool", id })),
+      ];
+      return {
+        before: before as unknown as JsonValue,
+        after: after as unknown as JsonValue,
+        rollback: { toolBundle: { importId } },
+        affectedResources,
+        verificationMethod: "tool_bundle_enable_update",
+      };
+    },
+    rollback(input) {
+      const rollback = asJsonObject(input.rollback, "rollback");
+      const toolBundle = asJsonObject(
+        rollback.toolBundle,
+        "rollback.toolBundle"
+      );
+      const importId = requiredString(
+        toolBundle.importId,
+        "toolBundle.importId"
+      );
+      toolBundles.disable(
+        importId,
+        input.actor ?? "autonomous_mutation_rollback",
+        `Rollback autonomous mutation ${input.mutation.id}`
+      );
+      return { verificationMethod: "tool_bundle_enable_rollback" };
+    },
+  };
+}
+
 function authorizingPolicy(
   policy: AssignmentSelfEvolutionPolicy,
   actor?: string,
@@ -509,6 +581,13 @@ function asJsonObject(
     throw new Error(`${field} must be a JSON object`);
   }
   return value;
+}
+
+function requiredString(value: JsonValue, field: string): string {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new Error(`${field} is required`);
+  }
+  return value.trim();
 }
 
 function toAssignmentPolicyPatch(

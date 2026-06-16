@@ -1470,6 +1470,212 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       30
     );
 
+    const autonomousBundlePreview = await fetch(
+      `${baseUrl}/admin/tools/bundles/preview`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          importedBy: "operator",
+          manifest: {
+            id: "internal.autonomous",
+            name: "Autonomous Internal Tools",
+            version: "1.0.0",
+            tools: [
+              {
+                id: "internal.autonomous.lookup",
+                description: "Lookup autonomous bundle evidence.",
+                scopes: ["read"],
+                inputSchema: {
+                  type: "object",
+                  properties: { topic: { type: "string" } },
+                },
+                responseTemplate: "Autonomous note for {{topic}}",
+              },
+            ],
+          },
+        }),
+      }
+    );
+    assert.equal(autonomousBundlePreview.status, 200);
+    const autonomousBundlePreviewJson =
+      (await autonomousBundlePreview.json()) as {
+        preview: { id: string; status: string; lifecycleState: string };
+      };
+    assert.equal(autonomousBundlePreviewJson.preview.status, "valid");
+    assert.equal(
+      autonomousBundlePreviewJson.preview.lifecycleState,
+      "previewed"
+    );
+
+    const autonomousBundleApprove = await fetch(
+      `${baseUrl}/admin/tools/bundles/${encodeURIComponent(autonomousBundlePreviewJson.preview.id)}/approve`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          actor: "operator",
+          notes: "allow autonomous test bundle",
+        }),
+      }
+    );
+    assert.equal(autonomousBundleApprove.status, 200);
+
+    const toolAssignmentCreate = await fetch(`${baseUrl}/admin/assignments`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.operatorBearerToken}`,
+      },
+      body: JSON.stringify({
+        objective: "Autonomously enable approved tool bundle",
+        autonomyLevel: "evolve",
+        policy: {
+          selfEvolution: {
+            allowedMutationClasses: [
+              "configuration.operator_settings",
+              "tool.bundle_enable",
+            ],
+          },
+        },
+      }),
+    });
+    assert.equal(toolAssignmentCreate.status, 201);
+    const toolAssignmentJson = (await toolAssignmentCreate.json()) as {
+      assignment: { id: string };
+    };
+
+    const toolBundleApply = await fetch(
+      `${baseUrl}/admin/assignments/${toolAssignmentJson.assignment.id}/mutations/apply`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          target: "tool",
+          mutationType: "bundle_enable",
+          rationale: "Enable the already-approved autonomous bundle.",
+          actor: "operator",
+          proposedChange: {
+            toolBundle: { importId: autonomousBundlePreviewJson.preview.id },
+          },
+        }),
+      }
+    );
+    assert.equal(toolBundleApply.status, 200);
+    const toolBundleApplyJson = (await toolBundleApply.json()) as {
+      mutation: {
+        id: string;
+        status: string;
+        target: string;
+        mutationType: string;
+        affectedResources: unknown;
+      };
+    };
+    assert.equal(toolBundleApplyJson.mutation.status, "applied");
+    assert.equal(toolBundleApplyJson.mutation.target, "tool");
+    assert.equal(toolBundleApplyJson.mutation.mutationType, "bundle_enable");
+    assert.deepEqual(toolBundleApplyJson.mutation.affectedResources, [
+      {
+        type: "tool_bundle_import",
+        id: autonomousBundlePreviewJson.preview.id,
+      },
+      { type: "tool", id: "internal.autonomous.lookup" },
+    ]);
+
+    const mcpToolsAfterBundleApply = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.mcpBearerToken}`,
+      },
+      body: JSON.stringify({ method: "tools/list" }),
+    });
+    assert.equal(mcpToolsAfterBundleApply.status, 200);
+    const mcpToolsAfterBundleApplyJson =
+      (await mcpToolsAfterBundleApply.json()) as {
+        tools: Array<{ id: string; scopes: string[] }>;
+      };
+    assert.ok(
+      mcpToolsAfterBundleApplyJson.tools.some(
+        (tool) =>
+          tool.id === "internal.autonomous.lookup" &&
+          tool.scopes.includes("read")
+      )
+    );
+
+    const toolAssignmentMutations = await fetch(
+      `${baseUrl}/admin/assignments/${toolAssignmentJson.assignment.id}/mutations`,
+      {
+        headers: {
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+      }
+    );
+    assert.equal(toolAssignmentMutations.status, 200);
+    const toolAssignmentMutationsJson =
+      (await toolAssignmentMutations.json()) as {
+        mutations: Array<{ id: string; mutationType: string }>;
+      };
+    assert.ok(
+      toolAssignmentMutationsJson.mutations.some(
+        (mutation) =>
+          mutation.id === toolBundleApplyJson.mutation.id &&
+          mutation.mutationType === "bundle_enable"
+      )
+    );
+
+    const toolBundleRollback = await fetch(
+      `${baseUrl}/admin/assignments/${toolAssignmentJson.assignment.id}/mutations/${toolBundleApplyJson.mutation.id}/rollback`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({ actor: "operator" }),
+      }
+    );
+    assert.equal(toolBundleRollback.status, 200);
+    const toolBundleRollbackJson = (await toolBundleRollback.json()) as {
+      mutation: { id: string; status: string };
+    };
+    assert.deepEqual(
+      {
+        id: toolBundleRollbackJson.mutation.id,
+        status: toolBundleRollbackJson.mutation.status,
+      },
+      { id: toolBundleApplyJson.mutation.id, status: "rolled_back" }
+    );
+
+    const mcpToolsAfterBundleRollback = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.mcpBearerToken}`,
+      },
+      body: JSON.stringify({ method: "tools/list" }),
+    });
+    assert.equal(mcpToolsAfterBundleRollback.status, 200);
+    const mcpToolsAfterBundleRollbackJson =
+      (await mcpToolsAfterBundleRollback.json()) as {
+        tools: Array<{ id: string }>;
+      };
+    assert.equal(
+      mcpToolsAfterBundleRollbackJson.tools.some(
+        (tool) => tool.id === "internal.autonomous.lookup"
+      ),
+      false
+    );
+
     const autonomousAssignmentTimeline = await fetch(
       `${baseUrl}/admin/assignments/${autonomousAssignmentJson.assignment.id}/timeline`,
       {
@@ -3294,7 +3500,7 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
         (entry) => entry.id === bundlePreviewJson.preview.id
       )
     );
-    assert.equal(bundleImportsJson.summary.valid, 1);
+    assert.equal(bundleImportsJson.summary.valid, 2);
     assert.equal(bundleImportsJson.summary.invalid, 1);
     assert.equal(bundleImportsJson.summary.uninstalled, 1);
     assert.ok(
@@ -3903,7 +4109,7 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assert.equal(adminSummaryJson.deployment.qdrantEnabled, false);
     assert.equal(adminSummaryJson.governance.pendingDynamicTools, 0);
     assert.equal(adminSummaryJson.governance.approvedDynamicTools, 1);
-    assert.equal(adminSummaryJson.toolBundles.valid, 1);
+    assert.equal(adminSummaryJson.toolBundles.valid, 2);
     assert.equal(adminSummaryJson.toolBundles.invalid, 1);
     assert.equal(adminSummaryJson.toolBundles.uninstalled, 1);
     assert.equal(adminSummaryJson.selfEvolution.proposed, 0);

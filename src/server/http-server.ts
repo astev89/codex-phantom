@@ -61,6 +61,10 @@ import type { MemoryMaintenanceService } from "../memory/maintenance.ts";
 import { DynamicToolRegistry } from "../tools/dynamic-registry.ts";
 import { ToolGovernanceService } from "../tools/governance.ts";
 import { ToolBundleImportStore } from "../tools/bundles.ts";
+import {
+  ToolBundleLifecycleError,
+  ToolBundleLifecycleService,
+} from "../tools/bundle-lifecycle.ts";
 import { SelfEvolutionProposalStore } from "../self-evolution/proposals.ts";
 import {
   SelfEvolutionMutationError,
@@ -145,6 +149,7 @@ export class HttpServer {
   private readonly memoryMaintenance?: MemoryMaintenanceService;
   private readonly dynamicTools: DynamicToolRegistry;
   private readonly toolBundles: ToolBundleImportStore;
+  private readonly toolBundleLifecycle: ToolBundleLifecycleService;
   private readonly channels: ChannelRegistry;
   private readonly channelDeliveries: ChannelDeliveryStore;
   private readonly channelInbound: InboundChannelEventStore;
@@ -208,6 +213,10 @@ export class HttpServer {
     this.memoryMaintenance = memoryMaintenance;
     this.dynamicTools = dynamicTools;
     this.toolBundles = new ToolBundleImportStore(database);
+    this.toolBundleLifecycle = new ToolBundleLifecycleService({
+      toolBundles: this.toolBundles,
+      dynamicTools,
+    });
     this.channels = channels;
     this.channelDeliveries = new ChannelDeliveryStore(database);
     this.channelInbound = new InboundChannelEventStore(database);
@@ -254,6 +263,7 @@ export class HttpServer {
       assignments,
       ledger: this.assignmentMutations,
       settings: this.settings,
+      toolBundles: this.toolBundleLifecycle,
     });
     this.selfEvolutionMutations = new SelfEvolutionMutationService({
       proposals: this.selfEvolution,
@@ -691,28 +701,22 @@ export class HttpServer {
           return;
         }
         if (action === "enable") {
-          const bundle = this.enableToolBundle(
-            importId,
-            body.actor,
-            body.notes
+          const bundle = this.runToolBundleLifecycle(() =>
+            this.toolBundleLifecycle.enable(importId, body.actor, body.notes)
           );
           this.json(res, 200, { requestId, bundle });
           return;
         }
         if (action === "disable") {
-          const bundle = this.disableToolBundle(
-            importId,
-            body.actor,
-            body.notes
+          const bundle = this.runToolBundleLifecycle(() =>
+            this.toolBundleLifecycle.disable(importId, body.actor, body.notes)
           );
           this.json(res, 200, { requestId, bundle });
           return;
         }
         if (action === "uninstall") {
-          const bundle = this.uninstallToolBundle(
-            importId,
-            body.actor,
-            body.notes
+          const bundle = this.runToolBundleLifecycle(() =>
+            this.toolBundleLifecycle.uninstall(importId, body.actor, body.notes)
           );
           this.json(res, 200, { requestId, bundle });
           return;
@@ -1863,71 +1867,15 @@ export class HttpServer {
     }
   }
 
-  private enableToolBundle(
-    importId: string,
-    actor: string,
-    notes?: string
-  ): ReturnType<ToolBundleImportStore["markEnabled"]> {
-    const bundle = this.toolBundles.get(importId);
-    if (!bundle) {
-      throw new HttpError(404, "Tool bundle import not found");
-    }
-    if (bundle.status !== "valid") {
-      throw new HttpError(409, "Only valid tool bundle imports can be enabled");
-    }
-    if (!["approved", "disabled"].includes(bundle.lifecycleState)) {
-      throw new HttpError(
-        409,
-        "Tool bundle must be approved before it can be enabled"
-      );
-    }
+  private runToolBundleLifecycle<T>(operation: () => T): T {
     try {
-      for (const tool of extractBundleTools(bundle.manifest)) {
-        this.dynamicTools.registerApproved(tool, {
-          approvedBy: actor,
-          notes: notes ?? `enabled from bundle ${bundle.bundleId}`,
-        });
-      }
-      return this.toolBundles.markEnabled(importId, actor, notes);
+      return operation();
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Failed to enable tool bundle";
-      const failed = this.toolBundles.markFailed(importId, actor, message);
-      throw new HttpError(400, message, failed as unknown as JsonValue);
+      if (error instanceof ToolBundleLifecycleError) {
+        throw new HttpError(error.status, error.message, error.details);
+      }
+      throw error;
     }
-  }
-
-  private disableToolBundle(
-    importId: string,
-    actor: string,
-    notes?: string
-  ): ReturnType<ToolBundleImportStore["markDisabled"]> {
-    const bundle = this.toolBundles.get(importId);
-    if (!bundle) {
-      throw new HttpError(404, "Tool bundle import not found");
-    }
-    if (bundle.lifecycleState !== "enabled") {
-      throw new HttpError(409, "Only enabled tool bundles can be disabled");
-    }
-    for (const tool of extractBundleTools(bundle.manifest)) {
-      this.dynamicTools.unregister(tool.id);
-    }
-    return this.toolBundles.markDisabled(importId, actor, notes);
-  }
-
-  private uninstallToolBundle(
-    importId: string,
-    actor: string,
-    notes?: string
-  ): ReturnType<ToolBundleImportStore["markUninstalled"]> {
-    const bundle = this.toolBundles.get(importId);
-    if (!bundle) {
-      throw new HttpError(404, "Tool bundle import not found");
-    }
-    for (const tool of extractBundleTools(bundle.manifest)) {
-      this.dynamicTools.unregister(tool.id);
-    }
-    return this.toolBundles.markUninstalled(importId, actor, notes);
   }
 
   private async requireWebChatSession(sessionId: string) {
@@ -2386,44 +2334,6 @@ function parseToolBundleActionPath(pathname: string): {
     importId: decodeURIComponent(encodedImportId),
     action,
   };
-}
-
-function extractBundleTools(manifest: JsonValue): Array<{
-  id: string;
-  description: string;
-  scopes: string[];
-  inputSchema?: JsonValue;
-  responseTemplate: string;
-}> {
-  const manifestObject = asJsonObject(manifest, "manifest");
-  if (!Array.isArray(manifestObject.tools)) {
-    throw new Error("manifest.tools must be an array");
-  }
-  return manifestObject.tools.map((item, index) => {
-    const tool = asJsonObject(item, `manifest.tools[${index}]`);
-    if (
-      typeof tool.id !== "string" ||
-      typeof tool.description !== "string" ||
-      typeof tool.responseTemplate !== "string"
-    ) {
-      throw new Error(`manifest.tools[${index}] is missing required fields`);
-    }
-    const scopes = tool.scopes === undefined ? ["read"] : tool.scopes;
-    if (
-      !Array.isArray(scopes) ||
-      scopes.some((scope) => typeof scope !== "string")
-    ) {
-      throw new Error(`manifest.tools[${index}].scopes must be strings`);
-    }
-    const stringScopes = scopes as string[];
-    return {
-      id: tool.id,
-      description: tool.description,
-      scopes: stringScopes,
-      inputSchema: tool.inputSchema,
-      responseTemplate: tool.responseTemplate,
-    };
-  });
 }
 
 function asJsonObject(

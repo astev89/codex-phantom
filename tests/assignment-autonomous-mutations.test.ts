@@ -9,6 +9,10 @@ import { AutonomousMutationLedger } from "../src/assignments/mutation-ledger.ts"
 import { AutonomousAssignmentService } from "../src/assignments/service.ts";
 import { AppDatabase } from "../src/platform/database.ts";
 import { OperatorSettingsStore } from "../src/server/settings.ts";
+import { ToolBundleImportStore } from "../src/tools/bundles.ts";
+import { ToolBundleLifecycleService } from "../src/tools/bundle-lifecycle.ts";
+import { DynamicToolRegistry } from "../src/tools/dynamic-registry.ts";
+import { ToolRegistry } from "../src/tools/registry.ts";
 
 function createHarness() {
   const database = new AppDatabase(":memory:");
@@ -21,6 +25,60 @@ function createHarness() {
     settings,
   });
   return { assignments, database, executor, ledger, settings };
+}
+
+function createToolBundleHarness() {
+  const database = new AppDatabase(":memory:");
+  const assignments = new AutonomousAssignmentService(database);
+  const ledger = new AutonomousMutationLedger(database, assignments);
+  const settings = new OperatorSettingsStore(database);
+  const tools = new ToolRegistry();
+  const dynamicTools = new DynamicToolRegistry(database, tools);
+  const toolBundles = new ToolBundleImportStore(database);
+  const toolBundleLifecycle = new ToolBundleLifecycleService({
+    toolBundles,
+    dynamicTools,
+  });
+  const executor = new AutonomousMutationExecutor({
+    assignments,
+    ledger,
+    settings,
+    toolBundles: toolBundleLifecycle,
+  });
+  return {
+    assignments,
+    database,
+    dynamicTools,
+    executor,
+    ledger,
+    settings,
+    toolBundles,
+    tools,
+  };
+}
+
+function previewApprovedReadOnlyBundle(toolBundles: ToolBundleImportStore) {
+  const preview = toolBundles.preview({
+    importedBy: "operator",
+    manifest: {
+      id: "internal.research",
+      name: "Internal Research",
+      version: "1.0.0",
+      tools: [
+        {
+          id: "internal.research.lookup",
+          description: "Lookup an internal research note.",
+          scopes: ["read"],
+          inputSchema: {
+            type: "object",
+            properties: { topic: { type: "string" } },
+          },
+          responseTemplate: "Research note for {{topic}}",
+        },
+      ],
+    },
+  });
+  return toolBundles.approve(preview.id, "operator", "read-only bundle");
 }
 
 test("AutonomousMutationExecutor applies bounded operator settings mutations for evolve assignments", () => {
@@ -369,6 +427,253 @@ test("AutonomousMutationExecutor applies explicit assignment policy mutations", 
       )
       .map((event) => (event.payload as { actor?: string | null }).actor),
     ["alice", "bob", "bob"]
+  );
+
+  database.close();
+});
+
+test("AutonomousMutationExecutor applies explicit tool bundle enable mutations", () => {
+  const {
+    assignments,
+    database,
+    dynamicTools,
+    executor,
+    ledger,
+    toolBundles,
+    tools,
+  } = createToolBundleHarness();
+  const bundle = previewApprovedReadOnlyBundle(toolBundles);
+  const assignment = assignments.create({
+    objective: "Enable governed internal tool bundle",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "tool.bundle_enable",
+        ],
+      },
+    },
+  });
+
+  const applied = executor.apply({
+    assignmentId: assignment.assignment.id,
+    runId: "coord_tool_bundle_enable",
+    target: "tool",
+    mutationType: "bundle_enable",
+    rationale: "Make the approved internal research bundle available.",
+    actor: "alice",
+    proposedChange: {
+      toolBundle: { importId: bundle.id },
+    },
+  });
+
+  assert.equal(tools.has("internal.research.lookup"), true);
+  assert.equal(
+    dynamicTools.get("internal.research.lookup")?.approvedBy,
+    "operator"
+  );
+  assert.equal(toolBundles.get(bundle.id)?.lifecycleState, "enabled");
+  assert.equal(applied.mutation.status, "applied");
+  assert.equal(applied.mutation.target, "tool");
+  assert.equal(applied.mutation.mutationType, "bundle_enable");
+  assert.deepEqual(applied.mutation.authorizingPolicy, {
+    rule: "assignment.policy.selfEvolution",
+    maxRiskClass: "medium",
+    allowedMutationClasses: [
+      "configuration.operator_settings",
+      "tool.bundle_enable",
+    ],
+    mutationClass: "tool.bundle_enable",
+    actor: "alice",
+  });
+  assert.equal(
+    (applied.mutation.before as { lifecycleState?: string }).lifecycleState,
+    "approved"
+  );
+  assert.equal(
+    (applied.mutation.after as { lifecycleState?: string }).lifecycleState,
+    "enabled"
+  );
+  assert.deepEqual(applied.mutation.rollback, {
+    toolBundle: { importId: bundle.id },
+  });
+  assert.deepEqual(applied.mutation.affectedResources, [
+    { type: "tool_bundle_import", id: bundle.id },
+    { type: "tool", id: "internal.research.lookup" },
+  ]);
+  assert.deepEqual(applied.mutation.verification, {
+    attempted: true,
+    result: "passed",
+    method: "tool_bundle_enable_update",
+  });
+  assert.deepEqual(
+    ledger.list({ assignmentId: assignment.assignment.id }).map((mutation) => ({
+      id: mutation.id,
+      status: mutation.status,
+    })),
+    [{ id: applied.mutation.id, status: "applied" }]
+  );
+
+  const rolledBack = executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: applied.mutation.id,
+    actor: "bob",
+  });
+
+  assert.equal(tools.has("internal.research.lookup"), false);
+  assert.equal(toolBundles.get(bundle.id)?.lifecycleState, "disabled");
+  assert.equal(rolledBack.mutation.status, "rolled_back");
+  assert.deepEqual(rolledBack.mutation.verification, {
+    attempted: true,
+    result: "passed",
+    method: "tool_bundle_enable_rollback",
+  });
+  assert.deepEqual(
+    assignments
+      .timeline(assignment.assignment.id)
+      .events.map((event) => event.type),
+    ["created", "mutation_planned", "mutation_applied", "mutation_rolled_back"]
+  );
+
+  database.close();
+});
+
+test("AutonomousMutationExecutor keeps tool bundle enable mutations opt-in", () => {
+  const { assignments, database, executor, toolBundles, tools } =
+    createToolBundleHarness();
+  const bundle = previewApprovedReadOnlyBundle(toolBundles);
+  const assignment = assignments.create({
+    objective: "Default policy should not enable tools",
+    autonomyLevel: "evolve",
+  });
+
+  assert.throws(
+    () =>
+      executor.apply({
+        assignmentId: assignment.assignment.id,
+        target: "tool",
+        mutationType: "bundle_enable",
+        rationale: "Try tool bundle enable without explicit opt-in.",
+        proposedChange: {
+          toolBundle: { importId: bundle.id },
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 403);
+      assert.equal(error.mutation?.status, "failed");
+      assert.match(error.message, /does not allow tool\.bundle_enable/);
+      return true;
+    }
+  );
+
+  assert.equal(tools.has("internal.research.lookup"), false);
+  assert.equal(toolBundles.get(bundle.id)?.lifecycleState, "approved");
+
+  database.close();
+});
+
+test("AutonomousMutationExecutor rejects unsafe tool bundle enable mutations without registering tools", () => {
+  const { assignments, database, executor, ledger, toolBundles, tools } =
+    createToolBundleHarness();
+  const unapproved = toolBundles.preview({
+    importedBy: "operator",
+    manifest: {
+      id: "internal.pending",
+      name: "Internal Pending",
+      version: "1.0.0",
+      tools: [
+        {
+          id: "internal.pending.lookup",
+          description: "Pending lookup.",
+          scopes: ["read"],
+          responseTemplate: "pending",
+        },
+      ],
+    },
+  });
+  const assignment = assignments.create({
+    objective: "Reject unsafe tool bundle enable",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "tool.bundle_enable",
+        ],
+      },
+    },
+  });
+
+  assert.throws(
+    () =>
+      executor.apply({
+        assignmentId: assignment.assignment.id,
+        target: "tool",
+        mutationType: "bundle_enable",
+        rationale: "Try enabling an unapproved bundle.",
+        proposedChange: {
+          toolBundle: { importId: unapproved.id },
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 400);
+      assert.equal(error.mutation?.status, "failed");
+      assert.match(error.message, /must be approved/);
+      return true;
+    }
+  );
+
+  assert.throws(
+    () =>
+      executor.apply({
+        assignmentId: assignment.assignment.id,
+        target: "tool",
+        mutationType: "bundle_enable",
+        rationale: "Try malformed tool bundle mutation.",
+        proposedChange: {
+          toolBundle: {},
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 400);
+      assert.equal(error.mutation?.status, "failed");
+      assert.match(error.message, /toolBundle.importId is required/);
+      return true;
+    }
+  );
+
+  assert.equal(tools.has("internal.pending.lookup"), false);
+  assert.equal(toolBundles.get(unapproved.id)?.lifecycleState, "previewed");
+  assert.deepEqual(
+    ledger
+      .list({ assignmentId: assignment.assignment.id })
+      .map((mutation) => ({
+        target: mutation.target,
+        mutationType: mutation.mutationType,
+        status: mutation.status,
+        errorMessage: mutation.errorMessage,
+      }))
+      .sort((left, right) =>
+        String(left.errorMessage).localeCompare(String(right.errorMessage))
+      ),
+    [
+      {
+        target: "tool",
+        mutationType: "bundle_enable",
+        status: "failed",
+        errorMessage: "Tool bundle must be approved before it can be enabled",
+      },
+      {
+        target: "tool",
+        mutationType: "bundle_enable",
+        status: "failed",
+        errorMessage: "toolBundle.importId is required",
+      },
+    ]
   );
 
   database.close();
@@ -804,7 +1109,7 @@ test("AutonomousMutationExecutor audits unsupported and malformed autonomous mut
         mutationType: "tool_bundle_enable",
         status: "failed",
         errorMessage:
-          "Only configuration.operator_settings and configuration.assignment_policy autonomous mutations are supported in this slice",
+          "Only configuration.operator_settings, configuration.assignment_policy, and tool.bundle_enable autonomous mutations are supported in this slice",
       },
     ]
   );

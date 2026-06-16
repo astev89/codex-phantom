@@ -2,7 +2,7 @@
 
 Governed self-evolution lets Codex Phantom change its own behavior under explicit policy, audit, rollback, and operator-interruption controls. [ADR-0003](adr/0003-delegate-autonomous-assignments-and-self-evolution.md) extends the target model beyond proposal-only HITL: autonomous assignments may use delegated autonomous self-evolution when assignment policy grants `evolve` or higher authority.
 
-The current implementation is still narrower than that target. Today, Codex Phantom can create auditable proposals, apply approved proposal-based operator-settings mutations through operator-authenticated APIs, and apply assignment-authorized autonomous operator-settings and assignment-policy mutations for `evolve` assignments. Prompt, memory policy, tool, role, project-file, and broader configuration mutation classes remain future work.
+The current implementation is still narrower than that target. Today, Codex Phantom can create auditable proposals, apply approved proposal-based operator-settings mutations through operator-authenticated APIs, and apply assignment-authorized autonomous operator-settings, assignment-policy, and approved read-only tool-bundle enable mutations for `evolve` assignments. Prompt, memory policy, role, project-file, and broader configuration mutation classes remain future work.
 
 ## Proposal Scope
 
@@ -133,6 +133,24 @@ curl -X POST http://localhost:3210/admin/assignments/asgn_123/mutations/apply \
 
 `configuration.assignment_policy` is not in the default assignment self-evolution allow-list. Operators must explicitly include it in `assignment.policy.selfEvolution.allowedMutationClasses`. Autonomous assignment-policy mutations may tune execution bounds and notification cadence, but they cannot change `assignmentPolicy.selfEvolution`; mutation authority cannot be widened through this adapter.
 
+Apply an explicitly allowed tool-bundle enable mutation:
+
+```bash
+curl -X POST http://localhost:3210/admin/assignments/asgn_123/mutations/apply \
+  -H "Authorization: Bearer $OPERATOR_BEARER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "target": "tool",
+    "mutationType": "bundle_enable",
+    "rationale": "Make an already-approved read-only internal tool bundle available.",
+    "proposedChange": {
+      "toolBundle": { "importId": "tbi_123" }
+    }
+  }'
+```
+
+`tool.bundle_enable` is not in the default assignment self-evolution allow-list. Operators must explicitly include it in `assignment.policy.selfEvolution.allowedMutationClasses`, and the target bundle must already be a valid, approved internal tool-bundle import. This adapter does not preview, approve, install arbitrary files, enable write-scoped tools, or add MCP write capability. Rollback disables the same bundle and unregisters its dynamic tools.
+
 Roll back an applied autonomous mutation:
 
 ```bash
@@ -142,7 +160,7 @@ curl -X POST http://localhost:3210/admin/assignments/asgn_123/mutations/asgnmut_
   -d '{"actor":"operator"}'
 ```
 
-The default assignment self-evolution policy allows only low- or medium-risk `configuration.operator_settings` mutations, and only assignments at `evolve` authority may use it. Unsupported classes, disallowed classes, malformed settings, and malformed assignment-policy patches are rejected without changing state and are audited as failed autonomous mutation evidence when policy permits the attempt to reach the mutation executor.
+The default assignment self-evolution policy allows only low- or medium-risk `configuration.operator_settings` mutations, and only assignments at `evolve` authority may use it. Unsupported classes, disallowed classes, malformed settings, malformed assignment-policy patches, and unsafe tool-bundle enable attempts are rejected without changing state and are audited as failed autonomous mutation evidence when policy permits the attempt to reach the mutation executor.
 
 ## Planner-Driven Mutation Markers
 
