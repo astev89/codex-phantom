@@ -5,6 +5,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AppConfig } from "../src/config.ts";
+import { RuntimeConfigLimitsStore } from "../src/config/runtime-limits.ts";
 import { AgentRuntime } from "../src/agent/runtime.ts";
 import { RuntimeChannelCapabilities } from "../src/channels/capabilities.ts";
 import { ChannelRegistry } from "../src/channels/registry.ts";
@@ -819,6 +820,7 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     handler: async (input) => input,
   });
   const promptGuidance = new PromptRuntimeGuidanceStore(database);
+  const runtimeConfigLimits = new RuntimeConfigLimitsStore(database, config);
   const rolePolicy = new RolePolicyRuntimeStore(
     database,
     loadRolePolicyConfig(config.roleConfigPath)
@@ -907,6 +909,7 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assignmentMutations,
     promptGuidance,
     memoryPolicy,
+    runtimeConfigLimits,
     rolePolicy,
     projectFileDrafts
   );
@@ -1377,6 +1380,207 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assert.equal(
       settingsAfterAutonomousRollbackJson.settings.dashboardRefreshSeconds,
       5
+    );
+
+    const runtimeLimitsBefore = {
+      defaultRunTimeoutMs: config.defaultRunTimeoutMs,
+      defaultMaxToolCalls: config.defaultMaxToolCalls,
+      openAiRequestTimeoutMs: config.openAiRequestTimeoutMs,
+      emailPollIntervalMs: config.emailPollIntervalMs,
+      emailPollBatchSize: config.emailPollBatchSize,
+      emailMaxMessageBytes: config.emailMaxMessageBytes,
+    };
+    const runtimeLimitsAssignmentCreate = await fetch(
+      `${baseUrl}/admin/assignments`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          objective: "Autonomously tune runtime config limits",
+          autonomyLevel: "evolve",
+          policy: {
+            selfEvolution: {
+              allowedMutationClasses: [
+                "configuration.operator_settings",
+                "configuration.runtime_limits",
+              ],
+            },
+          },
+        }),
+      }
+    );
+    assert.equal(runtimeLimitsAssignmentCreate.status, 201);
+    const runtimeLimitsAssignmentJson =
+      (await runtimeLimitsAssignmentCreate.json()) as {
+        assignment: { id: string };
+      };
+
+    const runtimeLimitsApply = await fetch(
+      `${baseUrl}/admin/assignments/${runtimeLimitsAssignmentJson.assignment.id}/mutations/apply`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          target: "configuration",
+          mutationType: "runtime_limits",
+          rationale: "Allow longer autonomous runs from the admin surface.",
+          runId: "coord_http_runtime_limits",
+          actor: "operator",
+          proposedChange: {
+            runtimeLimits: {
+              defaultRunTimeoutMs: 55_000,
+              defaultMaxToolCalls: 8,
+            },
+          },
+        }),
+      }
+    );
+    assert.equal(runtimeLimitsApply.status, 200);
+    const runtimeLimitsApplyJson = (await runtimeLimitsApply.json()) as {
+      mutation: {
+        id: string;
+        status: string;
+        target: string;
+        mutationType: string;
+        before: typeof runtimeLimitsBefore;
+        after: typeof runtimeLimitsBefore;
+        rollback: unknown;
+        affectedResources: unknown;
+      };
+    };
+    assert.equal(runtimeLimitsApplyJson.mutation.status, "applied");
+    assert.equal(runtimeLimitsApplyJson.mutation.target, "configuration");
+    assert.equal(
+      runtimeLimitsApplyJson.mutation.mutationType,
+      "runtime_limits"
+    );
+    assert.deepEqual(
+      runtimeLimitsApplyJson.mutation.before,
+      runtimeLimitsBefore
+    );
+    assert.deepEqual(runtimeLimitsApplyJson.mutation.after, {
+      ...runtimeLimitsBefore,
+      defaultRunTimeoutMs: 55_000,
+      defaultMaxToolCalls: 8,
+    });
+    assert.deepEqual(runtimeLimitsApplyJson.mutation.rollback, {
+      runtimeLimits: runtimeLimitsBefore,
+      runtimeLimitsOverlay: {
+        hasOverlay: false,
+        overlay: {},
+        values: runtimeLimitsBefore,
+      },
+    });
+    assert.deepEqual(runtimeLimitsApplyJson.mutation.affectedResources, [
+      { type: "runtime_config", id: "limits" },
+    ]);
+    assert.equal(config.defaultRunTimeoutMs, 55_000);
+    assert.equal(config.defaultMaxToolCalls, 8);
+
+    const runtimeLimitsAssignmentMutations = await fetch(
+      `${baseUrl}/admin/assignments/${runtimeLimitsAssignmentJson.assignment.id}/mutations`,
+      {
+        headers: {
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+      }
+    );
+    assert.equal(runtimeLimitsAssignmentMutations.status, 200);
+    const runtimeLimitsAssignmentMutationsJson =
+      (await runtimeLimitsAssignmentMutations.json()) as {
+        mutations: Array<{ id: string; status: string }>;
+      };
+    assert.deepEqual(
+      runtimeLimitsAssignmentMutationsJson.mutations.map((mutation) => ({
+        id: mutation.id,
+        status: mutation.status,
+      })),
+      [{ id: runtimeLimitsApplyJson.mutation.id, status: "applied" }]
+    );
+
+    const runtimeLimitsGlobalMutations = await fetch(
+      `${baseUrl}/admin/mutations?assignmentId=${encodeURIComponent(
+        runtimeLimitsAssignmentJson.assignment.id
+      )}&runId=coord_http_runtime_limits&target=configuration&status=applied&limit=5`,
+      {
+        headers: {
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+      }
+    );
+    assert.equal(runtimeLimitsGlobalMutations.status, 200);
+    const runtimeLimitsGlobalMutationsJson =
+      (await runtimeLimitsGlobalMutations.json()) as {
+        mutations: Array<{ id: string; status: string; mutationType: string }>;
+      };
+    assert.deepEqual(
+      runtimeLimitsGlobalMutationsJson.mutations.map((mutation) => ({
+        id: mutation.id,
+        status: mutation.status,
+        mutationType: mutation.mutationType,
+      })),
+      [
+        {
+          id: runtimeLimitsApplyJson.mutation.id,
+          status: "applied",
+          mutationType: "runtime_limits",
+        },
+      ]
+    );
+
+    const runtimeLimitsTimeline = await fetch(`${baseUrl}/admin/timeline`, {
+      headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+    });
+    assert.equal(runtimeLimitsTimeline.status, 200);
+    const runtimeLimitsTimelineJson = (await runtimeLimitsTimeline.json()) as {
+      autonomousMutations: Array<{ id: string; kind: string }>;
+    };
+    assert.ok(
+      runtimeLimitsTimelineJson.autonomousMutations.some(
+        (mutation) =>
+          mutation.id === runtimeLimitsApplyJson.mutation.id &&
+          mutation.kind === "autonomous_mutation"
+      )
+    );
+
+    const runtimeLimitsRollback = await fetch(
+      `${baseUrl}/admin/assignments/${runtimeLimitsAssignmentJson.assignment.id}/mutations/${runtimeLimitsApplyJson.mutation.id}/rollback`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({ actor: "operator" }),
+      }
+    );
+    assert.equal(runtimeLimitsRollback.status, 200);
+    const runtimeLimitsRollbackJson = (await runtimeLimitsRollback.json()) as {
+      mutation: { id: string; status: string };
+    };
+    assert.deepEqual(
+      {
+        id: runtimeLimitsRollbackJson.mutation.id,
+        status: runtimeLimitsRollbackJson.mutation.status,
+      },
+      {
+        id: runtimeLimitsApplyJson.mutation.id,
+        status: "rolled_back",
+      }
+    );
+    assert.equal(
+      config.defaultRunTimeoutMs,
+      runtimeLimitsBefore.defaultRunTimeoutMs
+    );
+    assert.equal(
+      config.defaultMaxToolCalls,
+      runtimeLimitsBefore.defaultMaxToolCalls
     );
 
     promptGuidance.update("Prefer neutral summaries.", "operator");

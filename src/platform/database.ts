@@ -462,6 +462,19 @@ export class AppDatabase {
         updated_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS runtime_config_limits (
+        id TEXT PRIMARY KEY,
+        default_run_timeout_ms INTEGER,
+        default_max_tool_calls INTEGER,
+        openai_request_timeout_ms INTEGER,
+        email_poll_interval_ms INTEGER,
+        email_poll_batch_size INTEGER,
+        email_max_message_bytes INTEGER,
+        updated_by TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS role_policy_overrides (
         id TEXT PRIMARY KEY,
         overrides_json TEXT NOT NULL,
@@ -550,6 +563,7 @@ export class AppDatabase {
       CREATE INDEX IF NOT EXISTS idx_operator_settings_updated_at ON operator_settings(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_prompt_runtime_guidance_updated_at ON prompt_runtime_guidance(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_memory_policy_settings_updated_at ON memory_policy_settings(updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_runtime_config_limits_updated_at ON runtime_config_limits(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_role_policy_overrides_updated_at ON role_policy_overrides(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_project_file_drafts_assignment ON project_file_drafts(assignment_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_project_file_drafts_path ON project_file_drafts(path, created_at DESC);
@@ -680,6 +694,7 @@ export class AppDatabase {
       "slack_response_message_ts",
       "TEXT"
     );
+    ensureRuntimeConfigLimitsOverlaySchema(this.db);
 
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_memory_entries_summary ON memory_entries(is_summary, category, created_at DESC);
@@ -710,6 +725,48 @@ function ensureColumn(
   if (!columns.some((item) => item.name === column)) {
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
   }
+}
+
+function ensureRuntimeConfigLimitsOverlaySchema(db: DatabaseSync): void {
+  const columns = db
+    .prepare("PRAGMA table_info(runtime_config_limits)")
+    .all() as Array<{ name: string; notnull: number }>;
+  const runtimeLimitColumns = new Set([
+    "default_run_timeout_ms",
+    "default_max_tool_calls",
+    "openai_request_timeout_ms",
+    "email_poll_interval_ms",
+    "email_poll_batch_size",
+    "email_max_message_bytes",
+  ]);
+  const needsNullableMigration = columns.some(
+    (column) => runtimeLimitColumns.has(column.name) && column.notnull === 1
+  );
+  if (!needsNullableMigration) {
+    return;
+  }
+
+  db.exec(`
+    ALTER TABLE runtime_config_limits RENAME TO runtime_config_limits_legacy;
+
+    CREATE TABLE runtime_config_limits (
+      id TEXT PRIMARY KEY,
+      default_run_timeout_ms INTEGER,
+      default_max_tool_calls INTEGER,
+      openai_request_timeout_ms INTEGER,
+      email_poll_interval_ms INTEGER,
+      email_poll_batch_size INTEGER,
+      email_max_message_bytes INTEGER,
+      updated_by TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    DROP TABLE runtime_config_limits_legacy;
+
+    CREATE INDEX IF NOT EXISTS idx_runtime_config_limits_updated_at
+      ON runtime_config_limits(updated_at DESC);
+  `);
 }
 
 export function encodeJson(value: unknown): string {

@@ -1,4 +1,5 @@
 import { loadConfig } from "./config.ts";
+import { RuntimeConfigLimitsStore } from "./config/runtime-limits.ts";
 import { SessionStore } from "./chat/session-store.ts";
 import { ChannelDeliveryStore } from "./channels/delivery-log.ts";
 import { RuntimeChannelCapabilities } from "./channels/capabilities.ts";
@@ -60,6 +61,7 @@ const config = loadConfig();
 const logger = new Logger(config.logLevel);
 const metrics = new MetricsStore();
 const database = new AppDatabase(config.datastorePath);
+const runtimeConfigLimits = new RuntimeConfigLimitsStore(database, config);
 const sessions = new SessionStore(database);
 const channels = new ChannelRegistry(database, config);
 const channelDeliveries = new ChannelDeliveryStore(database);
@@ -96,6 +98,7 @@ const assignmentMutationExecutor = new AutonomousMutationExecutor({
   ledger: assignmentMutations,
   settings: operatorSettings,
   memoryPolicy,
+  runtimeConfigLimits,
   promptGuidance,
   rolePolicy,
   projectFileDrafts,
@@ -252,6 +255,7 @@ const server = new HttpServer(
   assignmentMutations,
   promptGuidance,
   memoryPolicy,
+  runtimeConfigLimits,
   rolePolicy,
   projectFileDrafts
 );

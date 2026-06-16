@@ -56,6 +56,7 @@ import { RunGraphStore } from "../orchestration/run-graph-store.ts";
 import { loadRolePolicyConfig } from "../orchestration/role-config.ts";
 import { RolePolicyRuntimeStore } from "../orchestration/role-policy-runtime.ts";
 import { ProjectFileDraftStore } from "../project-files/drafts.ts";
+import { RuntimeConfigLimitsStore } from "../config/runtime-limits.ts";
 import { AppDatabase } from "../platform/database.ts";
 import { Logger } from "../platform/logger.ts";
 import { MetricsStore } from "../platform/metrics.ts";
@@ -171,6 +172,7 @@ export class HttpServer {
   private readonly selfEvolution: SelfEvolutionProposalStore;
   private readonly selfEvolutionMutations: SelfEvolutionMutationService;
   private readonly memoryPolicy: MemoryPolicyStore;
+  private readonly runtimeConfigLimits: RuntimeConfigLimitsStore;
   private readonly promptGuidance: PromptRuntimeGuidanceStore;
   private readonly rolePolicy: RolePolicyRuntimeStore;
   private readonly projectFileDrafts: ProjectFileDraftStore;
@@ -207,6 +209,7 @@ export class HttpServer {
     assignmentMutations?: AutonomousMutationLedger,
     promptGuidance?: PromptRuntimeGuidanceStore,
     memoryPolicy?: MemoryPolicyStore,
+    runtimeConfigLimits?: RuntimeConfigLimitsStore,
     rolePolicy?: RolePolicyRuntimeStore,
     projectFileDrafts?: ProjectFileDraftStore
   ) {
@@ -250,6 +253,8 @@ export class HttpServer {
     this.selfEvolution = new SelfEvolutionProposalStore(database);
     this.settings = new OperatorSettingsStore(database);
     this.memoryPolicy = memoryPolicy ?? new MemoryPolicyStore(database, config);
+    this.runtimeConfigLimits =
+      runtimeConfigLimits ?? new RuntimeConfigLimitsStore(database, config);
     this.promptGuidance =
       promptGuidance ?? new PromptRuntimeGuidanceStore(database);
     this.rolePolicy =
@@ -288,6 +293,7 @@ export class HttpServer {
       ledger: this.assignmentMutations,
       settings: this.settings,
       memoryPolicy: this.memoryPolicy,
+      runtimeConfigLimits: this.runtimeConfigLimits,
       promptGuidance: this.promptGuidance,
       rolePolicy: this.rolePolicy,
       projectFileDrafts: this.projectFileDrafts,
