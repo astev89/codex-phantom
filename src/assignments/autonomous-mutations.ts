@@ -19,6 +19,10 @@ import {
   type RolePolicyPatch,
   type RolePolicyOverrides,
 } from "../orchestration/role-policy-runtime.ts";
+import {
+  projectFileDraftSummary,
+  type ProjectFileDraftStore,
+} from "../project-files/drafts.ts";
 import type { SelfEvolutionRiskClass } from "../self-evolution/proposals.ts";
 import type {
   AutonomousMutationRecord,
@@ -78,6 +82,7 @@ export type AutonomousMutationExecutorOptions = {
   memoryPolicy?: MemoryPolicyStore;
   promptGuidance?: PromptRuntimeGuidanceStore;
   rolePolicy?: RolePolicyRuntimeStore;
+  projectFileDrafts?: ProjectFileDraftStore;
   toolBundles?: ToolBundleLifecycleService;
   adapters?: AutonomousMutationAdapter[];
 };
@@ -114,8 +119,9 @@ const PROMPT_RUNTIME_GUIDANCE_MUTATION_CLASS = "prompt.runtime_guidance";
 const MEMORY_POLICY_RUNTIME_BOUNDS_MUTATION_CLASS =
   "memory_policy.runtime_bounds";
 const ROLE_PERMISSION_POLICY_MUTATION_CLASS = "role.permission_policy";
+const PROJECT_FILE_DRAFT_MUTATION_CLASS = "project_file.draft";
 const UNSUPPORTED_MUTATION_ERROR =
-  "Only configuration.operator_settings, configuration.assignment_policy, tool.bundle_enable, prompt.runtime_guidance, memory_policy.runtime_bounds, and role.permission_policy autonomous mutations are supported in this slice";
+  "Only configuration.operator_settings, configuration.assignment_policy, tool.bundle_enable, prompt.runtime_guidance, memory_policy.runtime_bounds, role.permission_policy, and project_file.draft autonomous mutations are supported in this slice";
 const RISK_ORDER: SelfEvolutionRiskClass[] = [
   "low",
   "medium",
@@ -153,6 +159,13 @@ export class AutonomousMutationExecutor {
           ? [
               createRolePermissionPolicyAutonomousMutationAdapter(
                 options.rolePolicy
+              ),
+            ]
+          : []),
+        ...(options.projectFileDrafts
+          ? [
+              createProjectFileDraftAutonomousMutationAdapter(
+                options.projectFileDrafts
               ),
             ]
           : []),
@@ -725,6 +738,76 @@ function createRolePermissionPolicyAutonomousMutationAdapter(
         input.actor ?? "autonomous_mutation_rollback"
       );
       return { verificationMethod: "role_permission_policy_rollback" };
+    },
+  };
+}
+
+function createProjectFileDraftAutonomousMutationAdapter(
+  projectFileDrafts: ProjectFileDraftStore
+): AutonomousMutationAdapter {
+  return {
+    target: "project_file",
+    mutationType: "draft",
+    mutationClass: PROJECT_FILE_DRAFT_MUTATION_CLASS,
+    affectedResources: [{ type: "project_file_draft" }],
+    apply(input) {
+      const proposedChange = asJsonObject(
+        input.proposedChange,
+        "proposedChange"
+      );
+      const projectFileDraft = asJsonObject(
+        proposedChange.projectFileDraft,
+        "proposedChange.projectFileDraft"
+      );
+      const draft = projectFileDrafts.create({
+        assignmentId: input.assignment.id,
+        runId: input.request.runId,
+        path: requiredString(projectFileDraft.path, "projectFileDraft.path"),
+        content:
+          typeof projectFileDraft.content === "string"
+            ? projectFileDraft.content
+            : requiredString(
+                projectFileDraft.content,
+                "projectFileDraft.content"
+              ),
+        contentType:
+          typeof projectFileDraft.contentType === "string"
+            ? projectFileDraft.contentType
+            : undefined,
+        metadata:
+          projectFileDraft.metadata === undefined
+            ? {
+                rationale: input.request.rationale,
+                actor: input.request.actor ?? null,
+              }
+            : projectFileDraft.metadata,
+      });
+      const summary = projectFileDraftSummary(draft);
+      const affectedResources = [
+        { type: "project_file_draft", id: draft.id, path: draft.path },
+      ];
+      return {
+        before: {
+          path: draft.path,
+          activeDrafts: projectFileDrafts
+            .listActiveSummariesForPath(draft.path)
+            .filter((item) => item.id !== draft.id),
+        } as unknown as JsonValue,
+        after: { draft: summary } as unknown as JsonValue,
+        rollback: { projectFileDraft: { id: draft.id } },
+        affectedResources,
+        verificationMethod: "project_file_draft_create",
+      };
+    },
+    rollback(input) {
+      const rollback = asJsonObject(input.rollback, "rollback");
+      const projectFileDraft = asJsonObject(
+        rollback.projectFileDraft,
+        "rollback.projectFileDraft"
+      );
+      const id = requiredString(projectFileDraft.id, "projectFileDraft.id");
+      projectFileDrafts.markRolledBack(id);
+      return { verificationMethod: "project_file_draft_rollback" };
     },
   };
 }

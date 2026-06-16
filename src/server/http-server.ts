@@ -55,6 +55,7 @@ import type { AgentRunEvent } from "../agent/types.ts";
 import { RunGraphStore } from "../orchestration/run-graph-store.ts";
 import { loadRolePolicyConfig } from "../orchestration/role-config.ts";
 import { RolePolicyRuntimeStore } from "../orchestration/role-policy-runtime.ts";
+import { ProjectFileDraftStore } from "../project-files/drafts.ts";
 import { AppDatabase } from "../platform/database.ts";
 import { Logger } from "../platform/logger.ts";
 import { MetricsStore } from "../platform/metrics.ts";
@@ -172,6 +173,7 @@ export class HttpServer {
   private readonly memoryPolicy: MemoryPolicyStore;
   private readonly promptGuidance: PromptRuntimeGuidanceStore;
   private readonly rolePolicy: RolePolicyRuntimeStore;
+  private readonly projectFileDrafts: ProjectFileDraftStore;
   private readonly slack: SlackChannel;
   private readonly settings: OperatorSettingsStore;
   private readonly requestAudits: RequestAuditStore;
@@ -205,7 +207,8 @@ export class HttpServer {
     assignmentMutations?: AutonomousMutationLedger,
     promptGuidance?: PromptRuntimeGuidanceStore,
     memoryPolicy?: MemoryPolicyStore,
-    rolePolicy?: RolePolicyRuntimeStore
+    rolePolicy?: RolePolicyRuntimeStore,
+    projectFileDrafts?: ProjectFileDraftStore
   ) {
     if (!assignments) {
       throw new Error("AutonomousAssignmentService is required");
@@ -255,6 +258,8 @@ export class HttpServer {
         database,
         loadRolePolicyConfig(config.roleConfigPath)
       );
+    this.projectFileDrafts =
+      projectFileDrafts ?? new ProjectFileDraftStore(database);
     this.slack = new SlackChannel(
       config,
       channels,
@@ -285,6 +290,7 @@ export class HttpServer {
       memoryPolicy: this.memoryPolicy,
       promptGuidance: this.promptGuidance,
       rolePolicy: this.rolePolicy,
+      projectFileDrafts: this.projectFileDrafts,
       toolBundles: this.toolBundleLifecycle,
     });
     this.selfEvolutionMutations = new SelfEvolutionMutationService({

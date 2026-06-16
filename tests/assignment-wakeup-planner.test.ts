@@ -7,6 +7,7 @@ import { AutonomousMutationLedger } from "../src/assignments/mutation-ledger.ts"
 import { MemoryPolicyStore } from "../src/memory/policy.ts";
 import { loadRolePolicyConfig } from "../src/orchestration/role-config.ts";
 import { RolePolicyRuntimeStore } from "../src/orchestration/role-policy-runtime.ts";
+import { ProjectFileDraftStore } from "../src/project-files/drafts.ts";
 import {
   ASSIGNMENT_WAKEUP_JOB_NAME,
   AssignmentWakeupPlanner,
@@ -653,6 +654,80 @@ test("AssignmentWakeupPlanner applies explicitly allowed role policy mutation ma
       "role.permission_policy",
     ],
     mutationClass: "role.permission_policy",
+    actor: "planner",
+  });
+});
+
+test("AssignmentWakeupPlanner applies explicitly allowed project file draft mutation markers", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-06-16T12:44:00.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const database = new AppDatabase(":memory:");
+  t.after(() => database.close());
+  const assignments = new AutonomousAssignmentService(database);
+  const ledger = new AutonomousMutationLedger(database, assignments);
+  const settings = new OperatorSettingsStore(database);
+  const projectFileDrafts = new ProjectFileDraftStore(database);
+  const executor = new AutonomousMutationExecutor({
+    assignments,
+    ledger,
+    settings,
+    projectFileDrafts,
+  });
+  const runs = new RunGraphStore(database);
+  const { scheduler } = makeScheduler(now);
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, [
+      [
+        "Drafted a project file for operator review.",
+        'ASSIGNMENT_MUTATION: {"target":"project_file","mutationType":"draft","rationale":"Draft docs for review without filesystem writes.","proposedChange":{"projectFileDraft":{"path":"docs/planner-project-file-draft.md","content":"# Planner Draft\\n","contentType":"text/markdown"}}}',
+        "ASSIGNMENT_STATUS: complete",
+      ].join("\n"),
+    ]),
+    mutations: executor,
+  });
+  const assignment = assignments.create({
+    objective: "Planner should draft project file",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "project_file.draft",
+        ],
+      },
+    },
+  });
+
+  const result = await planner.wakeNow({
+    assignmentId: assignment.assignment.id,
+    actor: "scheduler",
+    reason: "scheduled wakeup",
+  });
+
+  assert.equal(result.status, "completed");
+  const drafts = projectFileDrafts.list({
+    assignmentId: assignment.assignment.id,
+  });
+  assert.equal(drafts.length, 1);
+  assert.equal(drafts[0]?.path, "docs/planner-project-file-draft.md");
+  assert.equal(drafts[0]?.content, "# Planner Draft\n");
+  const mutations = ledger.list({ assignmentId: assignment.assignment.id });
+  assert.equal(mutations.length, 1);
+  assert.equal(mutations[0]?.status, "applied");
+  assert.equal(mutations[0]?.target, "project_file");
+  assert.equal(mutations[0]?.mutationType, "draft");
+  assert.equal(mutations[0]?.runId, "coord_wakeup_1");
+  assert.deepEqual(mutations[0]?.authorizingPolicy, {
+    rule: "assignment.policy.selfEvolution",
+    maxRiskClass: "medium",
+    allowedMutationClasses: [
+      "configuration.operator_settings",
+      "project_file.draft",
+    ],
+    mutationClass: "project_file.draft",
     actor: "planner",
   });
 });

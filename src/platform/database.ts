@@ -470,6 +470,23 @@ export class AppDatabase {
         updated_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS project_file_drafts (
+        id TEXT PRIMARY KEY,
+        assignment_id TEXT NOT NULL,
+        run_id TEXT,
+        path TEXT NOT NULL,
+        content_type TEXT NOT NULL,
+        content TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL,
+        sha256 TEXT NOT NULL,
+        metadata_json TEXT NOT NULL,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        rolled_back_at TEXT,
+        FOREIGN KEY (assignment_id) REFERENCES assignments(id)
+      );
+
       CREATE TABLE IF NOT EXISTS request_audit_logs (
         request_id TEXT PRIMARY KEY,
         method TEXT NOT NULL,
@@ -534,6 +551,9 @@ export class AppDatabase {
       CREATE INDEX IF NOT EXISTS idx_prompt_runtime_guidance_updated_at ON prompt_runtime_guidance(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_memory_policy_settings_updated_at ON memory_policy_settings(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_role_policy_overrides_updated_at ON role_policy_overrides(updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_project_file_drafts_assignment ON project_file_drafts(assignment_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_project_file_drafts_path ON project_file_drafts(path, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_project_file_drafts_status ON project_file_drafts(status, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_request_audit_logs_created_at ON request_audit_logs(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_mcp_audit_logs_created_at ON mcp_audit_logs(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_mcp_audit_logs_method ON mcp_audit_logs(method, created_at DESC);

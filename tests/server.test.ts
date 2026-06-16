@@ -25,6 +25,7 @@ import {
   RolePolicyRuntimeStore,
   rolePolicyRuntimeSnapshot,
 } from "../src/orchestration/role-policy-runtime.ts";
+import { ProjectFileDraftStore } from "../src/project-files/drafts.ts";
 import { PromptRuntimeGuidanceStore } from "../src/prompts/runtime-guidance.ts";
 import { ToolRegistry } from "../src/tools/registry.ts";
 import { DynamicToolRegistry } from "../src/tools/dynamic-registry.ts";
@@ -822,6 +823,7 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     database,
     loadRolePolicyConfig(config.roleConfigPath)
   );
+  const projectFileDrafts = new ProjectFileDraftStore(database);
 
   const runtime = new AgentRuntime(
     config,
@@ -905,7 +907,8 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assignmentMutations,
     promptGuidance,
     memoryPolicy,
-    rolePolicy
+    rolePolicy,
+    projectFileDrafts
   );
   const instance = await server.listen();
   const address = instance.address();
@@ -1929,6 +1932,125 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assert.deepEqual(
       rolePolicyRuntimeSnapshot(rolePolicy.get()),
       rolePolicyBefore
+    );
+
+    const projectFileAssignmentCreate = await fetch(
+      `${baseUrl}/admin/assignments`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          objective: "Autonomously draft a project file",
+          autonomyLevel: "evolve",
+          policy: {
+            selfEvolution: {
+              allowedMutationClasses: [
+                "configuration.operator_settings",
+                "project_file.draft",
+              ],
+            },
+          },
+        }),
+      }
+    );
+    assert.equal(projectFileAssignmentCreate.status, 201);
+    const projectFileAssignmentJson =
+      (await projectFileAssignmentCreate.json()) as {
+        assignment: { id: string };
+      };
+
+    const projectFileApply = await fetch(
+      `${baseUrl}/admin/assignments/${projectFileAssignmentJson.assignment.id}/mutations/apply`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          target: "project_file",
+          mutationType: "draft",
+          rationale: "Draft docs for operator review.",
+          proposedChange: {
+            projectFileDraft: {
+              path: "docs/http-project-file-draft.md",
+              content: "# HTTP Draft\n",
+              contentType: "text/markdown",
+            },
+          },
+        }),
+      }
+    );
+    assert.equal(projectFileApply.status, 200);
+    const projectFileApplyJson = (await projectFileApply.json()) as {
+      mutation: {
+        id: string;
+        target: string;
+        mutationType: string;
+        status: string;
+        rollback: { projectFileDraft: { id: string } };
+      };
+    };
+    assert.equal(projectFileApplyJson.mutation.status, "applied");
+    assert.equal(projectFileApplyJson.mutation.target, "project_file");
+    assert.equal(projectFileApplyJson.mutation.mutationType, "draft");
+    const projectFileDraft = projectFileDrafts.get(
+      projectFileApplyJson.mutation.rollback.projectFileDraft.id
+    );
+    assert.equal(projectFileDraft?.status, "active");
+    assert.equal(projectFileDraft?.path, "docs/http-project-file-draft.md");
+    assert.equal(projectFileDraft?.content, "# HTTP Draft\n");
+
+    const projectFileAssignmentMutations = await fetch(
+      `${baseUrl}/admin/assignments/${projectFileAssignmentJson.assignment.id}/mutations`,
+      { headers: { Authorization: `Bearer ${config.operatorBearerToken}` } }
+    );
+    assert.equal(projectFileAssignmentMutations.status, 200);
+    const projectFileAssignmentMutationsJson =
+      (await projectFileAssignmentMutations.json()) as {
+        mutations: Array<{ id: string; status: string }>;
+      };
+    assert.deepEqual(
+      projectFileAssignmentMutationsJson.mutations.map((mutation) => ({
+        id: mutation.id,
+        status: mutation.status,
+      })),
+      [{ id: projectFileApplyJson.mutation.id, status: "applied" }]
+    );
+
+    const projectFileTimeline = await fetch(`${baseUrl}/admin/timeline`, {
+      headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+    });
+    assert.equal(projectFileTimeline.status, 200);
+    const projectFileTimelineJson = (await projectFileTimeline.json()) as {
+      autonomousMutations: Array<{ id: string; kind: string }>;
+    };
+    assert.ok(
+      projectFileTimelineJson.autonomousMutations.some(
+        (mutation) =>
+          mutation.id === projectFileApplyJson.mutation.id &&
+          mutation.kind === "autonomous_mutation"
+      )
+    );
+
+    const projectFileRollback = await fetch(
+      `${baseUrl}/admin/assignments/${projectFileAssignmentJson.assignment.id}/mutations/${projectFileApplyJson.mutation.id}/rollback`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({ actor: "operator" }),
+      }
+    );
+    assert.equal(projectFileRollback.status, 200);
+    assert.equal(
+      projectFileDrafts.get(projectFileDraft?.id ?? "")?.status,
+      "rolled_back"
     );
 
     const policyAssignmentCreate = await fetch(`${baseUrl}/admin/assignments`, {
