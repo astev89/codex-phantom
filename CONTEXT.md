@@ -125,7 +125,7 @@ The assignment runtime decision component that builds a compact assignment state
 _Avoid_: Re-run the whole objective blindly, hidden infinite loop
 
 **Assignment wakeup planner**:
-The deterministic v1 implementation of the assignment step planner that wakes an assignment through scheduler policy, runs one coordinator attempt, links the run, applies bounded lifecycle decisions, and schedules the next wakeup without delegated mutation or child assignment execution.
+The deterministic v1 implementation of the assignment step planner that wakes an assignment through scheduler policy, runs one coordinator attempt, links the run, applies bounded lifecycle decisions, can route mutation-authorized planner markers through the autonomous mutation executor, and schedules the next wakeup without child assignment execution.
 _Avoid_: Infinite autonomous loop, hidden background worker
 
 **Assignment notification**:
@@ -141,7 +141,7 @@ The assignment event-log policy that keeps audit and milestone events long-term 
 _Avoid_: Unbounded progress log, lossy audit trail
 
 **Deferred assignment slice**:
-A consciously excluded autonomous-assignment capability that remains part of the planned sequence, such as channel intake, real planner wakeups, child execution, delegated mutation, event compaction, or richer UI.
+A consciously excluded autonomous-assignment capability that remains part of the planned sequence, such as child execution, additional mutation classes, event compaction, or richer UI.
 _Avoid_: Forgotten out-of-scope item, permanent exclusion
 
 **Child assignment**:
@@ -212,8 +212,8 @@ _Avoid_: Implemented feature, feature complete
 - If Phantom cannot construct a rollback payload or before snapshot for a mutation class, it cannot autonomously apply that mutation class.
 - **Autonomous assignment** uses an **Assignment step planner** on each wakeup instead of blindly re-running the full objective.
 - **Assignment step planner** chooses one outer next action per wakeup so the autonomous loop remains inspectable.
-- **Assignment wakeup planner** is the first runtime implementation of the **Assignment step planner**: it can run one coordinator wakeup, link the run, transition lifecycle, and schedule the next wakeup.
-- **Assignment wakeup planner** is deliberately deterministic in v1 and does not yet own delegated mutation, child assignment creation, Slack assignment intake, notification delivery, or dashboard behavior.
+- **Assignment wakeup planner** is the first runtime implementation of the **Assignment step planner**: it can run one coordinator wakeup, link the run, transition lifecycle, route mutation-authorized planner markers through the autonomous mutation executor, and schedule the next wakeup.
+- **Assignment wakeup planner** is deliberately deterministic in v1 and does not yet own child assignment creation, notification delivery, or dashboard behavior.
 - **Autonomous assignment** reports through **Assignment notifications** at assignment-level milestones rather than exposing every internal tool call.
 - Slack **Assignment notifications** use one thread per assignment and avoid flooding by updating progress/status messages where practical.
 - Feedback buttons attach to major **Assignment notifications** and terminal outcomes, not every wakeup.
@@ -235,7 +235,7 @@ _Avoid_: Implemented feature, feature complete
 - High-frequency assignment progress/detail events may be compacted into summary events; autonomous mutation ledger entries are not compacted while rollback is promised.
 - The first **Autonomous assignment** core plus wakeup planner and intake slices deliberately exclude several **Deferred assignment slices**: autonomous mutation execution, child assignment execution, LLM planner policy, event compaction maintenance, full dashboard, production deployment automation, autonomous filesystem/project mutation, and changes to existing one-shot channel behavior.
 - **Deferred assignment slices** remain planned follow-up work rather than permanent exclusions.
-- **Deferred assignment slices** should proceed in this order after the first delegated autonomous self-evolution execution path: safe mutation adapter expansion, planner-driven mutation decisions, child assignment execution, retention/compaction maintenance, then operator UX.
+- **Deferred assignment slices** should proceed from the planner-driven mutation marker baseline through child assignment execution, retention/compaction maintenance, additional safe mutation adapters, then operator UX.
 - Public unauthenticated assignment endpoints, heavy UI changes, assignment templates, and multi-agent dashboards are not part of the v1 autonomous assignment surface.
 - `waiting` means Phantom knows when or how to resume; `blocked` means it cannot make meaningful progress without new information or access.
 - **Email channel parity** treats inbound IMAP and outbound SMTP as one all-or-nothing enabled capability; partial inbound-only or outbound-only modes are not parity-complete.
@@ -352,7 +352,7 @@ _Avoid_: Implemented feature, feature complete
 > **Domain expert:** "No — they are **Deferred assignment slices**. Slice one builds the durable assignment core so follow-up slices have a stable place to land."
 >
 > **Dev:** "What comes after assignment core?"
-> **Domain expert:** "Proceed through **Deferred assignment slices** in order: wakeup planner, channel intake, mutation ledger, first delegated self-evolution execution, safe mutation adapter expansion, planner mutation decisions, child execution, retention compaction, then operator UX."
+> **Domain expert:** "Proceed through **Deferred assignment slices** in order: wakeup planner, channel intake, mutation ledger, first delegated self-evolution execution, safe mutation adapter expansion, planner mutation markers, child execution, retention compaction, then operator UX."
 >
 > **Dev:** "Can we group Email conversations by subject?"
 > **Domain expert:** "Only as a fallback — **Email thread identity** should use Message-ID, In-Reply-To, and References when those headers are present."
