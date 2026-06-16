@@ -12,6 +12,10 @@ import { RunGraphStore } from "../src/orchestration/run-graph-store.ts";
 import type { OrchestrationService } from "../src/orchestration/service.ts";
 import { OperatorSettingsStore } from "../src/server/settings.ts";
 import type { JobRecord } from "../src/scheduler/service.ts";
+import { ToolBundleImportStore } from "../src/tools/bundles.ts";
+import { ToolBundleLifecycleService } from "../src/tools/bundle-lifecycle.ts";
+import { DynamicToolRegistry } from "../src/tools/dynamic-registry.ts";
+import { ToolRegistry } from "../src/tools/registry.ts";
 
 type ScheduledJob = JobRecord & {
   delayMs?: number;
@@ -489,6 +493,103 @@ test("AssignmentWakeupPlanner uses planner-updated assignment policy for continu
   const mutations = ledger.list({ assignmentId: assignment.assignment.id });
   assert.equal(mutations[0]?.status, "applied");
   assert.equal(mutations[0]?.mutationType, "assignment_policy");
+});
+
+test("AssignmentWakeupPlanner applies explicitly allowed tool bundle mutation markers", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-06-16T12:45:00.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const database = new AppDatabase(":memory:");
+  t.after(() => database.close());
+  const assignments = new AutonomousAssignmentService(database);
+  const ledger = new AutonomousMutationLedger(database, assignments);
+  const settings = new OperatorSettingsStore(database);
+  const tools = new ToolRegistry();
+  const dynamicTools = new DynamicToolRegistry(database, tools);
+  const toolBundles = new ToolBundleImportStore(database);
+  const toolBundleLifecycle = new ToolBundleLifecycleService({
+    toolBundles,
+    dynamicTools,
+  });
+  const preview = toolBundles.preview({
+    importedBy: "operator",
+    manifest: {
+      id: "internal.planner",
+      name: "Planner Internal Tools",
+      version: "1.0.0",
+      tools: [
+        {
+          id: "internal.planner.lookup",
+          description: "Lookup planner evidence.",
+          scopes: ["read"],
+          responseTemplate: "planner",
+        },
+      ],
+    },
+  });
+  const approved = toolBundles.approve(
+    preview.id,
+    "operator",
+    "read-only planner bundle"
+  );
+  const executor = new AutonomousMutationExecutor({
+    assignments,
+    ledger,
+    settings,
+    toolBundles: toolBundleLifecycle,
+  });
+  const runs = new RunGraphStore(database);
+  const { scheduler } = makeScheduler(now);
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, [
+      [
+        "Enabled read-only bundle.",
+        `ASSIGNMENT_MUTATION: {"target":"tool","mutationType":"bundle_enable","rationale":"Enable approved read-only tool bundle.","proposedChange":{"toolBundle":{"importId":"${approved.id}"}}}`,
+        "ASSIGNMENT_STATUS: complete",
+      ].join("\n"),
+    ]),
+    mutations: executor,
+  });
+  const assignment = assignments.create({
+    objective: "Planner should enable approved tool bundle",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "tool.bundle_enable",
+        ],
+      },
+    },
+  });
+
+  const result = await planner.wakeNow({
+    assignmentId: assignment.assignment.id,
+    actor: "scheduler",
+    reason: "scheduled wakeup",
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(tools.has("internal.planner.lookup"), true);
+  assert.equal(toolBundles.get(approved.id)?.lifecycleState, "enabled");
+  const mutations = ledger.list({ assignmentId: assignment.assignment.id });
+  assert.equal(mutations.length, 1);
+  assert.equal(mutations[0]?.status, "applied");
+  assert.equal(mutations[0]?.runId, "coord_wakeup_1");
+  assert.equal(mutations[0]?.target, "tool");
+  assert.equal(mutations[0]?.mutationType, "bundle_enable");
+  assert.deepEqual(mutations[0]?.authorizingPolicy, {
+    rule: "assignment.policy.selfEvolution",
+    maxRiskClass: "medium",
+    allowedMutationClasses: [
+      "configuration.operator_settings",
+      "tool.bundle_enable",
+    ],
+    mutationClass: "tool.bundle_enable",
+    actor: "planner",
+  });
 });
 
 test("AssignmentWakeupPlanner records denied autonomous mutation markers without failing the wakeup", async (t) => {

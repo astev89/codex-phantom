@@ -22,6 +22,8 @@ import { OpenAiEmbeddingService } from "./memory/embedding.ts";
 import { ToolRegistry } from "./tools/registry.ts";
 import { DynamicToolRegistry } from "./tools/dynamic-registry.ts";
 import { ToolGovernanceService } from "./tools/governance.ts";
+import { ToolBundleImportStore } from "./tools/bundles.ts";
+import { ToolBundleLifecycleService } from "./tools/bundle-lifecycle.ts";
 import {
   SelfEvolutionProposalStore,
   type CreateSelfEvolutionProposalInput,
@@ -64,6 +66,11 @@ const memoryMaintenance = new MemoryMaintenanceService(database, memory);
 const tools = new ToolRegistry();
 const dynamicTools = new DynamicToolRegistry(database, tools);
 const governance = new ToolGovernanceService(database);
+const toolBundles = new ToolBundleImportStore(database);
+const toolBundleLifecycle = new ToolBundleLifecycleService({
+  toolBundles,
+  dynamicTools,
+});
 const selfEvolution = new SelfEvolutionProposalStore(database);
 const assignments = new AutonomousAssignmentService(database);
 const assignmentMutations = new AutonomousMutationLedger(database, assignments);
@@ -72,6 +79,7 @@ const assignmentMutationExecutor = new AutonomousMutationExecutor({
   assignments,
   ledger: assignmentMutations,
   settings: operatorSettings,
+  toolBundles: toolBundleLifecycle,
 });
 const runs = new RunGraphStore(database);
 const mcpAudit = new McpAuditStore(database);

@@ -356,6 +356,15 @@ test("McpServer exposes read-only assignment tools with actionable missing-id er
       listToolsJson.tools.some((tool) => tool.id.includes("compact")),
       false
     );
+    assert.equal(
+      listToolsJson.tools.some(
+        (tool) =>
+          tool.id.includes("apply") ||
+          tool.id.includes("rollback") ||
+          tool.id.includes("bundle_enable")
+      ),
+      false
+    );
     const listTool = listToolsJson.tools.find(
       (tool) => tool.id === "assignment.list"
     );
