@@ -2,9 +2,9 @@
 
 This is the living status ledger for `codex-phantom`. Update it at the end of each development wave, after tests pass and before handing off or opening a PR.
 
-Last updated: 2026-06-12
-Branch: `jarvis/delegated-autonomous-self-evolution`
-Latest verified implementation commit: `55d8d3f feat(assignments): execute delegated autonomous settings mutations`
+Last updated: 2026-06-16
+Branch: `jarvis/autonomous-mutation-adapter-registry`
+Latest verified implementation commit: `e46faf7 feat(assignments): add autonomous mutation adapter registry`
 
 ## Current State
 
@@ -13,6 +13,24 @@ Latest verified implementation commit: `55d8d3f feat(assignments): execute deleg
 The project is now past its first serious production-hardening pass. It is not yet equivalent to the original Phantom project, but the core runtime is materially safer to run: request sizes are bounded, secrets are rejected in production when defaults are used, outbound model calls have timeouts, scheduler jobs recover deterministically after restarts, MCP events are durably audited, external webhooks are signed, Slack sends retry transient failures, operator-console workflows have browser coverage, and the Docker image runs compiled JavaScript instead of stripped TypeScript.
 
 ## Just Completed
+
+Autonomous mutation adapter registry wave completed locally on 2026-06-16:
+
+- Refactored assignment-authorized autonomous mutation execution behind a small adapter registry while keeping `configuration.operator_settings` as the only built-in production adapter.
+- Preserved the existing operator-settings apply and rollback behavior, policy checks, failed ledger evidence, and HTTP surface while making future mutation classes plug into the same evidence path.
+- Added regression coverage for injected adapter apply/rollback, duplicate adapter rejection, rollback failure when the matching adapter is unavailable, and `mutationClass` audit evidence on applied and policy-denied mutations.
+- Kept planner-driven mutation decisions, MCP write capability, and new production mutation classes out of this slice.
+
+Verification from this wave:
+
+```bash
+node --experimental-strip-types --test tests/assignment-autonomous-mutations.test.ts tests/assignment-mutation-ledger.test.ts tests/server.test.ts tests/self-evolution-mutations.test.ts
+npm run typecheck
+npm test
+npm run build
+git diff --check
+node .gitnexus/run.cjs detect-changes --scope staged --repo codex-phantom
+```
 
 Delegated autonomous self-evolution execution wave completed locally on 2026-06-12:
 
@@ -737,8 +755,8 @@ Use `docs/phantom-parity.md` as the canonical production-level parity roadmap. K
 
 Suggested work:
 
-- Add the next safe autonomous mutation classes one at a time behind explicit assignment self-evolution policy and adapter-level rollback evidence.
-- Wire planner-driven `mutate` decisions only after each adapter has service-level and HTTP-level safety coverage.
+- Add the first new safe autonomous mutation class behind the adapter registry, explicit assignment self-evolution policy, and adapter-level rollback evidence.
+- Wire planner-driven `mutate` decisions only after at least one non-settings adapter has service-level and HTTP-level safety coverage.
 - Keep child assignment execution and retention compaction as separate durable autonomy slices so mutation authority does not expand by accident.
 
 ### P2: Channel And Parity Polish

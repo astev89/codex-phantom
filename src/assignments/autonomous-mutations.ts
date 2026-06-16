@@ -57,9 +57,35 @@ export type AutonomousMutationExecutorOptions = {
   assignments: AutonomousAssignmentService;
   ledger: AutonomousMutationLedger;
   settings: OperatorSettingsMutationPort;
+  adapters?: AutonomousMutationAdapter[];
+};
+
+export type AutonomousMutationAdapter = {
+  readonly target: AutonomousMutationTarget;
+  readonly mutationType: string;
+  readonly mutationClass: string;
+  readonly affectedResources: JsonValue;
+  apply(input: {
+    assignment: AssignmentRecord;
+    request: ApplyAutonomousMutationInput;
+    proposedChange: JsonValue;
+  }): {
+    before: JsonValue;
+    after: JsonValue;
+    rollback: JsonValue;
+    affectedResources?: JsonValue;
+    verificationMethod?: string;
+  };
+  rollback(input: {
+    assignment: AssignmentRecord;
+    mutation: AutonomousMutationRecord;
+    rollback: JsonValue;
+  }): { verificationMethod?: string } | void;
 };
 
 const MUTATION_CLASS = "configuration.operator_settings";
+const UNSUPPORTED_MUTATION_ERROR =
+  "Only configuration.operator_settings autonomous mutations are supported in this slice";
 const RISK_ORDER: SelfEvolutionRiskClass[] = [
   "low",
   "medium",
@@ -70,12 +96,16 @@ const RISK_ORDER: SelfEvolutionRiskClass[] = [
 export class AutonomousMutationExecutor {
   private readonly assignments: AutonomousAssignmentService;
   private readonly ledger: AutonomousMutationLedger;
-  private readonly settings: OperatorSettingsMutationPort;
+  private readonly adapters: Map<string, AutonomousMutationAdapter>;
 
   constructor(options: AutonomousMutationExecutorOptions) {
     this.assignments = options.assignments;
     this.ledger = options.ledger;
-    this.settings = options.settings;
+    this.adapters = buildAdapterMap(
+      options.adapters ?? [
+        createOperatorSettingsAutonomousMutationAdapter(options.settings),
+      ]
+    );
   }
 
   apply(
@@ -83,7 +113,11 @@ export class AutonomousMutationExecutor {
   ): AutonomousMutationExecutionResult {
     const assignment = this.assignments.getRequired(input.assignmentId);
     const riskClass = input.riskClass ?? "low";
-    this.assertAssignmentCanMutate(assignment.assignment, input, riskClass);
+    const adapter = this.assertAssignmentCanMutate(
+      assignment.assignment,
+      input,
+      riskClass
+    );
     const planned = this.ledger.recordPlanned({
       assignmentId: assignment.assignment.id,
       runId: input.runId,
@@ -92,32 +126,31 @@ export class AutonomousMutationExecutor {
       autonomyLevel: assignment.assignment.autonomyLevel,
       authorizingPolicy: authorizingPolicy(
         assignment.assignment.policy.selfEvolution,
-        input.actor
+        input.actor,
+        adapter.mutationClass
       ),
       rationale: input.rationale,
       riskClass,
-      affectedResources: [{ type: "settings", id: "operator" }],
+      affectedResources: adapter.affectedResources,
       actor: input.actor,
     });
 
     try {
-      const proposedChange = asJsonObject(
-        input.proposedChange,
-        "proposedChange"
-      );
-      const result = applyOperatorSettingsMutation(
-        this.settings,
-        proposedChange.operatorSettings
-      );
+      const result = adapter.apply({
+        assignment: assignment.assignment,
+        request: input,
+        proposedChange: input.proposedChange,
+      });
       const mutation = this.ledger.recordApplied(planned.id, {
         before: result.before,
         after: result.after,
         rollback: result.rollback,
-        affectedResources: [{ type: "settings", id: "operator" }],
+        affectedResources:
+          result.affectedResources ?? adapter.affectedResources,
         verification: {
           attempted: true,
           result: "passed",
-          method: "operator_settings_update",
+          method: result.verificationMethod ?? `${adapter.mutationType}_update`,
         },
       });
       return {
@@ -133,7 +166,7 @@ export class AutonomousMutationExecutor {
         verification: {
           attempted: true,
           result: "failed",
-          method: "operator_settings_update",
+          method: `${adapter.mutationType}_update`,
         },
         errorMessage: message,
       });
@@ -158,10 +191,8 @@ export class AutonomousMutationExecutor {
         "Autonomous mutation not found for assignment"
       );
     }
-    if (
-      mutation.target !== "configuration" ||
-      mutation.mutationType !== "operator_settings"
-    ) {
+    const adapter = this.resolveAdapter(mutation.target, mutation.mutationType);
+    if (!adapter) {
       throw new AutonomousMutationExecutionError(
         400,
         "Only configuration.operator_settings autonomous mutations can be rolled back in this slice"
@@ -187,7 +218,11 @@ export class AutonomousMutationExecutor {
       );
     }
     try {
-      rollbackOperatorSettingsMutation(this.settings, mutation.rollback);
+      const rollback = adapter.rollback({
+        assignment: assignment.assignment,
+        mutation,
+        rollback: mutation.rollback,
+      });
       return {
         assignment: this.assignments.getRequired(assignment.assignment.id),
         mutation: this.ledger.recordRolledBack(mutation.id, {
@@ -195,7 +230,9 @@ export class AutonomousMutationExecutor {
           verification: {
             attempted: true,
             result: "passed",
-            method: "operator_settings_rollback",
+            method:
+              rollback?.verificationMethod ??
+              `${adapter.mutationType}_rollback`,
           },
         }),
       };
@@ -212,7 +249,7 @@ export class AutonomousMutationExecutor {
     assignment: AssignmentRecord,
     input: ApplyAutonomousMutationInput,
     riskClass: SelfEvolutionRiskClass
-  ): void {
+  ): AutonomousMutationAdapter {
     if (assignment.autonomyLevel !== "evolve") {
       throw new AutonomousMutationExecutionError(
         403,
@@ -220,24 +257,8 @@ export class AutonomousMutationExecutor {
       );
     }
     const policy = assignment.policy.selfEvolution;
-    if (!policy.enabled) {
-      const failed = this.recordFailedPolicyMutation(
-        assignment,
-        input,
-        riskClass,
-        policy,
-        "Assignment self-evolution policy is disabled"
-      );
-      throw new AutonomousMutationExecutionError(
-        403,
-        failed.errorMessage ?? "",
-        failed
-      );
-    }
-    if (
-      input.target !== "configuration" ||
-      input.mutationType !== "operator_settings"
-    ) {
+    const adapter = this.resolveAdapter(input.target, input.mutationType);
+    if (!adapter) {
       const failed = this.ledger.recordFailed({
         assignmentId: assignment.id,
         runId: input.runId,
@@ -248,8 +269,7 @@ export class AutonomousMutationExecutor {
         rationale: input.rationale,
         riskClass,
         actor: input.actor,
-        errorMessage:
-          "Only configuration.operator_settings autonomous mutations are supported in this slice",
+        errorMessage: UNSUPPORTED_MUTATION_ERROR,
       });
       throw new AutonomousMutationExecutionError(
         400,
@@ -257,13 +277,29 @@ export class AutonomousMutationExecutor {
         failed
       );
     }
-    if (!policy.allowedMutationClasses.includes(MUTATION_CLASS)) {
+    if (!policy.enabled) {
       const failed = this.recordFailedPolicyMutation(
         assignment,
         input,
         riskClass,
         policy,
-        "Assignment self-evolution policy does not allow configuration.operator_settings"
+        "Assignment self-evolution policy is disabled",
+        adapter.mutationClass
+      );
+      throw new AutonomousMutationExecutionError(
+        403,
+        failed.errorMessage ?? "",
+        failed
+      );
+    }
+    if (!policy.allowedMutationClasses.includes(adapter.mutationClass)) {
+      const failed = this.recordFailedPolicyMutation(
+        assignment,
+        input,
+        riskClass,
+        policy,
+        `Assignment self-evolution policy does not allow ${adapter.mutationClass}`,
+        adapter.mutationClass
       );
       throw new AutonomousMutationExecutionError(
         403,
@@ -278,7 +314,11 @@ export class AutonomousMutationExecutor {
         target: input.target,
         mutationType: input.mutationType,
         autonomyLevel: assignment.autonomyLevel,
-        authorizingPolicy: authorizingPolicy(policy, input.actor),
+        authorizingPolicy: authorizingPolicy(
+          policy,
+          input.actor,
+          adapter.mutationClass
+        ),
         rationale: input.rationale,
         riskClass,
         actor: input.actor,
@@ -291,6 +331,7 @@ export class AutonomousMutationExecutor {
         failed
       );
     }
+    return adapter;
   }
 
   private recordFailedPolicyMutation(
@@ -298,7 +339,8 @@ export class AutonomousMutationExecutor {
     input: ApplyAutonomousMutationInput,
     riskClass: SelfEvolutionRiskClass,
     policy: AssignmentSelfEvolutionPolicy,
-    errorMessage: string
+    errorMessage: string,
+    mutationClass?: string
   ): AutonomousMutationRecord {
     return this.ledger.recordFailed({
       assignmentId: assignment.id,
@@ -306,25 +348,88 @@ export class AutonomousMutationExecutor {
       target: input.target,
       mutationType: input.mutationType,
       autonomyLevel: assignment.autonomyLevel,
-      authorizingPolicy: authorizingPolicy(policy, input.actor),
+      authorizingPolicy: authorizingPolicy(policy, input.actor, mutationClass),
       rationale: input.rationale,
       riskClass,
       actor: input.actor,
       errorMessage,
     });
   }
+
+  private resolveAdapter(
+    target: AutonomousMutationTarget,
+    mutationType: string
+  ): AutonomousMutationAdapter | undefined {
+    return this.adapters.get(adapterKey(target, mutationType));
+  }
+}
+
+function createOperatorSettingsAutonomousMutationAdapter(
+  settings: OperatorSettingsMutationPort
+): AutonomousMutationAdapter {
+  const affectedResources = [{ type: "settings", id: "operator" }];
+  return {
+    target: "configuration",
+    mutationType: "operator_settings",
+    mutationClass: MUTATION_CLASS,
+    affectedResources,
+    apply(input) {
+      const proposedChange = asJsonObject(
+        input.proposedChange,
+        "proposedChange"
+      );
+      const result = applyOperatorSettingsMutation(
+        settings,
+        proposedChange.operatorSettings
+      );
+      return {
+        ...result,
+        affectedResources,
+        verificationMethod: "operator_settings_update",
+      };
+    },
+    rollback(input) {
+      rollbackOperatorSettingsMutation(settings, input.rollback);
+      return { verificationMethod: "operator_settings_rollback" };
+    },
+  };
 }
 
 function authorizingPolicy(
   policy: AssignmentSelfEvolutionPolicy,
-  actor?: string
+  actor?: string,
+  mutationClass?: string
 ): JsonValue {
   return {
     rule: "assignment.policy.selfEvolution",
     maxRiskClass: policy.maxRiskClass,
     allowedMutationClasses: policy.allowedMutationClasses,
+    ...(mutationClass ? { mutationClass } : {}),
     ...(actor ? { actor } : {}),
   };
+}
+
+function buildAdapterMap(
+  adapters: AutonomousMutationAdapter[]
+): Map<string, AutonomousMutationAdapter> {
+  const map = new Map<string, AutonomousMutationAdapter>();
+  for (const adapter of adapters) {
+    const key = adapterKey(adapter.target, adapter.mutationType);
+    if (map.has(key)) {
+      throw new Error(
+        `Duplicate autonomous mutation adapter for ${adapter.mutationClass}`
+      );
+    }
+    map.set(key, adapter);
+  }
+  return map;
+}
+
+function adapterKey(
+  target: AutonomousMutationTarget,
+  mutationType: string
+): string {
+  return `${target}:${mutationType}`;
 }
 
 function riskRank(riskClass: SelfEvolutionRiskClass): number {
