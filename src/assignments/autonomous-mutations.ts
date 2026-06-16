@@ -11,6 +11,8 @@ import type {
 } from "./mutation-ledger.ts";
 import { AutonomousMutationLedger } from "./mutation-ledger.ts";
 import type {
+  AssignmentPolicy,
+  AssignmentPolicyPatch,
   AssignmentRecord,
   AssignmentSelfEvolutionPolicy,
 } from "./types.ts";
@@ -80,12 +82,14 @@ export type AutonomousMutationAdapter = {
     assignment: AssignmentRecord;
     mutation: AutonomousMutationRecord;
     rollback: JsonValue;
+    actor?: string;
   }): { verificationMethod?: string } | void;
 };
 
-const MUTATION_CLASS = "configuration.operator_settings";
+const OPERATOR_SETTINGS_MUTATION_CLASS = "configuration.operator_settings";
+const ASSIGNMENT_POLICY_MUTATION_CLASS = "configuration.assignment_policy";
 const UNSUPPORTED_MUTATION_ERROR =
-  "Only configuration.operator_settings autonomous mutations are supported in this slice";
+  "Only configuration.operator_settings and configuration.assignment_policy autonomous mutations are supported in this slice";
 const RISK_ORDER: SelfEvolutionRiskClass[] = [
   "low",
   "medium",
@@ -104,6 +108,7 @@ export class AutonomousMutationExecutor {
     this.adapters = buildAdapterMap(
       options.adapters ?? [
         createOperatorSettingsAutonomousMutationAdapter(options.settings),
+        createAssignmentPolicyAutonomousMutationAdapter(options.assignments),
       ]
     );
   }
@@ -195,7 +200,7 @@ export class AutonomousMutationExecutor {
     if (!adapter) {
       throw new AutonomousMutationExecutionError(
         400,
-        "Only configuration.operator_settings autonomous mutations can be rolled back in this slice"
+        "No autonomous mutation adapter is available for rollback"
       );
     }
     if (mutation.status !== "applied") {
@@ -214,7 +219,7 @@ export class AutonomousMutationExecutor {
     if (newerMutation) {
       throw new AutonomousMutationExecutionError(
         409,
-        "Cannot roll back this autonomous mutation while a newer applied configuration.operator_settings mutation exists"
+        `Cannot roll back this autonomous mutation while a newer applied ${adapter.mutationClass} mutation exists`
       );
     }
     try {
@@ -222,6 +227,7 @@ export class AutonomousMutationExecutor {
         assignment: assignment.assignment,
         mutation,
         rollback: mutation.rollback,
+        actor: input.actor,
       });
       return {
         assignment: this.assignments.getRequired(assignment.assignment.id),
@@ -371,7 +377,7 @@ function createOperatorSettingsAutonomousMutationAdapter(
   return {
     target: "configuration",
     mutationType: "operator_settings",
-    mutationClass: MUTATION_CLASS,
+    mutationClass: OPERATOR_SETTINGS_MUTATION_CLASS,
     affectedResources,
     apply(input) {
       const proposedChange = asJsonObject(
@@ -391,6 +397,65 @@ function createOperatorSettingsAutonomousMutationAdapter(
     rollback(input) {
       rollbackOperatorSettingsMutation(settings, input.rollback);
       return { verificationMethod: "operator_settings_rollback" };
+    },
+  };
+}
+
+function createAssignmentPolicyAutonomousMutationAdapter(
+  assignments: AutonomousAssignmentService
+): AutonomousMutationAdapter {
+  return {
+    target: "configuration",
+    mutationType: "assignment_policy",
+    mutationClass: ASSIGNMENT_POLICY_MUTATION_CLASS,
+    affectedResources: [{ type: "assignment_policy" }],
+    apply(input) {
+      const proposedChange = asJsonObject(
+        input.proposedChange,
+        "proposedChange"
+      );
+      const assignmentPolicy = asJsonObject(
+        proposedChange.assignmentPolicy,
+        "proposedChange.assignmentPolicy"
+      );
+      const policyPatch = toAssignmentPolicyPatch(assignmentPolicy, {
+        allowSelfEvolution: false,
+      });
+      const before = input.assignment.policy;
+      const updated = assignments.control(input.assignment.id, {
+        action: "change_policy",
+        actor: input.request.actor ?? "autonomous_mutation",
+        reason: input.request.rationale,
+        policy: policyPatch,
+      });
+      const affectedResources = [
+        { type: "assignment_policy", id: input.assignment.id },
+      ];
+      return {
+        before: before as unknown as JsonValue,
+        after: updated.assignment.policy as unknown as JsonValue,
+        rollback: { assignmentPolicy: before } as unknown as JsonValue,
+        affectedResources,
+        verificationMethod: "assignment_policy_update",
+      };
+    },
+    rollback(input) {
+      const rollback = asJsonObject(input.rollback, "rollback");
+      const assignmentPolicy = asJsonObject(
+        rollback.assignmentPolicy,
+        "rollback.assignmentPolicy"
+      );
+      const rollbackPolicy = toAssignmentPolicyPatch(
+        withoutSelfEvolution(assignmentPolicy),
+        { allowSelfEvolution: false }
+      );
+      assignments.control(input.assignment.id, {
+        action: "change_policy",
+        actor: input.actor ?? "autonomous_mutation_rollback",
+        reason: `Rollback autonomous mutation ${input.mutation.id}`,
+        policy: rollbackPolicy,
+      });
+      return { verificationMethod: "assignment_policy_rollback" };
     },
   };
 }
@@ -444,4 +509,164 @@ function asJsonObject(
     throw new Error(`${field} must be a JSON object`);
   }
   return value;
+}
+
+function toAssignmentPolicyPatch(
+  value: Record<string, JsonValue>,
+  options: { allowSelfEvolution: boolean }
+): AssignmentPolicyPatch {
+  const patch: Record<string, unknown> = {};
+  const allowedTopLevel = new Set([
+    "maxWakeups",
+    "maxTotalRuntimeMinutes",
+    "maxConsecutiveFailures",
+    "maxIdleHours",
+    "wakeupDelayMinMinutes",
+    "wakeupDelayMaxMinutes",
+    "notificationCadence",
+    ...(options.allowSelfEvolution ? ["selfEvolution"] : []),
+  ]);
+
+  for (const key of Object.keys(value)) {
+    if (key === "selfEvolution" && !options.allowSelfEvolution) {
+      throw new Error(
+        "assignmentPolicy.selfEvolution cannot be changed by autonomous assignment policy mutations"
+      );
+    }
+    if (!allowedTopLevel.has(key)) {
+      throw new Error(`assignmentPolicy.${key} is not supported`);
+    }
+  }
+
+  for (const key of [
+    "maxWakeups",
+    "maxTotalRuntimeMinutes",
+    "maxConsecutiveFailures",
+    "maxIdleHours",
+    "wakeupDelayMinMinutes",
+    "wakeupDelayMaxMinutes",
+  ]) {
+    if (value[key] !== undefined) {
+      patch[key] = value[key];
+    }
+  }
+
+  if (value.notificationCadence !== undefined) {
+    patch.notificationCadence = toNotificationCadencePatch(
+      asJsonObject(
+        value.notificationCadence,
+        "assignmentPolicy.notificationCadence"
+      )
+    );
+  }
+
+  if (options.allowSelfEvolution && value.selfEvolution !== undefined) {
+    patch.selfEvolution = toSelfEvolutionPolicyPatch(
+      asJsonObject(value.selfEvolution, "assignmentPolicy.selfEvolution")
+    );
+  }
+
+  if (Object.keys(patch).length === 0) {
+    throw new Error(
+      "assignmentPolicy must contain at least one supported field"
+    );
+  }
+
+  return patch as AssignmentPolicyPatch;
+}
+
+function withoutSelfEvolution(
+  value: Record<string, JsonValue>
+): Record<string, JsonValue> {
+  return Object.fromEntries(
+    Object.entries(value).filter(([key]) => key !== "selfEvolution")
+  ) as Record<string, JsonValue>;
+}
+
+function toNotificationCadencePatch(
+  value: Record<string, JsonValue>
+): AssignmentPolicyPatch["notificationCadence"] {
+  const patch: Record<string, unknown> = {};
+  const booleanKeys = [
+    "onCreate",
+    "onWakeupStart",
+    "onMeaningfulProgress",
+    "onBlocked",
+    "onFailure",
+    "onCompletion",
+  ];
+  const allowedKeys = new Set([
+    ...booleanKeys,
+    "activeProgressIntervalMinutes",
+  ]);
+  for (const key of Object.keys(value)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `assignmentPolicy.notificationCadence.${key} is not supported`
+      );
+    }
+  }
+  for (const key of booleanKeys) {
+    if (value[key] !== undefined) {
+      if (typeof value[key] !== "boolean") {
+        throw new Error(
+          `assignmentPolicy.notificationCadence.${key} must be boolean`
+        );
+      }
+      patch[key] = value[key];
+    }
+  }
+  if (value.activeProgressIntervalMinutes !== undefined) {
+    patch.activeProgressIntervalMinutes = value.activeProgressIntervalMinutes;
+  }
+  if (Object.keys(patch).length === 0) {
+    throw new Error(
+      "assignmentPolicy.notificationCadence must contain at least one supported field"
+    );
+  }
+  return patch as AssignmentPolicyPatch["notificationCadence"];
+}
+
+function toSelfEvolutionPolicyPatch(
+  value: Record<string, JsonValue>
+): AssignmentPolicy["selfEvolution"] {
+  const patch: Record<string, unknown> = {};
+  const allowedKeys = new Set([
+    "enabled",
+    "allowedMutationClasses",
+    "maxRiskClass",
+  ]);
+  for (const key of Object.keys(value)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(`assignmentPolicy.selfEvolution.${key} is not supported`);
+    }
+  }
+  if (value.enabled !== undefined) {
+    if (typeof value.enabled !== "boolean") {
+      throw new Error("assignmentPolicy.selfEvolution.enabled must be boolean");
+    }
+    patch.enabled = value.enabled;
+  }
+  if (value.allowedMutationClasses !== undefined) {
+    if (
+      !Array.isArray(value.allowedMutationClasses) ||
+      value.allowedMutationClasses.some(
+        (item) => typeof item !== "string" || item.trim() === ""
+      )
+    ) {
+      throw new Error(
+        "assignmentPolicy.selfEvolution.allowedMutationClasses must be non-empty strings"
+      );
+    }
+    patch.allowedMutationClasses = value.allowedMutationClasses;
+  }
+  if (value.maxRiskClass !== undefined) {
+    patch.maxRiskClass = value.maxRiskClass;
+  }
+  if (Object.keys(patch).length === 0) {
+    throw new Error(
+      "assignmentPolicy.selfEvolution must contain at least one supported field"
+    );
+  }
+  return patch as AssignmentPolicy["selfEvolution"];
 }

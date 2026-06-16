@@ -199,7 +199,10 @@ test("AutonomousMutationExecutor supports injected autonomous mutation adapters"
     (error) => {
       assert.ok(error instanceof AutonomousMutationExecutionError);
       assert.equal(error.status, 400);
-      assert.match(error.message, /Only configuration\.operator_settings/);
+      assert.match(
+        error.message,
+        /No autonomous mutation adapter is available/
+      );
       return true;
     }
   );
@@ -217,6 +220,408 @@ test("AutonomousMutationExecutor supports injected autonomous mutation adapters"
     result: "passed",
     method: "fake_settings_rollback",
   });
+
+  database.close();
+});
+
+test("AutonomousMutationExecutor applies explicit assignment policy mutations", () => {
+  const { assignments, database, executor, ledger } = createHarness();
+  const assignment = assignments.create({
+    objective: "Tune assignment execution policy",
+    autonomyLevel: "evolve",
+    policy: {
+      maxWakeups: 4,
+      wakeupDelayMinMinutes: 5,
+      wakeupDelayMaxMinutes: 60,
+      notificationCadence: {
+        onFailure: true,
+        activeProgressIntervalMinutes: 30,
+      },
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "configuration.assignment_policy",
+        ],
+      },
+    },
+  });
+
+  const applied = executor.apply({
+    assignmentId: assignment.assignment.id,
+    runId: "coord_assignment_policy",
+    target: "configuration",
+    mutationType: "assignment_policy",
+    rationale: "Give this assignment a little more wakeup room.",
+    actor: "alice",
+    proposedChange: {
+      assignmentPolicy: {
+        maxWakeups: 8,
+        wakeupDelayMinMinutes: 10,
+        wakeupDelayMaxMinutes: 120,
+        notificationCadence: {
+          onFailure: false,
+          activeProgressIntervalMinutes: 45,
+        },
+      },
+    },
+  });
+
+  const updated = assignments.getRequired(assignment.assignment.id).assignment;
+  assert.equal(updated.policy.maxWakeups, 8);
+  assert.equal(updated.policy.wakeupDelayMinMinutes, 10);
+  assert.equal(updated.policy.wakeupDelayMaxMinutes, 120);
+  assert.equal(updated.policy.notificationCadence.onFailure, false);
+  assert.equal(
+    updated.policy.notificationCadence.activeProgressIntervalMinutes,
+    45
+  );
+  assert.deepEqual(updated.policy.selfEvolution.allowedMutationClasses, [
+    "configuration.operator_settings",
+    "configuration.assignment_policy",
+  ]);
+  assert.equal(applied.mutation.status, "applied");
+  assert.equal(applied.mutation.mutationType, "assignment_policy");
+  assert.deepEqual(applied.mutation.authorizingPolicy, {
+    rule: "assignment.policy.selfEvolution",
+    maxRiskClass: "medium",
+    allowedMutationClasses: [
+      "configuration.operator_settings",
+      "configuration.assignment_policy",
+    ],
+    mutationClass: "configuration.assignment_policy",
+    actor: "alice",
+  });
+  assert.equal(
+    (applied.mutation.before as { maxWakeups?: number }).maxWakeups,
+    4
+  );
+  assert.equal(
+    (applied.mutation.after as { maxWakeups?: number }).maxWakeups,
+    8
+  );
+  assert.deepEqual(applied.mutation.rollback, {
+    assignmentPolicy: assignment.assignment.policy,
+  });
+  assert.deepEqual(applied.mutation.affectedResources, [
+    { type: "assignment_policy", id: assignment.assignment.id },
+  ]);
+  assert.deepEqual(applied.mutation.verification, {
+    attempted: true,
+    result: "passed",
+    method: "assignment_policy_update",
+  });
+  assert.deepEqual(
+    ledger.list({ assignmentId: assignment.assignment.id }).map((mutation) => ({
+      id: mutation.id,
+      status: mutation.status,
+    })),
+    [{ id: applied.mutation.id, status: "applied" }]
+  );
+
+  const rolledBack = executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: applied.mutation.id,
+    actor: "bob",
+  });
+
+  assert.equal(rolledBack.mutation.status, "rolled_back");
+  assert.deepEqual(
+    assignments.getRequired(assignment.assignment.id).assignment.policy,
+    assignment.assignment.policy
+  );
+  assert.deepEqual(rolledBack.mutation.verification, {
+    attempted: true,
+    result: "passed",
+    method: "assignment_policy_rollback",
+  });
+  assert.deepEqual(
+    assignments
+      .timeline(assignment.assignment.id)
+      .events.map((event) => event.type),
+    [
+      "created",
+      "mutation_planned",
+      "policy_changed",
+      "mutation_applied",
+      "policy_changed",
+      "mutation_rolled_back",
+    ]
+  );
+  assert.deepEqual(
+    assignments
+      .timeline(assignment.assignment.id)
+      .events.filter(
+        (event) =>
+          event.type === "policy_changed" ||
+          event.type === "mutation_rolled_back"
+      )
+      .map((event) => (event.payload as { actor?: string | null }).actor),
+    ["alice", "bob", "bob"]
+  );
+
+  database.close();
+});
+
+test("AutonomousMutationExecutor rolls back assignment policy mutations after operator tightens self-evolution policy", () => {
+  const { assignments, database, executor } = createHarness();
+  const assignment = assignments.create({
+    objective: "Roll back assignment policy after authority tightening",
+    autonomyLevel: "evolve",
+    policy: {
+      maxWakeups: 4,
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "configuration.assignment_policy",
+        ],
+      },
+    },
+  });
+  const applied = executor.apply({
+    assignmentId: assignment.assignment.id,
+    target: "configuration",
+    mutationType: "assignment_policy",
+    rationale: "Temporarily increase wakeups.",
+    proposedChange: {
+      assignmentPolicy: { maxWakeups: 9 },
+    },
+  });
+  assert.equal(
+    assignments.getRequired(assignment.assignment.id).assignment.policy
+      .maxWakeups,
+    9
+  );
+
+  assignments.control(assignment.assignment.id, {
+    action: "change_policy",
+    actor: "operator",
+    reason: "Tighten mutation authority after the temporary change.",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: ["configuration.operator_settings"],
+      },
+    },
+  });
+
+  const rolledBack = executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: applied.mutation.id,
+    actor: "operator",
+  });
+
+  const policy = assignments.getRequired(assignment.assignment.id).assignment
+    .policy;
+  assert.equal(rolledBack.mutation.status, "rolled_back");
+  assert.equal(policy.maxWakeups, 4);
+  assert.deepEqual(policy.selfEvolution.allowedMutationClasses, [
+    "configuration.operator_settings",
+  ]);
+  assert.deepEqual(
+    assignments
+      .timeline(assignment.assignment.id)
+      .events.filter(
+        (event) =>
+          event.type === "policy_changed" ||
+          event.type === "mutation_rolled_back"
+      )
+      .map((event) => ({
+        type: event.type,
+        actor: (event.payload as { actor?: string | null }).actor,
+      })),
+    [
+      { type: "policy_changed", actor: "autonomous_mutation" },
+      { type: "policy_changed", actor: "operator" },
+      { type: "policy_changed", actor: "operator" },
+      { type: "mutation_rolled_back", actor: "operator" },
+    ]
+  );
+
+  database.close();
+});
+
+test("AutonomousMutationExecutor blocks assignment policy authority escalation", () => {
+  const { assignments, database, executor, ledger } = createHarness();
+  const assignment = assignments.create({
+    objective: "Do not let assignment policy mutate self-evolution",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "configuration.assignment_policy",
+        ],
+      },
+    },
+  });
+
+  assert.throws(
+    () =>
+      executor.apply({
+        assignmentId: assignment.assignment.id,
+        target: "configuration",
+        mutationType: "assignment_policy",
+        rationale: "Try to widen mutation authority.",
+        proposedChange: {
+          assignmentPolicy: {
+            selfEvolution: {
+              allowedMutationClasses: [
+                "configuration.operator_settings",
+                "configuration.assignment_policy",
+                "tool.bundle_enable",
+              ],
+            },
+          },
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 400);
+      assert.equal(error.mutation?.status, "failed");
+      assert.match(
+        error.message,
+        /assignmentPolicy.selfEvolution cannot be changed/
+      );
+      return true;
+    }
+  );
+
+  assert.deepEqual(
+    assignments.getRequired(assignment.assignment.id).assignment.policy,
+    assignment.assignment.policy
+  );
+  assert.deepEqual(
+    ledger.list({ assignmentId: assignment.assignment.id }).map((mutation) => ({
+      status: mutation.status,
+      mutationType: mutation.mutationType,
+      errorMessage: mutation.errorMessage,
+    })),
+    [
+      {
+        status: "failed",
+        mutationType: "assignment_policy",
+        errorMessage:
+          "assignmentPolicy.selfEvolution cannot be changed by autonomous assignment policy mutations",
+      },
+    ]
+  );
+
+  database.close();
+});
+
+test("AutonomousMutationExecutor keeps assignment policy mutations opt-in", () => {
+  const { assignments, database, executor, ledger } = createHarness();
+  const assignment = assignments.create({
+    objective: "Default policy should not mutate assignment policy",
+    autonomyLevel: "evolve",
+  });
+
+  assert.throws(
+    () =>
+      executor.apply({
+        assignmentId: assignment.assignment.id,
+        target: "configuration",
+        mutationType: "assignment_policy",
+        rationale: "Try assignment policy mutation without explicit opt-in.",
+        proposedChange: {
+          assignmentPolicy: { maxWakeups: 9 },
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 403);
+      assert.equal(error.mutation?.status, "failed");
+      assert.match(
+        error.message,
+        /does not allow configuration\.assignment_policy/
+      );
+      return true;
+    }
+  );
+
+  assert.equal(
+    assignments.getRequired(assignment.assignment.id).assignment.policy
+      .maxWakeups,
+    5
+  );
+  assert.deepEqual(
+    ledger.list({ assignmentId: assignment.assignment.id }).map((mutation) => ({
+      status: mutation.status,
+      mutationType: mutation.mutationType,
+      authorizingPolicy: mutation.authorizingPolicy,
+      errorMessage: mutation.errorMessage,
+    })),
+    [
+      {
+        status: "failed",
+        mutationType: "assignment_policy",
+        authorizingPolicy: {
+          rule: "assignment.policy.selfEvolution",
+          maxRiskClass: "medium",
+          allowedMutationClasses: ["configuration.operator_settings"],
+          mutationClass: "configuration.assignment_policy",
+        },
+        errorMessage:
+          "Assignment self-evolution policy does not allow configuration.assignment_policy",
+      },
+    ]
+  );
+
+  database.close();
+});
+
+test("AutonomousMutationExecutor rejects malformed assignment policy mutations without changing policy", () => {
+  const { assignments, database, executor, ledger } = createHarness();
+  const assignment = assignments.create({
+    objective: "Reject malformed assignment policy mutation",
+    autonomyLevel: "evolve",
+    policy: {
+      maxWakeups: 5,
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "configuration.assignment_policy",
+        ],
+      },
+    },
+  });
+
+  assert.throws(
+    () =>
+      executor.apply({
+        assignmentId: assignment.assignment.id,
+        target: "configuration",
+        mutationType: "assignment_policy",
+        rationale: "Try an invalid wakeup budget.",
+        proposedChange: {
+          assignmentPolicy: { maxWakeups: 0 },
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 400);
+      assert.equal(error.mutation?.status, "failed");
+      assert.match(error.message, /maxWakeups must be a positive integer/);
+      return true;
+    }
+  );
+
+  assert.equal(
+    assignments.getRequired(assignment.assignment.id).assignment.policy
+      .maxWakeups,
+    5
+  );
+  assert.deepEqual(
+    ledger.list({ assignmentId: assignment.assignment.id }).map((mutation) => ({
+      status: mutation.status,
+      errorMessage: mutation.errorMessage,
+    })),
+    [
+      {
+        status: "failed",
+        errorMessage: "maxWakeups must be a positive integer",
+      },
+    ]
+  );
 
   database.close();
 });
@@ -387,7 +792,7 @@ test("AutonomousMutationExecutor audits unsupported and malformed autonomous mut
         mutationType: "tool_bundle_enable",
         status: "failed",
         errorMessage:
-          "Only configuration.operator_settings autonomous mutations are supported in this slice",
+          "Only configuration.operator_settings and configuration.assignment_policy autonomous mutations are supported in this slice",
       },
     ]
   );
