@@ -4,6 +4,10 @@ import {
   rollbackOperatorSettingsMutation,
   type OperatorSettingsMutationPort,
 } from "../self-evolution/mutations.ts";
+import {
+  normalizeRuntimeGuidanceText,
+  type PromptRuntimeGuidanceStore,
+} from "../prompts/runtime-guidance.ts";
 import type { SelfEvolutionRiskClass } from "../self-evolution/proposals.ts";
 import type {
   AutonomousMutationRecord,
@@ -60,6 +64,7 @@ export type AutonomousMutationExecutorOptions = {
   assignments: AutonomousAssignmentService;
   ledger: AutonomousMutationLedger;
   settings: OperatorSettingsMutationPort;
+  promptGuidance?: PromptRuntimeGuidanceStore;
   toolBundles?: ToolBundleLifecycleService;
   adapters?: AutonomousMutationAdapter[];
 };
@@ -69,6 +74,7 @@ export type AutonomousMutationAdapter = {
   readonly mutationType: string;
   readonly mutationClass: string;
   readonly affectedResources: JsonValue;
+  readonly rollbackConflictScope?: "assignment" | "global";
   apply(input: {
     assignment: AssignmentRecord;
     request: ApplyAutonomousMutationInput;
@@ -91,8 +97,9 @@ export type AutonomousMutationAdapter = {
 const OPERATOR_SETTINGS_MUTATION_CLASS = "configuration.operator_settings";
 const ASSIGNMENT_POLICY_MUTATION_CLASS = "configuration.assignment_policy";
 const TOOL_BUNDLE_ENABLE_MUTATION_CLASS = "tool.bundle_enable";
+const PROMPT_RUNTIME_GUIDANCE_MUTATION_CLASS = "prompt.runtime_guidance";
 const UNSUPPORTED_MUTATION_ERROR =
-  "Only configuration.operator_settings, configuration.assignment_policy, and tool.bundle_enable autonomous mutations are supported in this slice";
+  "Only configuration.operator_settings, configuration.assignment_policy, tool.bundle_enable, and prompt.runtime_guidance autonomous mutations are supported in this slice";
 const RISK_ORDER: SelfEvolutionRiskClass[] = [
   "low",
   "medium",
@@ -112,6 +119,13 @@ export class AutonomousMutationExecutor {
       options.adapters ?? [
         createOperatorSettingsAutonomousMutationAdapter(options.settings),
         createAssignmentPolicyAutonomousMutationAdapter(options.assignments),
+        ...(options.promptGuidance
+          ? [
+              createPromptRuntimeGuidanceAutonomousMutationAdapter(
+                options.promptGuidance
+              ),
+            ]
+          : []),
         ...(options.toolBundles
           ? [
               createToolBundleEnableAutonomousMutationAdapter(
@@ -225,6 +239,7 @@ export class AutonomousMutationExecutor {
       mutationType: mutation.mutationType,
       appliedAt: mutation.appliedAt ?? mutation.updatedAt,
       id: mutation.id,
+      scope: adapter.rollbackConflictScope ?? "assignment",
     });
     if (newerMutation) {
       throw new AutonomousMutationExecutionError(
@@ -528,6 +543,56 @@ function createToolBundleEnableAutonomousMutationAdapter(
         `Rollback autonomous mutation ${input.mutation.id}`
       );
       return { verificationMethod: "tool_bundle_enable_rollback" };
+    },
+  };
+}
+
+function createPromptRuntimeGuidanceAutonomousMutationAdapter(
+  promptGuidance: PromptRuntimeGuidanceStore
+): AutonomousMutationAdapter {
+  const affectedResources = [{ type: "prompt", id: "runtime_guidance" }];
+  return {
+    target: "prompt",
+    mutationType: "runtime_guidance",
+    mutationClass: PROMPT_RUNTIME_GUIDANCE_MUTATION_CLASS,
+    affectedResources,
+    rollbackConflictScope: "global",
+    apply(input) {
+      const proposedChange = asJsonObject(
+        input.proposedChange,
+        "proposedChange"
+      );
+      const runtimeGuidance = asJsonObject(
+        proposedChange.runtimeGuidance,
+        "proposedChange.runtimeGuidance"
+      );
+      const text = normalizeRuntimeGuidanceText(runtimeGuidance.text);
+      const before = promptGuidance.get();
+      const after = promptGuidance.update(
+        text,
+        input.request.actor ?? "autonomous_mutation"
+      );
+      return {
+        before: before as unknown as JsonValue,
+        after: after as unknown as JsonValue,
+        rollback: { runtimeGuidance: { text: before.text } },
+        affectedResources,
+        verificationMethod: "prompt_runtime_guidance_update",
+      };
+    },
+    rollback(input) {
+      const rollback = asJsonObject(input.rollback, "rollback");
+      const runtimeGuidance = asJsonObject(
+        rollback.runtimeGuidance,
+        "rollback.runtimeGuidance"
+      );
+      promptGuidance.update(
+        normalizeRuntimeGuidanceText(runtimeGuidance.text, {
+          allowEmpty: true,
+        }),
+        input.actor ?? "autonomous_mutation_rollback"
+      );
+      return { verificationMethod: "prompt_runtime_guidance_rollback" };
     },
   };
 }

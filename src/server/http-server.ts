@@ -66,6 +66,7 @@ import {
   ToolBundleLifecycleService,
 } from "../tools/bundle-lifecycle.ts";
 import { SelfEvolutionProposalStore } from "../self-evolution/proposals.ts";
+import { PromptRuntimeGuidanceStore } from "../prompts/runtime-guidance.ts";
 import {
   SelfEvolutionMutationError,
   SelfEvolutionMutationService,
@@ -165,6 +166,7 @@ export class HttpServer {
   private readonly governance: ToolGovernanceService;
   private readonly selfEvolution: SelfEvolutionProposalStore;
   private readonly selfEvolutionMutations: SelfEvolutionMutationService;
+  private readonly promptGuidance: PromptRuntimeGuidanceStore;
   private readonly slack: SlackChannel;
   private readonly settings: OperatorSettingsStore;
   private readonly requestAudits: RequestAuditStore;
@@ -195,7 +197,8 @@ export class HttpServer {
     assignments?: AutonomousAssignmentService,
     assignmentWakeups?: AssignmentWakeupPlanner,
     assignmentIntake?: AssignmentIntakeService,
-    assignmentMutations?: AutonomousMutationLedger
+    assignmentMutations?: AutonomousMutationLedger,
+    promptGuidance?: PromptRuntimeGuidanceStore
   ) {
     if (!assignments) {
       throw new Error("AutonomousAssignmentService is required");
@@ -236,6 +239,8 @@ export class HttpServer {
     this.governance = governance;
     this.selfEvolution = new SelfEvolutionProposalStore(database);
     this.settings = new OperatorSettingsStore(database);
+    this.promptGuidance =
+      promptGuidance ?? new PromptRuntimeGuidanceStore(database);
     this.slack = new SlackChannel(
       config,
       channels,
@@ -263,6 +268,7 @@ export class HttpServer {
       assignments,
       ledger: this.assignmentMutations,
       settings: this.settings,
+      promptGuidance: this.promptGuidance,
       toolBundles: this.toolBundleLifecycle,
     });
     this.selfEvolutionMutations = new SelfEvolutionMutationService({

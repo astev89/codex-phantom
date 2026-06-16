@@ -8,6 +8,7 @@ import {
 import { AutonomousMutationLedger } from "../src/assignments/mutation-ledger.ts";
 import { AutonomousAssignmentService } from "../src/assignments/service.ts";
 import { AppDatabase } from "../src/platform/database.ts";
+import { PromptRuntimeGuidanceStore } from "../src/prompts/runtime-guidance.ts";
 import { OperatorSettingsStore } from "../src/server/settings.ts";
 import { ToolBundleImportStore } from "../src/tools/bundles.ts";
 import { ToolBundleLifecycleService } from "../src/tools/bundle-lifecycle.ts";
@@ -55,6 +56,21 @@ function createToolBundleHarness() {
     toolBundles,
     tools,
   };
+}
+
+function createPromptGuidanceHarness() {
+  const database = new AppDatabase(":memory:");
+  const assignments = new AutonomousAssignmentService(database);
+  const ledger = new AutonomousMutationLedger(database, assignments);
+  const settings = new OperatorSettingsStore(database);
+  const promptGuidance = new PromptRuntimeGuidanceStore(database);
+  const executor = new AutonomousMutationExecutor({
+    assignments,
+    ledger,
+    settings,
+    promptGuidance,
+  });
+  return { assignments, database, executor, ledger, promptGuidance, settings };
 }
 
 function previewApprovedReadOnlyBundle(toolBundles: ToolBundleImportStore) {
@@ -534,6 +550,322 @@ test("AutonomousMutationExecutor applies explicit tool bundle enable mutations",
       .timeline(assignment.assignment.id)
       .events.map((event) => event.type),
     ["created", "mutation_planned", "mutation_applied", "mutation_rolled_back"]
+  );
+
+  database.close();
+});
+
+test("AutonomousMutationExecutor applies prompt runtime guidance mutations", () => {
+  const { assignments, database, executor, ledger, promptGuidance } =
+    createPromptGuidanceHarness();
+  promptGuidance.update("Prefer neutral summaries.", "operator");
+  const assignment = assignments.create({
+    objective: "Tune runtime prompt guidance",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "prompt.runtime_guidance",
+        ],
+      },
+    },
+  });
+
+  const applied = executor.apply({
+    assignmentId: assignment.assignment.id,
+    runId: "coord_prompt_guidance",
+    target: "prompt",
+    mutationType: "runtime_guidance",
+    rationale: "Prefer evidence-first wakeup summaries.",
+    actor: "alice",
+    proposedChange: {
+      runtimeGuidance: {
+        text: "Prefer evidence-first wakeup summaries.",
+      },
+    },
+  });
+
+  assert.equal(
+    promptGuidance.get().text,
+    "Prefer evidence-first wakeup summaries."
+  );
+  assert.equal(applied.mutation.status, "applied");
+  assert.equal(applied.mutation.target, "prompt");
+  assert.equal(applied.mutation.mutationType, "runtime_guidance");
+  assert.deepEqual(applied.mutation.authorizingPolicy, {
+    rule: "assignment.policy.selfEvolution",
+    maxRiskClass: "medium",
+    allowedMutationClasses: [
+      "configuration.operator_settings",
+      "prompt.runtime_guidance",
+    ],
+    mutationClass: "prompt.runtime_guidance",
+    actor: "alice",
+  });
+  assert.equal(
+    (applied.mutation.before as { text?: string }).text,
+    "Prefer neutral summaries."
+  );
+  assert.equal(
+    (applied.mutation.after as { text?: string }).text,
+    "Prefer evidence-first wakeup summaries."
+  );
+  assert.deepEqual(applied.mutation.rollback, {
+    runtimeGuidance: { text: "Prefer neutral summaries." },
+  });
+  assert.deepEqual(applied.mutation.affectedResources, [
+    { type: "prompt", id: "runtime_guidance" },
+  ]);
+  assert.deepEqual(applied.mutation.verification, {
+    attempted: true,
+    result: "passed",
+    method: "prompt_runtime_guidance_update",
+  });
+  assert.deepEqual(
+    ledger.list({ assignmentId: assignment.assignment.id }).map((mutation) => ({
+      id: mutation.id,
+      status: mutation.status,
+    })),
+    [{ id: applied.mutation.id, status: "applied" }]
+  );
+
+  const rolledBack = executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: applied.mutation.id,
+    actor: "bob",
+  });
+
+  assert.equal(promptGuidance.get().text, "Prefer neutral summaries.");
+  assert.equal(rolledBack.mutation.status, "rolled_back");
+  assert.deepEqual(rolledBack.mutation.verification, {
+    attempted: true,
+    result: "passed",
+    method: "prompt_runtime_guidance_rollback",
+  });
+
+  database.close();
+});
+
+test("AutonomousMutationExecutor rolls back first prompt runtime guidance mutation to the default empty overlay", () => {
+  const { assignments, database, executor, promptGuidance } =
+    createPromptGuidanceHarness();
+  const assignment = assignments.create({
+    objective: "Tune runtime prompt guidance from an empty baseline",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "prompt.runtime_guidance",
+        ],
+      },
+    },
+  });
+
+  const applied = executor.apply({
+    assignmentId: assignment.assignment.id,
+    target: "prompt",
+    mutationType: "runtime_guidance",
+    rationale: "Prefer evidence-first wakeup summaries.",
+    proposedChange: {
+      runtimeGuidance: {
+        text: "Prefer evidence-first wakeup summaries.",
+      },
+    },
+  });
+
+  assert.equal(
+    promptGuidance.get().text,
+    "Prefer evidence-first wakeup summaries."
+  );
+  assert.deepEqual(applied.mutation.rollback, {
+    runtimeGuidance: { text: "" },
+  });
+
+  executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: applied.mutation.id,
+  });
+
+  assert.equal(promptGuidance.get().text, "");
+  database.close();
+});
+
+test("AutonomousMutationExecutor blocks stale prompt runtime guidance rollback across assignments", () => {
+  const { assignments, database, executor, promptGuidance } =
+    createPromptGuidanceHarness();
+  const first = assignments.create({
+    objective: "First prompt guidance mutation",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "prompt.runtime_guidance",
+        ],
+      },
+    },
+  });
+  const second = assignments.create({
+    objective: "Second prompt guidance mutation",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "prompt.runtime_guidance",
+        ],
+      },
+    },
+  });
+
+  const firstApplied = executor.apply({
+    assignmentId: first.assignment.id,
+    target: "prompt",
+    mutationType: "runtime_guidance",
+    rationale: "Prefer first guidance.",
+    proposedChange: {
+      runtimeGuidance: { text: "Prefer first guidance." },
+    },
+  });
+  const secondApplied = executor.apply({
+    assignmentId: second.assignment.id,
+    target: "prompt",
+    mutationType: "runtime_guidance",
+    rationale: "Prefer second guidance.",
+    proposedChange: {
+      runtimeGuidance: { text: "Prefer second guidance." },
+    },
+  });
+
+  assert.equal(secondApplied.mutation.status, "applied");
+  assert.equal(promptGuidance.get().text, "Prefer second guidance.");
+  assert.throws(
+    () =>
+      executor.rollback({
+        assignmentId: first.assignment.id,
+        mutationId: firstApplied.mutation.id,
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 409);
+      assert.match(error.message, /newer applied prompt\.runtime_guidance/);
+      return true;
+    }
+  );
+  assert.equal(promptGuidance.get().text, "Prefer second guidance.");
+
+  database.close();
+});
+
+test("AutonomousMutationExecutor keeps prompt runtime guidance mutations opt-in", () => {
+  const { assignments, database, executor, promptGuidance } =
+    createPromptGuidanceHarness();
+  const assignment = assignments.create({
+    objective: "Default policy should not mutate prompts",
+    autonomyLevel: "evolve",
+  });
+
+  assert.throws(
+    () =>
+      executor.apply({
+        assignmentId: assignment.assignment.id,
+        target: "prompt",
+        mutationType: "runtime_guidance",
+        rationale: "Try prompt mutation without explicit opt-in.",
+        proposedChange: {
+          runtimeGuidance: { text: "Prefer shorter replies." },
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 403);
+      assert.equal(error.mutation?.status, "failed");
+      assert.match(error.message, /does not allow prompt\.runtime_guidance/);
+      return true;
+    }
+  );
+
+  assert.equal(promptGuidance.get().text, "");
+  database.close();
+});
+
+test("AutonomousMutationExecutor rejects malformed prompt runtime guidance mutations", () => {
+  const { assignments, database, executor, ledger, promptGuidance } =
+    createPromptGuidanceHarness();
+  promptGuidance.update("Keep initial guidance.", "operator");
+  const assignment = assignments.create({
+    objective: "Reject unsafe prompt guidance changes",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "prompt.runtime_guidance",
+        ],
+      },
+    },
+  });
+
+  assert.throws(
+    () =>
+      executor.apply({
+        assignmentId: assignment.assignment.id,
+        target: "prompt",
+        mutationType: "runtime_guidance",
+        rationale: "Try blank prompt guidance.",
+        proposedChange: { runtimeGuidance: { text: "   " } },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 400);
+      assert.equal(error.mutation?.status, "failed");
+      assert.match(error.message, /non-empty string/);
+      return true;
+    }
+  );
+
+  assert.throws(
+    () =>
+      executor.apply({
+        assignmentId: assignment.assignment.id,
+        target: "prompt",
+        mutationType: "runtime_guidance",
+        rationale: "Try oversized prompt guidance.",
+        proposedChange: { runtimeGuidance: { text: "x".repeat(2001) } },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 400);
+      assert.equal(error.mutation?.status, "failed");
+      assert.match(error.message, /2000 characters or less/);
+      return true;
+    }
+  );
+
+  assert.equal(promptGuidance.get().text, "Keep initial guidance.");
+  assert.deepEqual(
+    ledger.list({ assignmentId: assignment.assignment.id }).map((mutation) => ({
+      target: mutation.target,
+      mutationType: mutation.mutationType,
+      status: mutation.status,
+      errorMessage: mutation.errorMessage,
+    })),
+    [
+      {
+        target: "prompt",
+        mutationType: "runtime_guidance",
+        status: "failed",
+        errorMessage: "runtimeGuidance.text must be 2000 characters or less",
+      },
+      {
+        target: "prompt",
+        mutationType: "runtime_guidance",
+        status: "failed",
+        errorMessage: "runtimeGuidance.text must be a non-empty string",
+      },
+    ]
   );
 
   database.close();
@@ -1109,7 +1441,7 @@ test("AutonomousMutationExecutor audits unsupported and malformed autonomous mut
         mutationType: "tool_bundle_enable",
         status: "failed",
         errorMessage:
-          "Only configuration.operator_settings, configuration.assignment_policy, and tool.bundle_enable autonomous mutations are supported in this slice",
+          "Only configuration.operator_settings, configuration.assignment_policy, tool.bundle_enable, and prompt.runtime_guidance autonomous mutations are supported in this slice",
       },
     ]
   );

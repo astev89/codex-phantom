@@ -361,7 +361,8 @@ test("McpServer exposes read-only assignment tools with actionable missing-id er
         (tool) =>
           tool.id.includes("apply") ||
           tool.id.includes("rollback") ||
-          tool.id.includes("bundle_enable")
+          tool.id.includes("bundle_enable") ||
+          tool.id.includes("runtime_guidance")
       ),
       false
     );

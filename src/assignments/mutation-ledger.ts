@@ -455,13 +455,28 @@ export class AutonomousMutationLedger {
     mutationType: string;
     appliedAt: string;
     id: string;
+    scope?: "assignment" | "global";
   }): AutonomousMutationRecord | null {
     assertTarget(input.target);
+    const scope = input.scope ?? "assignment";
+    const assignmentFilter =
+      scope === "assignment" ? "AND candidate.assignment_id = ?" : "";
+    const values = [
+      requireText(input.id, "id"),
+      ...(scope === "assignment"
+        ? [requireText(input.assignmentId, "assignmentId")]
+        : []),
+      input.target,
+      requireText(input.mutationType, "mutationType"),
+      requireText(input.appliedAt, "appliedAt"),
+      requireText(input.appliedAt, "appliedAt"),
+    ];
     const row = this.database.get<AutonomousMutationRow>(
       `
         SELECT candidate.* FROM assignment_mutations AS candidate
         JOIN assignment_mutations AS current ON current.id = ?
-        WHERE candidate.assignment_id = ?
+        WHERE 1 = 1
+          ${assignmentFilter}
           AND candidate.target = ?
           AND candidate.mutation_type = ?
           AND candidate.status = 'applied'
@@ -475,12 +490,7 @@ export class AutonomousMutationLedger {
         ORDER BY candidate.applied_at DESC, candidate.rowid DESC
         LIMIT 1
       `,
-      requireText(input.id, "id"),
-      requireText(input.assignmentId, "assignmentId"),
-      input.target,
-      requireText(input.mutationType, "mutationType"),
-      requireText(input.appliedAt, "appliedAt"),
-      requireText(input.appliedAt, "appliedAt")
+      ...values
     );
     return row ? toAutonomousMutationRecord(row) : null;
   }
