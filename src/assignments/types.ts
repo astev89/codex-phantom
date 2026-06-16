@@ -160,6 +160,21 @@ export type AssignmentTimeline = {
   events: AssignmentEventRecord[];
 };
 
+export type CompactAssignmentEventsInput = {
+  assignmentId: string;
+  actor?: string;
+  reason?: string;
+  compactBefore?: string;
+  limit?: number;
+};
+
+export type CompactAssignmentEventsResult = {
+  assignmentId: string;
+  compactedCount: number;
+  deletedEventIds: string[];
+  summaryEvent?: AssignmentEventRecord;
+};
+
 export type CreateAssignmentInput = {
   objective: string;
   title?: string;

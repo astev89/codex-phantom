@@ -107,6 +107,7 @@ import {
   validateDynamicToolBody,
   HttpError,
   parseJsonBody,
+  validateAssignmentCompactionBody,
   validateAssignmentControlBody,
   validateAssignmentCreateBody,
   validateAutonomousMutationApplyBody,
@@ -831,6 +832,36 @@ export class HttpServer {
               "limit"
             ),
           }),
+        });
+        return;
+      }
+
+      if (
+        req.method === "POST" &&
+        url.pathname.startsWith("/admin/assignments/") &&
+        trimTrailingSlash(url.pathname).endsWith("/timeline/compact")
+      ) {
+        this.requireOperatorAuth(req);
+        const assignmentId = decodeURIComponent(
+          url.pathname
+            .replace("/admin/assignments/", "")
+            .replace("/timeline/compact", "")
+            .replace(/\/$/, "")
+        );
+        const body = validateAssignmentCompactionBody(
+          parseJsonBody(await readTextBody(req))
+        );
+        const result = this.assignments.compactEvents({
+          assignmentId,
+          actor: body.actor,
+          reason: body.reason,
+          compactBefore: body.compactBefore,
+          limit: body.limit,
+        });
+        this.json(res, 200, {
+          requestId,
+          result,
+          timeline: this.assignments.timeline(assignmentId),
         });
         return;
       }

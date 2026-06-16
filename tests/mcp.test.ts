@@ -352,6 +352,10 @@ test("McpServer exposes read-only assignment tools with actionable missing-id er
       listToolsJson.tools.every((tool) => tool.scopes.includes("read")),
       true
     );
+    assert.equal(
+      listToolsJson.tools.some((tool) => tool.id.includes("compact")),
+      false
+    );
     const listTool = listToolsJson.tools.find(
       (tool) => tool.id === "assignment.list"
     );
@@ -434,6 +438,23 @@ test("McpServer exposes read-only assignment tools with actionable missing-id er
       maxActiveChildren: 3,
     });
 
+    assignments.control(created.assignment.id, {
+      action: "add_context",
+      context: { note: "Compactable detail visible through MCP summary" },
+    });
+    database.run(
+      `UPDATE assignment_events
+       SET expires_at = ?
+       WHERE assignment_id = ? AND type = ?`,
+      "2026-06-01T00:00:00.000Z",
+      created.assignment.id,
+      "context_added"
+    );
+    assignments.compactEvents({
+      assignmentId: created.assignment.id,
+      compactBefore: "2026-06-16T00:00:00.000Z",
+    });
+
     const timelineCall = await mcp.handle(
       new Request("http://localhost/mcp", {
         method: "POST",
@@ -455,6 +476,12 @@ test("McpServer exposes read-only assignment tools with actionable missing-id er
       output: { timeline: { events: Array<{ type: string }> } };
     };
     assert.equal(timelineCallJson.output.timeline.events[0]?.type, "created");
+    assert.equal(
+      timelineCallJson.output.timeline.events.some(
+        (event) => event.type === "events_compacted"
+      ),
+      true
+    );
 
     const mutationsCall = await mcp.handle(
       new Request("http://localhost/mcp", {
