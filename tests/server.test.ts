@@ -19,6 +19,7 @@ import type {
 import { SessionStore } from "../src/chat/session-store.ts";
 import { MemoryMaintenanceService } from "../src/memory/maintenance.ts";
 import { MemoryStore } from "../src/memory/store.ts";
+import { PromptRuntimeGuidanceStore } from "../src/prompts/runtime-guidance.ts";
 import { ToolRegistry } from "../src/tools/registry.ts";
 import { DynamicToolRegistry } from "../src/tools/dynamic-registry.ts";
 import { ToolGovernanceService } from "../src/tools/governance.ts";
@@ -808,13 +809,15 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     kind: "in_process",
     handler: async (input) => input,
   });
+  const promptGuidance = new PromptRuntimeGuidanceStore(database);
 
   const runtime = new AgentRuntime(
     config,
     new FakeAdapter(),
     sessions,
     memory,
-    tools
+    tools,
+    promptGuidance
   );
   const runs = new RunGraphStore(database);
   const orchestration = new OrchestrationService(runtime, tools, runs);
@@ -887,7 +890,8 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assignments,
     assignmentWakeups,
     undefined,
-    assignmentMutations
+    assignmentMutations,
+    promptGuidance
   );
   const instance = await server.listen();
   const address = instance.address();
@@ -1357,6 +1361,182 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       settingsAfterAutonomousRollbackJson.settings.dashboardRefreshSeconds,
       5
     );
+
+    promptGuidance.update("Prefer neutral summaries.", "operator");
+    const promptAssignmentCreate = await fetch(`${baseUrl}/admin/assignments`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.operatorBearerToken}`,
+      },
+      body: JSON.stringify({
+        objective: "Autonomously tune runtime prompt guidance",
+        autonomyLevel: "evolve",
+        policy: {
+          selfEvolution: {
+            allowedMutationClasses: [
+              "configuration.operator_settings",
+              "prompt.runtime_guidance",
+            ],
+          },
+        },
+      }),
+    });
+    assert.equal(promptAssignmentCreate.status, 201);
+    const promptAssignmentJson = (await promptAssignmentCreate.json()) as {
+      assignment: { id: string };
+    };
+
+    const promptApply = await fetch(
+      `${baseUrl}/admin/assignments/${promptAssignmentJson.assignment.id}/mutations/apply`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          target: "prompt",
+          mutationType: "runtime_guidance",
+          rationale: "Prefer evidence-first wakeup summaries.",
+          runId: "coord_http_prompt_guidance",
+          actor: "operator",
+          proposedChange: {
+            runtimeGuidance: {
+              text: "Prefer evidence-first wakeup summaries.",
+            },
+          },
+        }),
+      }
+    );
+    assert.equal(promptApply.status, 200);
+    const promptApplyJson = (await promptApply.json()) as {
+      mutation: {
+        id: string;
+        status: string;
+        target: string;
+        mutationType: string;
+        before: { text: string };
+        after: { text: string };
+        rollback: unknown;
+        affectedResources: unknown;
+      };
+    };
+    assert.equal(promptApplyJson.mutation.status, "applied");
+    assert.equal(promptApplyJson.mutation.target, "prompt");
+    assert.equal(promptApplyJson.mutation.mutationType, "runtime_guidance");
+    assert.equal(
+      promptApplyJson.mutation.before.text,
+      "Prefer neutral summaries."
+    );
+    assert.equal(
+      promptApplyJson.mutation.after.text,
+      "Prefer evidence-first wakeup summaries."
+    );
+    assert.deepEqual(promptApplyJson.mutation.rollback, {
+      runtimeGuidance: { text: "Prefer neutral summaries." },
+    });
+    assert.deepEqual(promptApplyJson.mutation.affectedResources, [
+      { type: "prompt", id: "runtime_guidance" },
+    ]);
+    assert.equal(
+      promptGuidance.get().text,
+      "Prefer evidence-first wakeup summaries."
+    );
+
+    const promptAssignmentMutations = await fetch(
+      `${baseUrl}/admin/assignments/${promptAssignmentJson.assignment.id}/mutations`,
+      {
+        headers: {
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+      }
+    );
+    assert.equal(promptAssignmentMutations.status, 200);
+    const promptAssignmentMutationsJson =
+      (await promptAssignmentMutations.json()) as {
+        mutations: Array<{ id: string; status: string }>;
+      };
+    assert.deepEqual(
+      promptAssignmentMutationsJson.mutations.map((mutation) => ({
+        id: mutation.id,
+        status: mutation.status,
+      })),
+      [{ id: promptApplyJson.mutation.id, status: "applied" }]
+    );
+
+    const promptGlobalMutations = await fetch(
+      `${baseUrl}/admin/mutations?assignmentId=${encodeURIComponent(
+        promptAssignmentJson.assignment.id
+      )}&runId=coord_http_prompt_guidance&target=prompt&status=applied`,
+      {
+        headers: {
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+      }
+    );
+    assert.equal(promptGlobalMutations.status, 200);
+    const promptGlobalMutationsJson = (await promptGlobalMutations.json()) as {
+      mutations: Array<{ id: string; target: string; mutationType: string }>;
+    };
+    assert.deepEqual(
+      promptGlobalMutationsJson.mutations.map((mutation) => ({
+        id: mutation.id,
+        target: mutation.target,
+        mutationType: mutation.mutationType,
+      })),
+      [
+        {
+          id: promptApplyJson.mutation.id,
+          target: "prompt",
+          mutationType: "runtime_guidance",
+        },
+      ]
+    );
+
+    const promptTimeline = await fetch(`${baseUrl}/admin/timeline`, {
+      headers: {
+        Authorization: `Bearer ${config.operatorBearerToken}`,
+      },
+    });
+    assert.equal(promptTimeline.status, 200);
+    const promptTimelineJson = (await promptTimeline.json()) as {
+      autonomousMutations: Array<{ id: string; kind: string }>;
+    };
+    assert.ok(
+      promptTimelineJson.autonomousMutations.some(
+        (mutation) =>
+          mutation.id === promptApplyJson.mutation.id &&
+          mutation.kind === "autonomous_mutation"
+      )
+    );
+
+    const promptRollback = await fetch(
+      `${baseUrl}/admin/assignments/${promptAssignmentJson.assignment.id}/mutations/${promptApplyJson.mutation.id}/rollback`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({ actor: "operator" }),
+      }
+    );
+    assert.equal(promptRollback.status, 200);
+    const promptRollbackJson = (await promptRollback.json()) as {
+      mutation: { id: string; status: string };
+    };
+    assert.deepEqual(
+      {
+        id: promptRollbackJson.mutation.id,
+        status: promptRollbackJson.mutation.status,
+      },
+      {
+        id: promptApplyJson.mutation.id,
+        status: "rolled_back",
+      }
+    );
+    assert.equal(promptGuidance.get().text, "Prefer neutral summaries.");
 
     const policyAssignmentCreate = await fetch(`${baseUrl}/admin/assignments`, {
       method: "POST",

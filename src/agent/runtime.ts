@@ -3,6 +3,7 @@ import { SessionStore } from "../chat/session-store.ts";
 import { MemoryStore } from "../memory/store.ts";
 import type { MemoryInsightSet, MemoryTurnRecord } from "../memory/types.ts";
 import { assemblePrompt } from "../prompts/assembler.ts";
+import type { PromptRuntimeGuidanceStore } from "../prompts/runtime-guidance.ts";
 import { toJsonValue } from "../platform/database.ts";
 import { createId } from "../shared/ids.ts";
 import type {
@@ -25,19 +26,22 @@ export class AgentRuntime {
   private readonly sessions: SessionStore;
   private readonly memory: MemoryStore;
   private readonly tools: ToolRegistry;
+  private readonly promptGuidance?: PromptRuntimeGuidanceStore;
 
   constructor(
     config: AppConfig,
     adapter: AgentAdapter,
     sessions: SessionStore,
     memory: MemoryStore,
-    tools: ToolRegistry
+    tools: ToolRegistry,
+    promptGuidance?: PromptRuntimeGuidanceStore
   ) {
     this.config = config;
     this.adapter = adapter;
     this.sessions = sessions;
     this.memory = memory;
     this.tools = tools;
+    this.promptGuidance = promptGuidance;
   }
 
   async run(
@@ -99,7 +103,11 @@ export class AgentRuntime {
           runId,
           sessionId,
           role: input.role,
-          systemPrompt: assemblePrompt(this.config, memory),
+          systemPrompt: assemblePrompt(
+            this.config,
+            memory,
+            this.promptGuidance?.get().text ?? ""
+          ),
           messages: requestMessages,
           memory,
           toolCapabilities: input.toolCapabilities,

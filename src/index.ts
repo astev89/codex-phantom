@@ -39,6 +39,7 @@ import { AutonomousMutationLedger } from "./assignments/mutation-ledger.ts";
 import { AutonomousMutationExecutor } from "./assignments/autonomous-mutations.ts";
 import { CodexAdapter } from "./agent/codex-adapter.ts";
 import { AgentRuntime } from "./agent/runtime.ts";
+import { PromptRuntimeGuidanceStore } from "./prompts/runtime-guidance.ts";
 import { RunGraphStore } from "./orchestration/run-graph-store.ts";
 import { OrchestrationService } from "./orchestration/service.ts";
 import { loadRolePolicyConfig } from "./orchestration/role-config.ts";
@@ -75,10 +76,12 @@ const selfEvolution = new SelfEvolutionProposalStore(database);
 const assignments = new AutonomousAssignmentService(database);
 const assignmentMutations = new AutonomousMutationLedger(database, assignments);
 const operatorSettings = new OperatorSettingsStore(database);
+const promptGuidance = new PromptRuntimeGuidanceStore(database);
 const assignmentMutationExecutor = new AutonomousMutationExecutor({
   assignments,
   ledger: assignmentMutations,
   settings: operatorSettings,
+  promptGuidance,
   toolBundles: toolBundleLifecycle,
 });
 const runs = new RunGraphStore(database);
@@ -126,7 +129,14 @@ tools.register({
 registerAssignmentTools(tools, assignments, assignmentMutations);
 
 const adapter = new CodexAdapter(config);
-const runtime = new AgentRuntime(config, adapter, sessions, memory, tools);
+const runtime = new AgentRuntime(
+  config,
+  adapter,
+  sessions,
+  memory,
+  tools,
+  promptGuidance
+);
 const orchestration = new OrchestrationService(
   runtime,
   tools,
@@ -223,7 +233,8 @@ const server = new HttpServer(
   assignments,
   assignmentWakeups,
   assignmentIntake,
-  assignmentMutations
+  assignmentMutations,
+  promptGuidance
 );
 
 await memory.backfillEmbeddings();

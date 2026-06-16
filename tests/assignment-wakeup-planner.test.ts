@@ -10,6 +10,7 @@ import {
 } from "../src/assignments/wakeup-planner.ts";
 import { RunGraphStore } from "../src/orchestration/run-graph-store.ts";
 import type { OrchestrationService } from "../src/orchestration/service.ts";
+import { PromptRuntimeGuidanceStore } from "../src/prompts/runtime-guidance.ts";
 import { OperatorSettingsStore } from "../src/server/settings.ts";
 import type { JobRecord } from "../src/scheduler/service.ts";
 import { ToolBundleImportStore } from "../src/tools/bundles.ts";
@@ -432,6 +433,78 @@ test("AssignmentWakeupPlanner applies explicitly allowed assignment policy mutat
   assert.equal(mutations[0]?.status, "applied");
   assert.equal(mutations[0]?.mutationType, "assignment_policy");
   assert.equal(mutations[0]?.runId, "coord_wakeup_1");
+});
+
+test("AssignmentWakeupPlanner applies explicitly allowed prompt runtime guidance mutation markers", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-06-16T12:40:00.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const database = new AppDatabase(":memory:");
+  t.after(() => database.close());
+  const assignments = new AutonomousAssignmentService(database);
+  const ledger = new AutonomousMutationLedger(database, assignments);
+  const settings = new OperatorSettingsStore(database);
+  const promptGuidance = new PromptRuntimeGuidanceStore(database);
+  const executor = new AutonomousMutationExecutor({
+    assignments,
+    ledger,
+    settings,
+    promptGuidance,
+  });
+  const runs = new RunGraphStore(database);
+  const { scheduler } = makeScheduler(now);
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, [
+      [
+        "Tightened runtime guidance.",
+        'ASSIGNMENT_MUTATION: {"target":"prompt","mutationType":"runtime_guidance","rationale":"Prefer evidence-first wakeup summaries.","proposedChange":{"runtimeGuidance":{"text":"Prefer evidence-first wakeup summaries."}}}',
+        "ASSIGNMENT_STATUS: complete",
+      ].join("\n"),
+    ]),
+    mutations: executor,
+  });
+  const assignment = assignments.create({
+    objective: "Planner should tune prompt runtime guidance",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "prompt.runtime_guidance",
+        ],
+      },
+    },
+  });
+
+  const result = await planner.wakeNow({
+    assignmentId: assignment.assignment.id,
+    actor: "scheduler",
+    reason: "scheduled wakeup",
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(
+    promptGuidance.get().text,
+    "Prefer evidence-first wakeup summaries."
+  );
+  const mutations = ledger.list({ assignmentId: assignment.assignment.id });
+  assert.equal(mutations.length, 1);
+  assert.equal(mutations[0]?.status, "applied");
+  assert.equal(mutations[0]?.target, "prompt");
+  assert.equal(mutations[0]?.mutationType, "runtime_guidance");
+  assert.equal(mutations[0]?.runId, "coord_wakeup_1");
+  assert.deepEqual(mutations[0]?.authorizingPolicy, {
+    rule: "assignment.policy.selfEvolution",
+    maxRiskClass: "medium",
+    allowedMutationClasses: [
+      "configuration.operator_settings",
+      "prompt.runtime_guidance",
+    ],
+    mutationClass: "prompt.runtime_guidance",
+    actor: "planner",
+  });
 });
 
 test("AssignmentWakeupPlanner uses planner-updated assignment policy for continuation decisions", async (t) => {

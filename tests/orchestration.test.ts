@@ -9,6 +9,7 @@ import type { AgentAdapter, AgentRunRequest } from "../src/agent/types.ts";
 import { SessionStore } from "../src/chat/session-store.ts";
 import { MemoryStore } from "../src/memory/store.ts";
 import { AppDatabase } from "../src/platform/database.ts";
+import { PromptRuntimeGuidanceStore } from "../src/prompts/runtime-guidance.ts";
 import { RunGraphStore } from "../src/orchestration/run-graph-store.ts";
 import { loadRolePolicyConfig } from "../src/orchestration/role-config.ts";
 import { OrchestrationService } from "../src/orchestration/service.ts";
@@ -283,6 +284,80 @@ test("runtime passes configured model and reasoning efforts to adapter", async (
   assert.equal(requests[0]?.reasoningEffort, "high");
   assert.equal(requests[1]?.model, "gpt-5.1-codex");
   assert.equal(requests[1]?.reasoningEffort, "medium");
+  database.close();
+});
+
+test("runtime includes persisted prompt runtime guidance in system prompts", async () => {
+  const database = new AppDatabase(":memory:");
+  const config = makeConfig();
+  const promptGuidance = new PromptRuntimeGuidanceStore(database);
+  promptGuidance.update("Prefer concise verification summaries.", "operator");
+  const requests: AgentRunRequest[] = [];
+  const adapter: AgentAdapter = {
+    name: "capturing",
+    capabilities: {
+      supportsResume: true,
+      supportsStreaming: true,
+      supportsToolStreaming: true,
+      supportsStructuredOutput: true,
+      supportsParallelToolCalls: false,
+      supportsReasoningEffort: true,
+    },
+    async run(request) {
+      requests.push(request);
+      return {
+        runId: request.runId,
+        outputText: "guidance observed",
+        providerSessionId: "provider_guidance",
+        previousResponseId: "provider_guidance",
+        transcript: [
+          { role: "user", content: request.messages.at(-1)?.content ?? "" },
+          { role: "assistant", content: "guidance observed" },
+        ],
+        toolCalls: [],
+      };
+    },
+  };
+  const runtime = new AgentRuntime(
+    config,
+    adapter,
+    new SessionStore(database),
+    new MemoryStore(
+      database,
+      config,
+      makeDisabledEmbeddings(),
+      makeFakeVectorStore({
+        backend: "qdrant",
+        available: false,
+        configured: false,
+      }),
+      makeFakeVectorStore({ backend: "sqlite_fallback", available: true })
+    ),
+    new ToolRegistry(),
+    promptGuidance
+  );
+
+  await runtime.run(
+    {
+      channelId: "web",
+      conversationId: "conv",
+      role: "coordinator",
+      messages: [{ role: "user", content: "check prompt guidance" }],
+      permissionPolicy: {
+        mode: "read_only",
+        fileGlobs: [],
+        allowedToolIds: [],
+        allowedMcpServers: [],
+      },
+      toolCapabilities: [],
+    },
+    async () => {}
+  );
+
+  assert.match(
+    requests[0]?.systemPrompt ?? "",
+    /# Runtime Guidance Overlay\nPrefer concise verification summaries\./
+  );
   database.close();
 });
 
