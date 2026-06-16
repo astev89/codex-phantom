@@ -3,16 +3,40 @@
 This is the living status ledger for `codex-phantom`. Update it at the end of each development wave, after tests pass and before handing off or opening a PR.
 
 Last updated: 2026-06-16
-Branch: `jarvis/assignment-event-retention-compaction`
-Latest verified implementation commit: `15eb40e feat(assignments): compact retained assignment events`
+Branch: `jarvis/autonomous-tool-bundle-mutation`
+Latest verified implementation commit: `ac18995d5368f783d88bc60680055a7ec51f49b9 feat(assignments): enable approved tool bundles autonomously`
 
 ## Current State
 
-`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, durable autonomous assignment records with operator controls, retention-aware assignment events with bounded summary compaction, deterministic scheduler-backed wakeup planning, bounded planner-promoted child assignment execution, explicit channel/API assignment intake, assignment-scoped autonomous mutation ledger evidence with read-only MCP/operator/export visibility, assignment-authorized autonomous operator-settings and opt-in assignment-policy self-evolution execution with rollback, planner-driven autonomous mutation markers routed through the assignment mutation executor, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, module-backed operator exports, a Codex-native `/chat` product surface with durable/searchable attachment continuity, explicit artifacts, and bounded automatic artifact extraction, hybrid long-term memory with Qdrant-backed vector recall, SQLite fallback, lifecycle controls, restart-safe maintenance, decay/reinforcement-aware ranking, governed self-evolution proposals with mutation module-backed operator-approved apply/rollback for settings changes, governed internal tool bundles with preview, approval, enable, disable, and uninstall lifecycle, and a disabled-by-default Email runtime channel with bounded IMAP polling and audited SMTP replies.
+`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, durable autonomous assignment records with operator controls, retention-aware assignment events with bounded summary compaction, deterministic scheduler-backed wakeup planning, bounded planner-promoted child assignment execution, explicit channel/API assignment intake, assignment-scoped autonomous mutation ledger evidence with read-only MCP/operator/export visibility, assignment-authorized autonomous operator-settings, opt-in assignment-policy, and opt-in approved read-only tool-bundle self-evolution execution with rollback, planner-driven autonomous mutation markers routed through the assignment mutation executor, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, module-backed operator exports, a Codex-native `/chat` product surface with durable/searchable attachment continuity, explicit artifacts, and bounded automatic artifact extraction, hybrid long-term memory with Qdrant-backed vector recall, SQLite fallback, lifecycle controls, restart-safe maintenance, decay/reinforcement-aware ranking, governed self-evolution proposals with mutation module-backed operator-approved apply/rollback for settings changes, governed internal tool bundles with preview, approval, enable, disable, and uninstall lifecycle, and a disabled-by-default Email runtime channel with bounded IMAP polling and audited SMTP replies.
 
 The project is now past its first serious production-hardening pass. It is not yet equivalent to the original Phantom project, but the core runtime is materially safer to run: request sizes are bounded, secrets are rejected in production when defaults are used, outbound model calls have timeouts, scheduler jobs recover deterministically after restarts, MCP events are durably audited, external webhooks are signed, Slack sends retry transient failures, operator-console workflows have browser coverage, and the Docker image runs compiled JavaScript instead of stripped TypeScript.
 
 ## Just Completed
+
+Autonomous tool-bundle mutation wave completed locally on 2026-06-16:
+
+- Added `tool.bundle_enable` as an explicit-policy autonomous mutation class for `evolve` assignments, limited to already-approved valid read-only tool bundle imports.
+- Extracted shared tool bundle lifecycle orchestration so existing HTTP bundle enable/disable/uninstall paths and autonomous mutation execution use the same lifecycle rules.
+- Wired the runtime `AssignmentWakeupPlanner` executor through `src/index.ts` so planner `ASSIGNMENT_MUTATION:` markers can apply explicitly allowed tool-bundle mutations without a separate write path.
+- Recorded autonomous ledger before/after/rollback evidence, affected bundle/tool resources, timeline milestones, and rollback by disabling the same bundle and unregistering its tools.
+- Kept default `evolve` policy unchanged: `tool.bundle_enable` remains opt-in and MCP assignment mutation tooling remains read-only.
+- Hardened reviewer findings by blocking bundled tool-id collisions before registration, preserving existing dynamic tools, preserving operator approval provenance during autonomous/planner activation, and writing tool governance audit rows for bundle-activated dynamic tools.
+- Completed a GPT-5.4 xhigh reviewer loop. The first pass found one Critical collision/provenance issue and one Important governance-provenance issue; follow-up review confirmed both were resolved with no remaining Critical or Important findings.
+
+Verification from this wave:
+
+```bash
+node --experimental-strip-types --test tests/tool-bundles.test.ts
+node --experimental-strip-types --test tests/assignment-autonomous-mutations.test.ts
+node --experimental-strip-types --test tests/assignment-wakeup-planner.test.ts tests/assignment-autonomous-mutations.test.ts tests/server.test.ts tests/mcp.test.ts tests/tool-bundles.test.ts
+npm run typecheck
+npm test
+npm run build
+git diff --check
+npx gitnexus detect-changes --scope staged --repo codex-phantom
+GPT-5.4 xhigh reviewer: initial Critical/Important addressed; follow-up clean
+```
 
 Assignment event retention compaction wave completed locally on 2026-06-16:
 
@@ -840,6 +864,7 @@ Use `docs/phantom-parity.md` as the canonical production-level parity roadmap. K
 Suggested work:
 
 - Add additional mutation classes one at a time only after each has explicit assignment self-evolution policy, adapter-level rollback evidence, and service/HTTP safety coverage.
+- Continue with remaining non-tool-bundle mutation classes, such as prompt/runtime policy, memory policy, role policy, project-file drafts, or broader configuration, only when each class has explicit assignment self-evolution policy and rollback evidence.
 - Keep deeper parent/child dependency orchestration separate from mutation-adapter expansion so mutation authority does not expand by accident.
 
 ### P2: Channel And Parity Polish
