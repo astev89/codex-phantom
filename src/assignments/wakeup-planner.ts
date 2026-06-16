@@ -15,6 +15,10 @@ import type {
   AssignmentEventRecord,
   AssignmentRecord,
 } from "./types.ts";
+import {
+  AUTONOMOUS_MUTATION_TARGETS,
+  type AutonomousMutationTarget,
+} from "./mutation-ledger.ts";
 import { AutonomousAssignmentService } from "./service.ts";
 
 export const ASSIGNMENT_WAKEUP_JOB_NAME = "assignment.wakeup";
@@ -396,6 +400,10 @@ function parsePlannerMutationMarker(
   ) {
     return undefined;
   }
+  const target = value.target as AutonomousMutationTarget;
+  if (!AUTONOMOUS_MUTATION_TARGETS.includes(target)) {
+    return undefined;
+  }
   const riskClass =
     value.riskClass === "low" ||
     value.riskClass === "medium" ||
@@ -404,7 +412,7 @@ function parsePlannerMutationMarker(
       ? value.riskClass
       : undefined;
   return {
-    target: value.target as PlannerMutationRequest["target"],
+    target,
     mutationType: value.mutationType,
     rationale: value.rationale.trim(),
     riskClass,

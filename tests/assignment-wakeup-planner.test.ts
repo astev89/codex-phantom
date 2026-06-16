@@ -383,6 +383,52 @@ test("AssignmentWakeupPlanner ignores malformed autonomous mutation markers with
   assert.equal(settings.get().dashboardRefreshSeconds, 5);
 });
 
+test("AssignmentWakeupPlanner ignores unknown autonomous mutation targets without failing the wakeup", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-06-16T13:45:00.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const database = new AppDatabase(":memory:");
+  t.after(() => database.close());
+  const assignments = new AutonomousAssignmentService(database);
+  const ledger = new AutonomousMutationLedger(database, assignments);
+  const settings = new OperatorSettingsStore(database);
+  const executor = new AutonomousMutationExecutor({
+    assignments,
+    ledger,
+    settings,
+  });
+  const runs = new RunGraphStore(database);
+  const { scheduler, jobs } = makeScheduler(now);
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, [
+      [
+        "Mistyped mutation target.",
+        'ASSIGNMENT_MUTATION: {"target":"settings","mutationType":"operator_settings","rationale":"Try a settings update.","proposedChange":{"operatorSettings":{"dashboardRefreshSeconds":11}}}',
+        "ASSIGNMENT_STATUS: continue",
+        "NEXT_WAKEUP_MINUTES: 7",
+      ].join("\n"),
+    ]),
+    mutations: executor,
+  });
+  const assignment = assignments.create({
+    objective: "Planner should ignore unknown mutation target",
+    autonomyLevel: "evolve",
+    policy: { wakeupDelayMinMinutes: 5, wakeupDelayMaxMinutes: 60 },
+  });
+
+  const result = await planner.wakeNow({
+    assignmentId: assignment.assignment.id,
+    reason: "scheduled wakeup",
+  });
+
+  assert.equal(result.status, "scheduled");
+  assert.equal(jobs[0]?.delayMs, 7 * 60_000);
+  assert.deepEqual(ledger.list({ assignmentId: assignment.assignment.id }), []);
+  assert.equal(settings.get().dashboardRefreshSeconds, 5);
+});
+
 test("AssignmentWakeupPlanner completes or blocks assignments without scheduling another wakeup", async (t) => {
   t.mock.timers.enable({ apis: ["Date"] });
   const now = "2026-04-28T12:30:00.000Z";
