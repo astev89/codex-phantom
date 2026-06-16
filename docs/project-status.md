@@ -3,16 +3,40 @@
 This is the living status ledger for `codex-phantom`. Update it at the end of each development wave, after tests pass and before handing off or opening a PR.
 
 Last updated: 2026-06-16
-Branch: `jarvis/autonomous-memory-policy-mutation`
-Latest verified implementation commit: `06b03aaec316df6e1f719fbead13c416c832cd69 feat(assignments): add memory policy mutation`
+Branch: `jarvis/autonomous-role-policy-mutation`
+Latest verified implementation commit: `99b401f feat(assignments): add role policy mutation`
 
 ## Current State
 
-`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, durable autonomous assignment records with operator controls, retention-aware assignment events with bounded summary compaction, deterministic scheduler-backed wakeup planning, bounded planner-promoted child assignment execution, explicit channel/API assignment intake, assignment-scoped autonomous mutation ledger evidence with read-only MCP/operator/export visibility, assignment-authorized autonomous operator-settings, opt-in assignment-policy, opt-in approved read-only tool-bundle, opt-in prompt runtime-guidance, and opt-in memory-policy runtime-bound self-evolution execution with rollback, planner-driven autonomous mutation markers routed through the assignment mutation executor, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, module-backed operator exports, a Codex-native `/chat` product surface with durable/searchable attachment continuity, explicit artifacts, and bounded automatic artifact extraction, hybrid long-term memory with Qdrant-backed vector recall, SQLite fallback, lifecycle controls, restart-safe maintenance, decay/reinforcement-aware ranking, governed self-evolution proposals with mutation module-backed operator-approved apply/rollback for settings changes, governed internal tool bundles with preview, approval, enable, disable, and uninstall lifecycle, and a disabled-by-default Email runtime channel with bounded IMAP polling and audited SMTP replies.
+`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, durable autonomous assignment records with operator controls, retention-aware assignment events with bounded summary compaction, deterministic scheduler-backed wakeup planning, bounded planner-promoted child assignment execution, explicit channel/API assignment intake, assignment-scoped autonomous mutation ledger evidence with read-only MCP/operator/export visibility, assignment-authorized autonomous operator-settings, opt-in assignment-policy, opt-in approved read-only tool-bundle, opt-in prompt runtime-guidance, opt-in memory-policy runtime-bound, and opt-in role permission-policy self-evolution execution with rollback, planner-driven autonomous mutation markers routed through the assignment mutation executor, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, module-backed operator exports, a Codex-native `/chat` product surface with durable/searchable attachment continuity, explicit artifacts, and bounded automatic artifact extraction, hybrid long-term memory with Qdrant-backed vector recall, SQLite fallback, lifecycle controls, restart-safe maintenance, decay/reinforcement-aware ranking, governed self-evolution proposals with mutation module-backed operator-approved apply/rollback for settings changes, governed internal tool bundles with preview, approval, enable, disable, and uninstall lifecycle, and a disabled-by-default Email runtime channel with bounded IMAP polling and audited SMTP replies.
 
 The project is now past its first serious production-hardening pass. It is not yet equivalent to the original Phantom project, but the core runtime is materially safer to run: request sizes are bounded, secrets are rejected in production when defaults are used, outbound model calls have timeouts, scheduler jobs recover deterministically after restarts, MCP events are durably audited, external webhooks are signed, Slack sends retry transient failures, operator-console workflows have browser coverage, and the Docker image runs compiled JavaScript instead of stripped TypeScript.
 
 ## Just Completed
+
+Autonomous role permission-policy mutation wave completed locally on 2026-06-16:
+
+- Added a durable `role_policy_overrides` overlay and bounded `role.permission_policy` autonomous mutation class for explicitly opted-in `evolve` assignments.
+- Wired new subagent spawns through `OrchestrationService` to read the runtime role-policy overlay live while keeping startup role baselines as the authority envelope.
+- Restricted mutations to narrowing known subagent roles relative to the loaded startup role policy; rejected `full_access`, unknown roles, new tool IDs, new MCP servers, and broader scoped-write file globs.
+- Routed admin/internal apply, rollback, and planner `ASSIGNMENT_MUTATION:` markers through the autonomous mutation executor with before, after, rollback, affected-resource, verification, and assignment timeline evidence.
+- Preserved the default `evolve` policy as `configuration.operator_settings` only; `role.permission_policy` must be explicitly allow-listed and cannot edit role YAML, source files, prompts, memory, auth, channel policy, tool installs, or MCP write capability.
+- Protected shared role-policy rollback with global stale-rollback checks across assignments and kept MCP assignment tooling read-only.
+- Completed a GPT-5.4 xhigh reviewer loop. The reviewer reported no Critical or Important findings; minor feedback for read-only glob documentation and direct read-only-to-scoped-write coverage was addressed before commit.
+
+Verification from this wave:
+
+```bash
+node --experimental-strip-types --test tests/orchestration.test.ts tests/assignment-autonomous-mutations.test.ts tests/assignment-wakeup-planner.test.ts tests/server.test.ts tests/mcp.test.ts
+node --experimental-strip-types --test tests/assignment-mutation-ledger.test.ts tests/self-evolution-mutations.test.ts tests/operator-export.test.ts
+npm run typecheck
+npm test
+npm run build
+git diff --check
+npx gitnexus detect-changes --scope staged --repo codex-phantom
+GPT-5.4 xhigh reviewer: no Critical or Important findings; Minor coverage/comment polish addressed
+commit hook: prettier --ignore-unknown --write, npm run typecheck, npm test
+```
 
 Autonomous memory-policy runtime-bounds mutation wave completed locally on 2026-06-16:
 
@@ -910,7 +934,7 @@ Use `docs/phantom-parity.md` as the canonical production-level parity roadmap. K
 Suggested work:
 
 - Add additional mutation classes one at a time only after each has explicit assignment self-evolution policy, adapter-level rollback evidence, and service/HTTP safety coverage.
-- Continue with remaining non-tool-bundle mutation classes, such as prompt/runtime policy, memory policy, role policy, project-file drafts, or broader configuration, only when each class has explicit assignment self-evolution policy and rollback evidence.
+- Continue with remaining mutation classes, such as project-file drafts, broader configuration, bounded runtime prompt rewriting, broader memory mutation, or deeper parent/child execution controls, only when each class has explicit assignment self-evolution policy and rollback evidence.
 - Keep deeper parent/child dependency orchestration separate from mutation-adapter expansion so mutation authority does not expand by accident.
 
 ### P2: Channel And Parity Polish
