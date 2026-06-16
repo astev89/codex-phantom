@@ -126,6 +126,12 @@ export type ToolBundleLifecycleInput = {
 
 export type AssignmentCreateInput = CreateAssignmentInput;
 export type AssignmentControlBodyInput = AssignmentControlInput;
+export type AssignmentCompactionBodyInput = {
+  actor?: string;
+  reason?: string;
+  compactBefore?: string;
+  limit?: number;
+};
 export type AutonomousMutationApplyBodyInput = {
   target: AutonomousMutationTarget;
   mutationType: string;
@@ -427,6 +433,18 @@ export function validateAssignmentControlBody(
         ? undefined
         : toJsonValue(value.context, "context"),
     policy: validateAssignmentPolicyPatch(value.policy),
+  };
+}
+
+export function validateAssignmentCompactionBody(
+  input: unknown
+): AssignmentCompactionBodyInput {
+  const value = asRecord(input);
+  return {
+    actor: optionalString(value.actor),
+    reason: optionalString(value.reason),
+    compactBefore: optionalIsoDate(value.compactBefore, "compactBefore"),
+    limit: optionalPositiveInteger(value.limit, "limit"),
   };
 }
 

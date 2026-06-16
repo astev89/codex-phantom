@@ -23,6 +23,8 @@ import type {
   AssignmentSelfEvolutionRiskClass,
   AssignmentSource,
   AssignmentTimeline,
+  CompactAssignmentEventsInput,
+  CompactAssignmentEventsResult,
   ApplyAssignmentWakeupDecisionInput,
   CompleteAssignmentWakeupRunInput,
   CreateAssignmentInput,
@@ -499,6 +501,66 @@ export class AutonomousAssignmentService {
     return {
       assignmentId,
       events: rows.map(toAssignmentEventRecord),
+    };
+  }
+
+  compactEvents(
+    input: CompactAssignmentEventsInput
+  ): CompactAssignmentEventsResult {
+    this.getRequired(input.assignmentId);
+    const compactBefore = normalizeCompactionCutoff(input.compactBefore);
+    const limit = boundLimit(input.limit ?? 100, 500);
+    const rows = this.database.all<AssignmentEventRow>(
+      `SELECT * FROM assignment_events
+       WHERE assignment_id = ?
+         AND compactable = 1
+         AND expires_at IS NOT NULL
+         AND expires_at <= ?
+       ORDER BY created_at ASC, rowid ASC
+       LIMIT ?`,
+      input.assignmentId,
+      compactBefore,
+      limit
+    );
+    if (rows.length === 0) {
+      return {
+        assignmentId: input.assignmentId,
+        compactedCount: 0,
+        deletedEventIds: [],
+      };
+    }
+
+    const events = rows.map(toAssignmentEventRecord);
+    let summaryEvent: AssignmentEventRecord | undefined;
+    this.database.transaction(() => {
+      summaryEvent = this.recordEvent({
+        assignmentId: input.assignmentId,
+        type: "events_compacted",
+        importance: "milestone",
+        compactable: false,
+        payload: buildCompactionPayload({
+          events,
+          actor: input.actor,
+          reason: input.reason,
+        }),
+        createdAt: new Date().toISOString(),
+      });
+      const placeholders = events.map(() => "?").join(", ");
+      this.database.run(
+        `DELETE FROM assignment_events
+         WHERE assignment_id = ?
+           AND compactable = 1
+           AND id IN (${placeholders})`,
+        input.assignmentId,
+        ...events.map((event) => event.id)
+      );
+    });
+
+    return {
+      assignmentId: input.assignmentId,
+      compactedCount: events.length,
+      deletedEventIds: events.map((event) => event.id),
+      summaryEvent,
     };
   }
 
@@ -1287,6 +1349,42 @@ function failClosedAssignmentPolicyFallback(): AssignmentPolicy {
     ...defaultAssignmentPolicy(),
     selfEvolution: failClosedSelfEvolutionPolicy(),
     childAssignments: failClosedChildPolicy(),
+  };
+}
+
+function normalizeCompactionCutoff(value: string | undefined): string {
+  if (value === undefined) {
+    return new Date().toISOString();
+  }
+  const timestamp = Date.parse(value);
+  if (Number.isNaN(timestamp)) {
+    throw new AssignmentValidationError(
+      "compactBefore must be a valid ISO date"
+    );
+  }
+  return new Date(timestamp).toISOString();
+}
+
+function buildCompactionPayload(input: {
+  events: AssignmentEventRecord[];
+  actor?: string;
+  reason?: string;
+}): JsonValue {
+  const eventTypes: Record<string, JsonValue> = {};
+  for (const event of input.events) {
+    const current = eventTypes[event.type];
+    eventTypes[event.type] = typeof current === "number" ? current + 1 : 1;
+  }
+  return {
+    actor: normalizeOptionalText(input.actor) ?? "system",
+    reason:
+      normalizeOptionalText(input.reason) ??
+      "Expired assignment detail retention window",
+    compactedCount: input.events.length,
+    eventTypes,
+    firstEventAt: input.events[0]?.createdAt,
+    lastEventAt: input.events[input.events.length - 1]?.createdAt,
+    deletedEventIds: input.events.map((event) => event.id),
   };
 }
 

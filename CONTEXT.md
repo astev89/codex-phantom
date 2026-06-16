@@ -137,7 +137,7 @@ An operator action that interrupts or modifies an autonomous assignment, such as
 _Avoid_: Reply-only steering, unmanaged background process
 
 **Assignment event retention**:
-The assignment event-log policy that keeps audit and milestone events long-term while marking high-frequency detail events as compactable with optional expiry and later summary compaction.
+The assignment event-log policy that keeps audit and milestone events long-term while marking high-frequency detail events as compactable with optional expiry and summary compaction into durable milestone evidence.
 _Avoid_: Unbounded progress log, lossy audit trail
 
 **Deferred assignment slice**:

@@ -718,6 +718,179 @@ test("AutonomousAssignmentService persists context additions and policy changes 
   });
 });
 
+test("AutonomousAssignmentService compacts expired compactable assignment events", () => {
+  withAssignments((assignments, database) => {
+    const created = assignments.create({
+      objective: "Summarize noisy assignment detail",
+    });
+    assignments.control(created.assignment.id, {
+      action: "add_context",
+      actor: "operator",
+      context: { note: "First noisy detail" },
+    });
+    assignments.control(created.assignment.id, {
+      action: "add_context",
+      actor: "operator",
+      context: { note: "Second noisy detail" },
+    });
+    database.run(
+      `UPDATE assignment_events
+       SET expires_at = ?
+       WHERE assignment_id = ? AND type = ?`,
+      "2026-06-01T00:00:00.000Z",
+      created.assignment.id,
+      "context_added"
+    );
+    const before = assignments.timeline(created.assignment.id).events;
+    const compactedIds = before
+      .filter((event) => event.type === "context_added")
+      .map((event) => event.id);
+
+    const result = assignments.compactEvents({
+      assignmentId: created.assignment.id,
+      actor: "operator",
+      reason: "Expired assignment detail retention window",
+      compactBefore: "2026-06-16T00:00:00.000Z",
+    });
+
+    assert.equal(result.assignmentId, created.assignment.id);
+    assert.equal(result.compactedCount, 2);
+    assert.deepEqual(result.deletedEventIds, compactedIds);
+    assert.equal(result.summaryEvent?.type, "events_compacted");
+    assert.equal(result.summaryEvent?.compactable, false);
+    assert.equal(result.summaryEvent?.importance, "milestone");
+    assert.deepEqual(result.summaryEvent?.payload, {
+      actor: "operator",
+      reason: "Expired assignment detail retention window",
+      compactedCount: 2,
+      eventTypes: { context_added: 2 },
+      firstEventAt: before.find((event) => event.id === compactedIds[0])
+        ?.createdAt,
+      lastEventAt: before.find((event) => event.id === compactedIds[1])
+        ?.createdAt,
+      deletedEventIds: compactedIds,
+    });
+    assert.deepEqual(
+      assignments
+        .timeline(created.assignment.id)
+        .events.map((event) => event.type),
+      ["created", "events_compacted"]
+    );
+  });
+});
+
+test("AutonomousAssignmentService preserves audit and milestone assignment events during compaction", () => {
+  withAssignments((assignments, database) => {
+    const created = assignments.create({
+      objective: "Keep audit evidence",
+    });
+    assignments.control(created.assignment.id, {
+      action: "add_context",
+      actor: "operator",
+      context: { note: "Compact me" },
+    });
+    assignments.control(created.assignment.id, {
+      action: "change_policy",
+      actor: "operator",
+      reason: "Audit policy change",
+      policy: { maxWakeups: 7 },
+    });
+    database.run(
+      `UPDATE assignment_events
+       SET expires_at = ?
+       WHERE assignment_id = ?`,
+      "2026-06-01T00:00:00.000Z",
+      created.assignment.id
+    );
+
+    const result = assignments.compactEvents({
+      assignmentId: created.assignment.id,
+      compactBefore: "2026-06-16T00:00:00.000Z",
+    });
+
+    assert.equal(result.compactedCount, 1);
+    assert.deepEqual(
+      assignments
+        .timeline(created.assignment.id)
+        .events.map((event) => event.type),
+      ["created", "policy_changed", "events_compacted"]
+    );
+  });
+});
+
+test("AutonomousAssignmentService no-ops assignment event compaction when no events are eligible", () => {
+  withAssignments((assignments) => {
+    const created = assignments.create({
+      objective: "No noisy detail yet",
+    });
+
+    const result = assignments.compactEvents({
+      assignmentId: created.assignment.id,
+      compactBefore: "2026-06-16T00:00:00.000Z",
+    });
+
+    assert.equal(result.compactedCount, 0);
+    assert.deepEqual(result.deletedEventIds, []);
+    assert.equal(result.summaryEvent, undefined);
+    assert.deepEqual(
+      assignments
+        .timeline(created.assignment.id)
+        .events.map((event) => event.type),
+      ["created"]
+    );
+  });
+});
+
+test("AutonomousAssignmentService compacts only events before the requested cutoff", () => {
+  withAssignments((assignments, database) => {
+    const created = assignments.create({
+      objective: "Keep recent detail",
+    });
+    assignments.control(created.assignment.id, {
+      action: "add_context",
+      actor: "operator",
+      context: { note: "Old detail" },
+    });
+    const oldEvent = assignments
+      .timeline(created.assignment.id)
+      .events.find((event) => event.type === "context_added");
+    assignments.control(created.assignment.id, {
+      action: "add_context",
+      actor: "operator",
+      context: { note: "Recent detail" },
+    });
+    database.run(
+      `UPDATE assignment_events
+       SET expires_at = ?
+       WHERE id = ?`,
+      "2026-06-01T00:00:00.000Z",
+      oldEvent?.id ?? ""
+    );
+    database.run(
+      `UPDATE assignment_events
+       SET expires_at = ?
+       WHERE assignment_id = ? AND type = ? AND id != ?`,
+      "2026-06-20T00:00:00.000Z",
+      created.assignment.id,
+      "context_added",
+      oldEvent?.id ?? ""
+    );
+
+    const result = assignments.compactEvents({
+      assignmentId: created.assignment.id,
+      compactBefore: "2026-06-16T00:00:00.000Z",
+    });
+
+    assert.equal(result.compactedCount, 1);
+    assert.deepEqual(
+      assignments
+        .timeline(created.assignment.id)
+        .events.map((event) => event.type),
+      ["created", "context_added", "events_compacted"]
+    );
+  });
+});
+
 test("AutonomousAssignmentService preserves notification cadence fields across partial policy changes", () => {
   withAssignments((assignments) => {
     const created = assignments.create({ objective: "Partial policy patch" });

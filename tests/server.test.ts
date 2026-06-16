@@ -1705,6 +1705,92 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       }
     );
     assert.equal(invalidTimelineLimit.status, 400);
+    const addAssignmentContext = await fetch(
+      `${baseUrl}/admin/assignments/${assignmentCreateJson.assignment.id}/control`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          action: "add_context",
+          context: { note: "Noisy detail ready for compaction" },
+        }),
+      }
+    );
+    assert.equal(addAssignmentContext.status, 200);
+    database.run(
+      `UPDATE assignment_events
+       SET expires_at = ?
+       WHERE assignment_id = ? AND type = ?`,
+      "2026-06-01T00:00:00.000Z",
+      assignmentCreateJson.assignment.id,
+      "context_added"
+    );
+    const unauthenticatedCompaction = await fetch(
+      `${baseUrl}/admin/assignments/${assignmentCreateJson.assignment.id}/timeline/compact`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ compactBefore: "2026-06-16T00:00:00.000Z" }),
+      }
+    );
+    assert.equal(unauthenticatedCompaction.status, 401);
+    const malformedCompaction = await fetch(
+      `${baseUrl}/admin/assignments/${assignmentCreateJson.assignment.id}/timeline/compact`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({ compactBefore: "not-a-date" }),
+      }
+    );
+    assert.equal(malformedCompaction.status, 400);
+    assert.ok(
+      assignments
+        .timeline(assignmentCreateJson.assignment.id)
+        .events.some((event) => event.type === "context_added")
+    );
+    const assignmentCompaction = await fetch(
+      `${baseUrl}/admin/assignments/${assignmentCreateJson.assignment.id}/timeline/compact`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          actor: "operator",
+          reason: "HTTP retention smoke",
+          compactBefore: "2026-06-16T00:00:00.000Z",
+        }),
+      }
+    );
+    assert.equal(assignmentCompaction.status, 200);
+    const assignmentCompactionJson = (await assignmentCompaction.json()) as {
+      requestId: string;
+      result: { compactedCount: number; summaryEvent?: { type: string } };
+      timeline: { events: Array<{ type: string }> };
+    };
+    assert.match(assignmentCompactionJson.requestId, /.+/);
+    assert.equal(assignmentCompactionJson.result.compactedCount, 1);
+    assert.equal(
+      assignmentCompactionJson.result.summaryEvent?.type,
+      "events_compacted"
+    );
+    assert.ok(
+      assignmentCompactionJson.timeline.events.some(
+        (event) => event.type === "events_compacted"
+      )
+    );
+    assert.ok(
+      !assignmentCompactionJson.timeline.events.some(
+        (event) => event.type === "context_added"
+      )
+    );
     const assignmentTimelineJson = (await assignmentTimeline.json()) as {
       timeline: { events: Array<{ type: string; payload: unknown }> };
     };
