@@ -462,6 +462,14 @@ export class AppDatabase {
         updated_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS role_policy_overrides (
+        id TEXT PRIMARY KEY,
+        overrides_json TEXT NOT NULL,
+        updated_by TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS request_audit_logs (
         request_id TEXT PRIMARY KEY,
         method TEXT NOT NULL,
@@ -525,6 +533,7 @@ export class AppDatabase {
       CREATE INDEX IF NOT EXISTS idx_operator_settings_updated_at ON operator_settings(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_prompt_runtime_guidance_updated_at ON prompt_runtime_guidance(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_memory_policy_settings_updated_at ON memory_policy_settings(updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_role_policy_overrides_updated_at ON role_policy_overrides(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_request_audit_logs_created_at ON request_audit_logs(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_mcp_audit_logs_created_at ON mcp_audit_logs(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_mcp_audit_logs_method ON mcp_audit_logs(method, created_at DESC);

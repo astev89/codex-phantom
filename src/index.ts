@@ -44,6 +44,7 @@ import { PromptRuntimeGuidanceStore } from "./prompts/runtime-guidance.ts";
 import { RunGraphStore } from "./orchestration/run-graph-store.ts";
 import { OrchestrationService } from "./orchestration/service.ts";
 import { loadRolePolicyConfig } from "./orchestration/role-config.ts";
+import { RolePolicyRuntimeStore } from "./orchestration/role-policy-runtime.ts";
 import { SchedulerService } from "./scheduler/service.ts";
 import { McpAuditStore } from "./mcp/audit.ts";
 import { McpServer } from "./mcp/server.ts";
@@ -86,17 +87,19 @@ const assignments = new AutonomousAssignmentService(database);
 const assignmentMutations = new AutonomousMutationLedger(database, assignments);
 const operatorSettings = new OperatorSettingsStore(database);
 const promptGuidance = new PromptRuntimeGuidanceStore(database);
+const loadedRolePolicy = loadRolePolicyConfig(config.roleConfigPath);
+const rolePolicy = new RolePolicyRuntimeStore(database, loadedRolePolicy);
 const assignmentMutationExecutor = new AutonomousMutationExecutor({
   assignments,
   ledger: assignmentMutations,
   settings: operatorSettings,
   memoryPolicy,
   promptGuidance,
+  rolePolicy,
   toolBundles: toolBundleLifecycle,
 });
 const runs = new RunGraphStore(database);
 const mcpAudit = new McpAuditStore(database);
-const rolePolicy = loadRolePolicyConfig(config.roleConfigPath);
 
 tools.register({
   id: "memory.query",
@@ -245,7 +248,8 @@ const server = new HttpServer(
   assignmentIntake,
   assignmentMutations,
   promptGuidance,
-  memoryPolicy
+  memoryPolicy,
+  rolePolicy
 );
 
 await memory.backfillEmbeddings();
