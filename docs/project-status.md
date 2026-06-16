@@ -4,7 +4,7 @@ This is the living status ledger for `codex-phantom`. Update it at the end of ea
 
 Last updated: 2026-06-16
 Branch: `jarvis/planner-driven-autonomous-mutations`
-Latest verified implementation commit: `30596e5 feat(assignments): apply planner mutation markers`
+Latest verified implementation commit: `5a41370 fix(assignments): ignore unknown planner mutation targets`
 
 ## Current State
 
