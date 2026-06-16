@@ -3,16 +3,34 @@
 This is the living status ledger for `codex-phantom`. Update it at the end of each development wave, after tests pass and before handing off or opening a PR.
 
 Last updated: 2026-06-16
-Branch: `jarvis/autonomous-mutation-adapter-registry`
-Latest verified implementation commit: `e46faf7 feat(assignments): add autonomous mutation adapter registry`
+Branch: `jarvis/autonomous-assignment-policy-mutations`
+Latest verified implementation commit: `1e8e26d feat(assignments): allow autonomous assignment policy mutations`
 
 ## Current State
 
-`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, durable autonomous assignment records with operator controls, deterministic scheduler-backed wakeup planning, explicit channel/API assignment intake, assignment-scoped autonomous mutation ledger evidence with read-only MCP/operator/export visibility, assignment-authorized autonomous operator-settings self-evolution execution with rollback, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, module-backed operator exports, a Codex-native `/chat` product surface with durable/searchable attachment continuity, explicit artifacts, and bounded automatic artifact extraction, hybrid long-term memory with Qdrant-backed vector recall, SQLite fallback, lifecycle controls, restart-safe maintenance, decay/reinforcement-aware ranking, governed self-evolution proposals with mutation module-backed operator-approved apply/rollback for settings changes, governed internal tool bundles with preview, approval, enable, disable, and uninstall lifecycle, and a disabled-by-default Email runtime channel with bounded IMAP polling and audited SMTP replies.
+`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, durable autonomous assignment records with operator controls, deterministic scheduler-backed wakeup planning, explicit channel/API assignment intake, assignment-scoped autonomous mutation ledger evidence with read-only MCP/operator/export visibility, assignment-authorized autonomous operator-settings and opt-in assignment-policy self-evolution execution with rollback, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, module-backed operator exports, a Codex-native `/chat` product surface with durable/searchable attachment continuity, explicit artifacts, and bounded automatic artifact extraction, hybrid long-term memory with Qdrant-backed vector recall, SQLite fallback, lifecycle controls, restart-safe maintenance, decay/reinforcement-aware ranking, governed self-evolution proposals with mutation module-backed operator-approved apply/rollback for settings changes, governed internal tool bundles with preview, approval, enable, disable, and uninstall lifecycle, and a disabled-by-default Email runtime channel with bounded IMAP polling and audited SMTP replies.
 
 The project is now past its first serious production-hardening pass. It is not yet equivalent to the original Phantom project, but the core runtime is materially safer to run: request sizes are bounded, secrets are rejected in production when defaults are used, outbound model calls have timeouts, scheduler jobs recover deterministically after restarts, MCP events are durably audited, external webhooks are signed, Slack sends retry transient failures, operator-console workflows have browser coverage, and the Docker image runs compiled JavaScript instead of stripped TypeScript.
 
 ## Just Completed
+
+Autonomous assignment-policy mutation wave completed locally on 2026-06-16:
+
+- Added `configuration.assignment_policy` as the first non-settings autonomous mutation adapter, available only when an `evolve` assignment explicitly allow-lists the class.
+- Applied and rolled back assignment policy changes through `AutonomousAssignmentService.control({ action: "change_policy" })` so existing policy validation owns execution bounds.
+- Blocked `assignmentPolicy.selfEvolution` changes during autonomous apply so assignments cannot widen their own mutation authority.
+- Added service and HTTP coverage for opt-in apply/rollback, default-policy denial, malformed policy failures, rollback evidence, timeline milestones, and unchanged operator-settings behavior.
+
+Verification from this wave:
+
+```bash
+node --experimental-strip-types --test tests/assignment-autonomous-mutations.test.ts tests/server.test.ts
+npm run typecheck
+npm test
+npm run build
+git diff --check
+node .gitnexus/run.cjs detect-changes --scope staged --repo codex-phantom
+```
 
 Autonomous mutation adapter registry wave completed locally on 2026-06-16:
 
@@ -755,8 +773,8 @@ Use `docs/phantom-parity.md` as the canonical production-level parity roadmap. K
 
 Suggested work:
 
-- Add the first new safe autonomous mutation class behind the adapter registry, explicit assignment self-evolution policy, and adapter-level rollback evidence.
-- Wire planner-driven `mutate` decisions only after at least one non-settings adapter has service-level and HTTP-level safety coverage.
+- Wire planner-driven `mutate` decisions for the existing `configuration.operator_settings` and explicitly allowed `configuration.assignment_policy` adapters without adding MCP write capability.
+- Add additional mutation classes one at a time only after each has explicit assignment self-evolution policy, adapter-level rollback evidence, and service/HTTP safety coverage.
 - Keep child assignment execution and retention compaction as separate durable autonomy slices so mutation authority does not expand by accident.
 
 ### P2: Channel And Parity Polish
