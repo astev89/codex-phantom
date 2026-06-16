@@ -3,16 +3,37 @@
 This is the living status ledger for `codex-phantom`. Update it at the end of each development wave, after tests pass and before handing off or opening a PR.
 
 Last updated: 2026-06-16
-Branch: `jarvis/planner-driven-autonomous-mutations`
-Latest verified implementation commit: `3230eba fix(assignments): refresh policy after planner mutation`
+Branch: `jarvis/child-assignment-execution`
+Latest verified implementation commit: `bad0bea feat(assignments): promote child assignments`
 
 ## Current State
 
-`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, durable autonomous assignment records with operator controls, deterministic scheduler-backed wakeup planning, explicit channel/API assignment intake, assignment-scoped autonomous mutation ledger evidence with read-only MCP/operator/export visibility, assignment-authorized autonomous operator-settings and opt-in assignment-policy self-evolution execution with rollback, planner-driven autonomous mutation markers routed through the assignment mutation executor, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, module-backed operator exports, a Codex-native `/chat` product surface with durable/searchable attachment continuity, explicit artifacts, and bounded automatic artifact extraction, hybrid long-term memory with Qdrant-backed vector recall, SQLite fallback, lifecycle controls, restart-safe maintenance, decay/reinforcement-aware ranking, governed self-evolution proposals with mutation module-backed operator-approved apply/rollback for settings changes, governed internal tool bundles with preview, approval, enable, disable, and uninstall lifecycle, and a disabled-by-default Email runtime channel with bounded IMAP polling and audited SMTP replies.
+`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, durable autonomous assignment records with operator controls, deterministic scheduler-backed wakeup planning, bounded planner-promoted child assignment execution, explicit channel/API assignment intake, assignment-scoped autonomous mutation ledger evidence with read-only MCP/operator/export visibility, assignment-authorized autonomous operator-settings and opt-in assignment-policy self-evolution execution with rollback, planner-driven autonomous mutation markers routed through the assignment mutation executor, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, module-backed operator exports, a Codex-native `/chat` product surface with durable/searchable attachment continuity, explicit artifacts, and bounded automatic artifact extraction, hybrid long-term memory with Qdrant-backed vector recall, SQLite fallback, lifecycle controls, restart-safe maintenance, decay/reinforcement-aware ranking, governed self-evolution proposals with mutation module-backed operator-approved apply/rollback for settings changes, governed internal tool bundles with preview, approval, enable, disable, and uninstall lifecycle, and a disabled-by-default Email runtime channel with bounded IMAP polling and audited SMTP replies.
 
 The project is now past its first serious production-hardening pass. It is not yet equivalent to the original Phantom project, but the core runtime is materially safer to run: request sizes are bounded, secrets are rejected in production when defaults are used, outbound model calls have timeouts, scheduler jobs recover deterministically after restarts, MCP events are durably audited, external webhooks are signed, Slack sends retry transient failures, operator-console workflows have browser coverage, and the Docker image runs compiled JavaScript instead of stripped TypeScript.
 
 ## Just Completed
+
+Child assignment execution wave completed locally on 2026-06-16:
+
+- Added assignment policy child-execution bounds with default depth/fan-out limits and fail-closed normalization for legacy or corrupt stored policy rows.
+- Added `AutonomousAssignmentService.promoteChild()` plus create-with-parent delegation, parent and child timeline evidence, authority capping, active-child budget reservation, and waited-child wakeup parking.
+- Added planner `ASSIGNMENT_CHILD:` markers for execute-or-higher assignments when child policy permits, with malformed/rejected marker safety and durable `child_assignment_failed` evidence.
+- Scheduled child wakeups due-now and real parent follow-up jobs when `waitForChild` is requested, while preventing the parent from consuming wakeups until waited-on children complete.
+- Kept proposal-based self-evolution and read-only MCP mutation tooling unchanged while extending assignment-policy mutation compatibility and API/MCP response shapes for `childAssignments`.
+- Cleared the GPT-5.4 xhigh reviewer loop after fixing child authority widening, spare-budget `waitForChild` parking, and child policy delay/notification relaxation findings.
+
+Verification from this wave:
+
+```bash
+node --experimental-strip-types --test tests/assignments.test.ts tests/assignment-wakeup-planner.test.ts tests/assignment-autonomous-mutations.test.ts tests/server.test.ts tests/mcp.test.ts
+node --experimental-strip-types --test tests/assignment-autonomous-mutations.test.ts tests/assignment-mutation-ledger.test.ts tests/self-evolution-mutations.test.ts tests/server.test.ts tests/operator-export.test.ts
+npm run typecheck
+npm test
+npm run build
+git diff --check
+npx gitnexus detect-changes --scope staged --repo codex-phantom
+```
 
 Planner-driven autonomous mutation marker wave completed locally on 2026-06-16:
 
@@ -795,7 +816,7 @@ Use `docs/phantom-parity.md` as the canonical production-level parity roadmap. K
 Suggested work:
 
 - Add additional mutation classes one at a time only after each has explicit assignment self-evolution policy, adapter-level rollback evidence, and service/HTTP safety coverage.
-- Keep child assignment execution and retention compaction as separate durable autonomy slices so mutation authority does not expand by accident.
+- Keep retention compaction and deeper parent/child dependency orchestration as separate durable autonomy slices so mutation authority does not expand by accident.
 
 ### P2: Channel And Parity Polish
 
