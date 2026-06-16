@@ -116,7 +116,9 @@ export class AssignmentWakeupPlanner {
           runId: result.runId,
           outputText: result.outputText,
         });
-        const marker = parsePlannerMarkers(result.outputText);
+        const marker = parsePlannerMarkers(result.outputText, {
+          allowMutations: shouldAllowPlannerMutationMarkers(completed),
+        });
         this.applyPlannerMutation({
           assignmentId: input.assignmentId,
           runId: result.runId,
@@ -320,7 +322,7 @@ function buildWakeupPrompt(
   events: AssignmentEventRecord[]
 ): string {
   const assignment = detail.assignment;
-  return [
+  const lines = [
     "Continue the autonomous assignment.",
     `Assignment id: ${assignment.id}`,
     `Objective: ${assignment.objective}`,
@@ -345,11 +347,19 @@ function buildWakeupPrompt(
     )}`,
     "Return useful progress. Include one marker: ASSIGNMENT_STATUS: continue, ASSIGNMENT_STATUS: complete, or ASSIGNMENT_STATUS: blocked.",
     "Optionally include NEXT_WAKEUP_MINUTES: <integer> when more work should continue later.",
-    'Optionally include one autonomous mutation marker on a single line: ASSIGNMENT_MUTATION: {"target":"configuration","mutationType":"operator_settings","rationale":"...","proposedChange":{"operatorSettings":{...}}}. Mutations only apply when the assignment is evolve-authorized and assignment policy allows the class.',
-  ].join("\n");
+  ];
+  if (shouldAllowPlannerMutationMarkers(detail)) {
+    lines.push(
+      'Optionally include one autonomous mutation marker on a single line: ASSIGNMENT_MUTATION: {"target":"configuration","mutationType":"operator_settings","rationale":"...","proposedChange":{"operatorSettings":{...}}}. Mutations only apply when the assignment is evolve-authorized and assignment policy allows the class.'
+    );
+  }
+  return lines.join("\n");
 }
 
-function parsePlannerMarkers(outputText: string): {
+function parsePlannerMarkers(
+  outputText: string,
+  options: { allowMutations?: boolean } = {}
+): {
   status: "continue" | "completed" | "blocked";
   nextWakeupMinutes?: number;
   mutation?: PlannerMutationRequest;
@@ -368,8 +378,20 @@ function parsePlannerMarkers(outputText: string): {
   return {
     status,
     nextWakeupMinutes: nextMatch ? Number(nextMatch[1]) : undefined,
-    mutation: parsePlannerMutationMarker(outputText),
+    mutation:
+      options.allowMutations === true
+        ? parsePlannerMutationMarker(outputText)
+        : undefined,
   };
+}
+
+function shouldAllowPlannerMutationMarkers(detail: AssignmentDetail): boolean {
+  const policy = detail.assignment.policy.selfEvolution;
+  return (
+    detail.assignment.autonomyLevel === "evolve" &&
+    policy.enabled &&
+    policy.allowedMutationClasses.length > 0
+  );
 }
 
 function parsePlannerMutationMarker(

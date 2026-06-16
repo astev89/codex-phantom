@@ -142,13 +142,13 @@ The default assignment self-evolution policy allows only low- or medium-risk `co
 
 ## Planner-Driven Mutation Markers
 
-Assignment wakeups may request one bounded autonomous mutation by returning a single-line marker:
+Mutation-authorized assignment wakeups may request one bounded autonomous mutation by returning a single-line marker. The wakeup planner only advertises this marker to assignments with `autonomyLevel: "evolve"`, enabled self-evolution policy, and at least one allowed mutation class.
 
 ```text
 ASSIGNMENT_MUTATION: {"target":"configuration","mutationType":"operator_settings","rationale":"Slow down refresh while autonomous work is active.","proposedChange":{"operatorSettings":{"dashboardRefreshSeconds":12}}}
 ```
 
-Planner-driven mutation still uses the assignment-authorized autonomous executor. The marker is bound to the current assignment and coordinator run id, uses `actor: "planner"`, and must pass the same `evolve` authority, self-evolution allow-list, risk, validation, ledger, and rollback evidence checks as the admin/internal apply route. Failed mutation attempts do not fail the wakeup; the autonomous mutation ledger owns the failure evidence.
+Planner-driven mutation still uses the assignment-authorized autonomous executor. The marker is bound to the current assignment and coordinator run id, uses `actor: "planner"`, and must pass the same `evolve` authority, self-evolution allow-list, risk, validation, ledger, and rollback evidence checks as the admin/internal apply route. Failed executor attempts do not fail the wakeup; the autonomous mutation ledger owns the failure evidence.
 
 This is not MCP write capability. MCP assignment mutation tooling remains read-only, and planner markers only cover mutation classes that already have built-in adapters and explicit assignment policy.
 

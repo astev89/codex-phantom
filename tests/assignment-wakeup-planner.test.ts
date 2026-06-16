@@ -429,6 +429,56 @@ test("AssignmentWakeupPlanner ignores unknown autonomous mutation targets withou
   assert.equal(settings.get().dashboardRefreshSeconds, 5);
 });
 
+test("AssignmentWakeupPlanner does not invite non-evolve assignments to emit mutation markers", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-06-16T14:00:00.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const database = new AppDatabase(":memory:");
+  t.after(() => database.close());
+  const assignments = new AutonomousAssignmentService(database);
+  const ledger = new AutonomousMutationLedger(database, assignments);
+  const settings = new OperatorSettingsStore(database);
+  const executor = new AutonomousMutationExecutor({
+    assignments,
+    ledger,
+    settings,
+  });
+  const runs = new RunGraphStore(database);
+  const { scheduler, jobs } = makeScheduler(now);
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, [
+      [
+        "Unexpected mutation marker despite no prompt.",
+        'ASSIGNMENT_MUTATION: {"target":"configuration","mutationType":"operator_settings","rationale":"Try a settings update.","proposedChange":{"operatorSettings":{"dashboardRefreshSeconds":11}}}',
+        "ASSIGNMENT_STATUS: continue",
+        "NEXT_WAKEUP_MINUTES: 8",
+      ].join("\n"),
+    ]),
+    mutations: executor,
+  });
+  const assignment = assignments.create({
+    objective: "Planner should not invite execute-level mutation markers",
+    autonomyLevel: "execute",
+    policy: { wakeupDelayMinMinutes: 5, wakeupDelayMaxMinutes: 60 },
+  });
+
+  const result = await planner.wakeNow({
+    assignmentId: assignment.assignment.id,
+    reason: "scheduled wakeup",
+  });
+
+  assert.equal(result.status, "scheduled");
+  assert.equal(jobs[0]?.delayMs, 8 * 60_000);
+  assert.doesNotMatch(
+    (await runs.get("coord_wakeup_1"))?.objective ?? "",
+    /ASSIGNMENT_MUTATION/
+  );
+  assert.deepEqual(ledger.list({ assignmentId: assignment.assignment.id }), []);
+  assert.equal(settings.get().dashboardRefreshSeconds, 5);
+});
+
 test("AssignmentWakeupPlanner completes or blocks assignments without scheduling another wakeup", async (t) => {
   t.mock.timers.enable({ apis: ["Date"] });
   const now = "2026-04-28T12:30:00.000Z";
