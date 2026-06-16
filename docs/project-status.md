@@ -4,7 +4,7 @@ This is the living status ledger for `codex-phantom`. Update it at the end of ea
 
 Last updated: 2026-06-16
 Branch: `jarvis/planner-driven-autonomous-mutations`
-Latest verified implementation commit: `aa15a48 fix(assignments): gate planner mutation prompts`
+Latest verified implementation commit: `3230eba fix(assignments): refresh policy after planner mutation`
 
 ## Current State
 
@@ -20,6 +20,7 @@ Planner-driven autonomous mutation marker wave completed locally on 2026-06-16:
 - Routed planner-requested mutations through `AutonomousMutationExecutor` with the current `assignmentId`, current wakeup `runId`, and `actor: "planner"` instead of adding direct planner write paths.
 - Covered default `configuration.operator_settings` apply, explicitly allow-listed `configuration.assignment_policy` apply, policy-denied mutation evidence, and malformed marker ignore behavior.
 - Gated planner mutation marker instructions to mutation-authorized `evolve` assignments so default `execute` assignments are not invited into unaudited self-mutation attempts.
+- Refreshed assignment policy after planner-applied policy mutations so same-wakeup continuation and expiry decisions use the updated policy.
 - Preserved existing status and next-wakeup handling when a mutation is denied, and kept MCP mutation tooling read-only.
 - Updated self-evolution docs to distinguish proposal apply, admin/internal assignment apply, and planner marker apply.
 
