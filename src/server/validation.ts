@@ -554,6 +554,10 @@ function validateAssignmentPolicyPatch(
     value.selfEvolution === undefined
       ? undefined
       : validateAssignmentSelfEvolutionPolicy(value.selfEvolution);
+  const childAssignments =
+    value.childAssignments === undefined
+      ? undefined
+      : validateAssignmentChildPolicy(value.childAssignments);
   return {
     maxWakeups: optionalPositiveInteger(value.maxWakeups, "maxWakeups"),
     maxTotalRuntimeMinutes: optionalPositiveInteger(
@@ -575,6 +579,7 @@ function validateAssignmentPolicyPatch(
     ),
     notificationCadence,
     selfEvolution,
+    childAssignments,
   };
 }
 
@@ -671,6 +676,22 @@ function validateAssignmentSelfEvolutionPolicy(
       "selfEvolution.allowedMutationClasses"
     ),
     maxRiskClass,
+  };
+}
+
+function validateAssignmentChildPolicy(
+  input: unknown
+): Partial<AssignmentPolicy["childAssignments"]> {
+  const value = asRecord(input, "childAssignments");
+  return {
+    maxDepth: optionalNonNegativeInteger(
+      value.maxDepth,
+      "childAssignments.maxDepth"
+    ),
+    maxActiveChildren: optionalNonNegativeInteger(
+      value.maxActiveChildren,
+      "childAssignments.maxActiveChildren"
+    ),
   };
 }
 
@@ -794,6 +815,19 @@ function optionalPositiveInteger(
   }
   if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
     throw new HttpError(400, `${field} must be a positive integer`);
+  }
+  return value;
+}
+
+function optionalNonNegativeInteger(
+  value: unknown,
+  field: string
+): number | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    throw new HttpError(400, `${field} must be a non-negative integer`);
   }
   return value;
 }

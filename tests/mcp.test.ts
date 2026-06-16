@@ -383,9 +383,23 @@ test("McpServer exposes read-only assignment tools with actionable missing-id er
     );
     assert.equal(listCall.status, 200);
     const listCallJson = (await listCall.json()) as {
-      output: { assignments: Array<{ id: string }> };
+      output: {
+        assignments: Array<{
+          id: string;
+          policy: {
+            childAssignments: { maxDepth: number; maxActiveChildren: number };
+          };
+        }>;
+      };
     };
     assert.equal(listCallJson.output.assignments[0]?.id, created.assignment.id);
+    assert.deepEqual(
+      listCallJson.output.assignments[0]?.policy.childAssignments,
+      {
+        maxDepth: 2,
+        maxActiveChildren: 3,
+      }
+    );
 
     const getCall = await mcp.handle(
       new Request("http://localhost/mcp", {
@@ -405,9 +419,20 @@ test("McpServer exposes read-only assignment tools with actionable missing-id er
     );
     assert.equal(getCall.status, 200);
     const getCallJson = (await getCall.json()) as {
-      output: { assignment: { id: string } };
+      output: {
+        assignment: {
+          id: string;
+          policy: {
+            childAssignments: { maxDepth: number; maxActiveChildren: number };
+          };
+        };
+      };
     };
     assert.equal(getCallJson.output.assignment.id, created.assignment.id);
+    assert.deepEqual(getCallJson.output.assignment.policy.childAssignments, {
+      maxDepth: 2,
+      maxActiveChildren: 3,
+    });
 
     const timelineCall = await mcp.handle(
       new Request("http://localhost/mcp", {

@@ -237,6 +237,10 @@ test("AutonomousMutationExecutor applies explicit assignment policy mutations", 
         onFailure: true,
         activeProgressIntervalMinutes: 30,
       },
+      childAssignments: {
+        maxDepth: 2,
+        maxActiveChildren: 2,
+      },
       selfEvolution: {
         allowedMutationClasses: [
           "configuration.operator_settings",
@@ -262,6 +266,10 @@ test("AutonomousMutationExecutor applies explicit assignment policy mutations", 
           onFailure: false,
           activeProgressIntervalMinutes: 45,
         },
+        childAssignments: {
+          maxDepth: 3,
+          maxActiveChildren: 1,
+        },
       },
     },
   });
@@ -275,6 +283,10 @@ test("AutonomousMutationExecutor applies explicit assignment policy mutations", 
     updated.policy.notificationCadence.activeProgressIntervalMinutes,
     45
   );
+  assert.deepEqual(updated.policy.childAssignments, {
+    maxDepth: 3,
+    maxActiveChildren: 1,
+  });
   assert.deepEqual(updated.policy.selfEvolution.allowedMutationClasses, [
     "configuration.operator_settings",
     "configuration.assignment_policy",

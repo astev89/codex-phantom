@@ -69,6 +69,11 @@ export type AssignmentSelfEvolutionPolicy = {
   maxRiskClass: AssignmentSelfEvolutionRiskClass;
 };
 
+export type AssignmentChildPolicy = {
+  maxDepth: number;
+  maxActiveChildren: number;
+};
+
 export type AssignmentPolicy = {
   maxWakeups: number;
   maxTotalRuntimeMinutes: number;
@@ -78,13 +83,18 @@ export type AssignmentPolicy = {
   wakeupDelayMaxMinutes: number;
   notificationCadence: AssignmentNotificationCadence;
   selfEvolution: AssignmentSelfEvolutionPolicy;
+  childAssignments: AssignmentChildPolicy;
 };
 
 export type AssignmentPolicyPatch = Partial<
-  Omit<AssignmentPolicy, "notificationCadence" | "selfEvolution">
+  Omit<
+    AssignmentPolicy,
+    "notificationCadence" | "selfEvolution" | "childAssignments"
+  >
 > & {
   notificationCadence?: Partial<AssignmentNotificationCadence>;
   selfEvolution?: Partial<AssignmentSelfEvolutionPolicy>;
+  childAssignments?: Partial<AssignmentChildPolicy>;
 };
 
 export type AssignmentSource = {
@@ -159,6 +169,25 @@ export type CreateAssignmentInput = {
   policy?: AssignmentPolicyPatch;
   metadata?: JsonValue;
   createdBy?: string;
+};
+
+export type PromoteChildAssignmentInput = {
+  parentAssignmentId: string;
+  objective: string;
+  title?: string;
+  autonomyLevel?: AssignmentAutonomyLevel;
+  source?: AssignmentSource;
+  policy?: AssignmentPolicyPatch;
+  context?: JsonValue[];
+  metadata?: JsonValue;
+  actor?: string;
+  rationale: string;
+  waitForChild?: boolean;
+};
+
+export type PromoteChildAssignmentResult = {
+  parent: AssignmentDetail;
+  child: AssignmentDetail;
 };
 
 export type ListAssignmentsInput = {

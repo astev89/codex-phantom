@@ -5,18 +5,22 @@ import {
   encodeJson,
   type AppDatabase,
 } from "../platform/database.ts";
+import { ASSIGNMENT_AUTONOMY_LEVELS } from "./types.ts";
 import type {
   AssignmentAutonomyLevel,
+  AssignmentChildPolicy,
   AssignmentControlInput,
   AssignmentDetail,
   AssignmentEventImportance,
   AssignmentEventRecord,
   AssignmentLifecycleState,
+  AssignmentNotificationCadence,
   AssignmentPolicy,
   AssignmentPolicyPatch,
   AssignmentRecord,
   AssignmentRunLinkRecord,
   AssignmentSelfEvolutionPolicy,
+  AssignmentSelfEvolutionRiskClass,
   AssignmentSource,
   AssignmentTimeline,
   ApplyAssignmentWakeupDecisionInput,
@@ -25,6 +29,8 @@ import type {
   FailAssignmentWakeupInput,
   LinkAssignmentRunInput,
   ListAssignmentsInput,
+  PromoteChildAssignmentInput,
+  PromoteChildAssignmentResult,
   RecordAssignmentMutationEventInput,
   StartAssignmentWakeupInput,
 } from "./types.ts";
@@ -70,6 +76,14 @@ type AssignmentRunLinkRow = {
   created_at: string;
 };
 
+type CountRow = {
+  count: number;
+};
+
+type ParentAssignmentRow = {
+  parent_assignment_id: string | null;
+};
+
 export class AssignmentNotFoundError extends Error {
   constructor(id: string) {
     super(
@@ -88,6 +102,21 @@ export class AutonomousAssignmentService {
   }
 
   create(input: CreateAssignmentInput): AssignmentDetail {
+    if (input.parentAssignmentId) {
+      return this.promoteChild({
+        parentAssignmentId: input.parentAssignmentId,
+        objective: input.objective,
+        title: input.title,
+        autonomyLevel: input.autonomyLevel,
+        source: input.source,
+        policy: input.policy,
+        metadata: input.metadata,
+        actor: input.createdBy,
+        rationale: "Created as child assignment",
+        waitForChild: false,
+      }).child;
+    }
+
     const objective = input.objective.trim();
     if (!objective) {
       throw new AssignmentValidationError(
@@ -133,6 +162,128 @@ export class AutonomousAssignmentService {
     });
 
     return this.getRequired(assignment.id);
+  }
+
+  promoteChild(
+    input: PromoteChildAssignmentInput
+  ): PromoteChildAssignmentResult {
+    const parent = this.getRequired(input.parentAssignmentId).assignment;
+    if (isTerminalLifecycleState(parent.lifecycleState)) {
+      throw new AssignmentValidationError(
+        "Terminal assignments cannot promote child assignments"
+      );
+    }
+    const objective = input.objective.trim();
+    if (!objective) {
+      throw new AssignmentValidationError(
+        "objective must be a non-empty string"
+      );
+    }
+    const rationale = input.rationale.trim();
+    if (!rationale) {
+      throw new AssignmentValidationError(
+        "rationale must be a non-empty string"
+      );
+    }
+    const childDepth = this.assignmentDepth(parent.id) + 1;
+    if (childDepth > parent.policy.childAssignments.maxDepth) {
+      throw new AssignmentValidationError(
+        "Parent assignment child assignment depth limit has been reached"
+      );
+    }
+    const activeChildren = this.countActiveChildren(parent.id);
+    if (activeChildren >= parent.policy.childAssignments.maxActiveChildren) {
+      throw new AssignmentValidationError(
+        "Parent assignment active child assignment limit has been reached"
+      );
+    }
+    const remainingWakeups =
+      parent.policy.maxWakeups -
+      parent.wakeupCount -
+      this.reservedActiveChildWakeupBudget(parent.id);
+    if (remainingWakeups <= 0) {
+      throw new AssignmentValidationError(
+        "Parent assignment remaining wakeup budget has been exhausted"
+      );
+    }
+    const requestedPolicy = buildAssignmentPolicyPatch(
+      parent.policy,
+      input.policy
+    );
+    const childPolicy = capChildPolicyToParent(
+      requestedPolicy,
+      parent.policy,
+      remainingWakeups
+    );
+
+    const now = new Date().toISOString();
+    const waitForChild = input.waitForChild === true;
+    const actor = normalizeOptionalText(input.actor) ?? "planner";
+    const child: AssignmentRecord = {
+      id: createId("asgn"),
+      parentAssignmentId: parent.id,
+      objective,
+      title: normalizeOptionalText(input.title),
+      lifecycleState: "active",
+      autonomyLevel: capAutonomyLevel(
+        input.autonomyLevel ?? parent.autonomyLevel,
+        parent.autonomyLevel
+      ),
+      source: normalizeSource(input.source ?? parent.source),
+      policy: childPolicy,
+      context: input.context ?? [],
+      metadata: mergeChildMetadata(input.metadata, {
+        parentAssignmentId: parent.id,
+        parentWaitsForChild: waitForChild,
+      }),
+      wakeupCount: 0,
+      consecutiveFailureCount: 0,
+      createdBy: actor,
+      createdAt: now,
+      updatedAt: now,
+      lastActivityAt: now,
+    };
+
+    this.database.transaction(() => {
+      this.insertAssignment(child);
+      this.recordEvent({
+        assignmentId: child.id,
+        type: "created",
+        importance: "audit",
+        compactable: false,
+        payload: {
+          objective: child.objective,
+          autonomyLevel: child.autonomyLevel,
+          source: child.source,
+          parentAssignmentId: parent.id,
+          createdBy: child.createdBy ?? null,
+        },
+        createdAt: now,
+      });
+      this.updateAssignment(parent.id, {
+        updated_at: now,
+        last_activity_at: now,
+      });
+      this.recordEvent({
+        assignmentId: parent.id,
+        type: "child_assignment_created",
+        importance: "milestone",
+        compactable: false,
+        payload: {
+          actor,
+          childAssignmentId: child.id,
+          objective: child.objective,
+          rationale,
+          waitForChild,
+        },
+        createdAt: now,
+      });
+    });
+
+    return {
+      parent: this.getRequired(parent.id),
+      child: this.getRequired(child.id),
+    };
   }
 
   list(input: ListAssignmentsInput = {}): AssignmentRecord[] {
@@ -305,6 +456,34 @@ export class AutonomousAssignmentService {
     return this.getRequired(assignmentId);
   }
 
+  recordChildPromotionFailure(input: {
+    assignmentId: string;
+    actor?: string;
+    objective: string;
+    rationale: string;
+    errorMessage: string;
+  }): AssignmentEventRecord {
+    this.getRequired(input.assignmentId);
+    const now = new Date().toISOString();
+    this.updateAssignment(input.assignmentId, {
+      updated_at: now,
+      last_activity_at: now,
+    });
+    return this.recordEvent({
+      assignmentId: input.assignmentId,
+      type: "child_assignment_failed",
+      importance: "milestone",
+      compactable: false,
+      payload: {
+        actor: normalizeOptionalText(input.actor) ?? "planner",
+        objective: input.objective,
+        rationale: input.rationale,
+        errorMessage: input.errorMessage,
+      },
+      createdAt: now,
+    });
+  }
+
   timeline(assignmentId: string, limit = 100): AssignmentTimeline {
     if (!this.get(assignmentId)) {
       throw new AssignmentNotFoundError(assignmentId);
@@ -327,6 +506,19 @@ export class AutonomousAssignmentService {
     const now = new Date().toISOString();
     const current = this.getRequired(input.assignmentId).assignment;
     assertWakeable(current.lifecycleState);
+    if (this.hasActiveWaitedChild(current.id)) {
+      throw new AssignmentValidationError(
+        "Assignment is waiting for active child assignment"
+      );
+    }
+    if (
+      current.wakeupCount + this.reservedActiveChildWakeupBudget(current.id) >=
+      current.policy.maxWakeups
+    ) {
+      throw new AssignmentValidationError(
+        "Assignment wakeup budget is reserved for active child assignments"
+      );
+    }
     this.database.transaction(() => {
       this.updateAssignment(input.assignmentId, {
         lifecycle_state: "active",
@@ -605,6 +797,73 @@ export class AutonomousAssignmentService {
       )
       .map(toAssignmentRunLinkRecord);
   }
+
+  private assignmentDepth(assignmentId: string): number {
+    let depth = 0;
+    let currentId: string | undefined = assignmentId;
+    const seen = new Set<string>();
+    while (currentId) {
+      if (seen.has(currentId)) {
+        throw new AssignmentValidationError(
+          "Assignment parent hierarchy contains a cycle"
+        );
+      }
+      seen.add(currentId);
+      const row: ParentAssignmentRow | null =
+        this.database.get<ParentAssignmentRow>(
+          "SELECT parent_assignment_id FROM assignments WHERE id = ?",
+          currentId
+        );
+      currentId = row?.parent_assignment_id ?? undefined;
+      if (currentId) {
+        depth += 1;
+      }
+    }
+    return depth;
+  }
+
+  private countActiveChildren(parentAssignmentId: string): number {
+    return (
+      this.database.get<CountRow>(
+        `SELECT COUNT(*) AS count FROM assignments
+         WHERE parent_assignment_id = ?
+           AND lifecycle_state NOT IN ('completed', 'cancelled', 'expired', 'failed')`,
+        parentAssignmentId
+      )?.count ?? 0
+    );
+  }
+
+  private reservedActiveChildWakeupBudget(parentAssignmentId: string): number {
+    return this.database
+      .all<AssignmentRow>(
+        `SELECT * FROM assignments
+         WHERE parent_assignment_id = ?
+           AND lifecycle_state NOT IN ('completed', 'cancelled', 'expired', 'failed')`,
+        parentAssignmentId
+      )
+      .map(toAssignmentRecord)
+      .reduce((total, child) => total + child.policy.maxWakeups, 0);
+  }
+
+  private hasActiveWaitedChild(parentAssignmentId: string): boolean {
+    return this.database
+      .all<AssignmentRow>(
+        `SELECT * FROM assignments
+         WHERE parent_assignment_id = ?
+           AND lifecycle_state NOT IN ('completed', 'cancelled', 'expired', 'failed')`,
+        parentAssignmentId
+      )
+      .map(toAssignmentRecord)
+      .some((child) => {
+        const metadata = child.metadata;
+        return (
+          metadata !== null &&
+          typeof metadata === "object" &&
+          !Array.isArray(metadata) &&
+          (metadata as Record<string, JsonValue>).parentWaitsForChild === true
+        );
+      });
+  }
 }
 
 export function defaultAssignmentPolicy(): AssignmentPolicy {
@@ -629,6 +888,10 @@ export function defaultAssignmentPolicy(): AssignmentPolicy {
       allowedMutationClasses: ["configuration.operator_settings"],
       maxRiskClass: "medium",
     },
+    childAssignments: {
+      maxDepth: 2,
+      maxActiveChildren: 3,
+    },
   };
 }
 
@@ -646,6 +909,7 @@ function buildAssignmentPolicyPatch(
   const patch = stripUndefined(input ?? {});
   const notificationCadence = stripUndefined(input?.notificationCadence ?? {});
   const selfEvolution = stripUndefined(input?.selfEvolution ?? {});
+  const childAssignments = stripUndefined(input?.childAssignments ?? {});
   const policy = {
     ...current,
     ...patch,
@@ -656,6 +920,10 @@ function buildAssignmentPolicyPatch(
     selfEvolution: {
       ...current.selfEvolution,
       ...selfEvolution,
+    },
+    childAssignments: {
+      ...current.childAssignments,
+      ...childAssignments,
     },
   };
   validatePositiveInteger(policy.maxWakeups, "maxWakeups");
@@ -679,6 +947,11 @@ function buildAssignmentPolicyPatch(
   validatePositiveInteger(
     policy.notificationCadence.activeProgressIntervalMinutes,
     "activeProgressIntervalMinutes"
+  );
+  validateNonNegativeInteger(policy.childAssignments.maxDepth, "maxDepth");
+  validateNonNegativeInteger(
+    policy.childAssignments.maxActiveChildren,
+    "maxActiveChildren"
   );
   if (policy.wakeupDelayMinMinutes > policy.wakeupDelayMaxMinutes) {
     throw new AssignmentValidationError(
@@ -737,6 +1010,14 @@ function hasPolicyPatch(input: AssignmentPolicyPatch | undefined): boolean {
       );
     }
     if (key === "selfEvolution") {
+      return (
+        value !== null &&
+        typeof value === "object" &&
+        !Array.isArray(value) &&
+        Object.values(value).some((item) => item !== undefined)
+      );
+    }
+    if (key === "childAssignments") {
       return (
         value !== null &&
         typeof value === "object" &&
@@ -937,6 +1218,7 @@ function normalizeStoredAssignmentPolicy(
       ...(policy.notificationCadence ?? {}),
     },
     selfEvolution: normalizeStoredSelfEvolutionPolicy(policy.selfEvolution),
+    childAssignments: normalizeStoredChildPolicy(policy.childAssignments),
   };
 }
 
@@ -971,11 +1253,188 @@ function failClosedSelfEvolutionPolicy(): AssignmentSelfEvolutionPolicy {
   };
 }
 
+function normalizeStoredChildPolicy(
+  policy: Partial<AssignmentChildPolicy> | undefined
+): AssignmentChildPolicy {
+  if (!policy || typeof policy !== "object" || Array.isArray(policy)) {
+    return failClosedChildPolicy();
+  }
+  const maxDepth = policy.maxDepth;
+  const maxActiveChildren = policy.maxActiveChildren;
+  return {
+    maxDepth:
+      Number.isInteger(maxDepth) && maxDepth !== undefined && maxDepth >= 0
+        ? maxDepth
+        : 0,
+    maxActiveChildren:
+      Number.isInteger(maxActiveChildren) &&
+      maxActiveChildren !== undefined &&
+      maxActiveChildren >= 0
+        ? maxActiveChildren
+        : 0,
+  };
+}
+
+function failClosedChildPolicy(): AssignmentChildPolicy {
+  return {
+    maxDepth: 0,
+    maxActiveChildren: 0,
+  };
+}
+
 function failClosedAssignmentPolicyFallback(): AssignmentPolicy {
   return {
     ...defaultAssignmentPolicy(),
     selfEvolution: failClosedSelfEvolutionPolicy(),
+    childAssignments: failClosedChildPolicy(),
   };
+}
+
+function capChildPolicyToParent(
+  requested: AssignmentPolicy,
+  parent: AssignmentPolicy,
+  remainingWakeups: number
+): AssignmentPolicy {
+  return {
+    ...requested,
+    maxWakeups: Math.min(requested.maxWakeups, remainingWakeups),
+    maxTotalRuntimeMinutes: Math.min(
+      requested.maxTotalRuntimeMinutes,
+      parent.maxTotalRuntimeMinutes
+    ),
+    maxConsecutiveFailures: Math.min(
+      requested.maxConsecutiveFailures,
+      parent.maxConsecutiveFailures
+    ),
+    maxIdleHours: Math.min(requested.maxIdleHours, parent.maxIdleHours),
+    wakeupDelayMinMinutes: capWakeupDelayMin(
+      requested.wakeupDelayMinMinutes,
+      parent
+    ),
+    wakeupDelayMaxMinutes: capWakeupDelayMax(
+      requested.wakeupDelayMaxMinutes,
+      parent
+    ),
+    notificationCadence: capNotificationCadenceToParent(
+      requested.notificationCadence,
+      parent.notificationCadence
+    ),
+    selfEvolution: capSelfEvolutionPolicyToParent(
+      requested.selfEvolution,
+      parent.selfEvolution
+    ),
+    childAssignments: {
+      maxDepth: Math.min(
+        requested.childAssignments.maxDepth,
+        parent.childAssignments.maxDepth
+      ),
+      maxActiveChildren: Math.min(
+        requested.childAssignments.maxActiveChildren,
+        parent.childAssignments.maxActiveChildren
+      ),
+    },
+  };
+}
+
+function capWakeupDelayMin(
+  requested: number,
+  parent: AssignmentPolicy
+): number {
+  return Math.min(
+    Math.max(requested, parent.wakeupDelayMinMinutes),
+    parent.wakeupDelayMaxMinutes
+  );
+}
+
+function capWakeupDelayMax(
+  requested: number,
+  parent: AssignmentPolicy
+): number {
+  return Math.max(
+    Math.min(requested, parent.wakeupDelayMaxMinutes),
+    parent.wakeupDelayMinMinutes
+  );
+}
+
+function capNotificationCadenceToParent(
+  requested: AssignmentNotificationCadence,
+  parent: AssignmentNotificationCadence
+): AssignmentNotificationCadence {
+  return {
+    onCreate: requested.onCreate || parent.onCreate,
+    onWakeupStart: requested.onWakeupStart || parent.onWakeupStart,
+    onMeaningfulProgress:
+      requested.onMeaningfulProgress || parent.onMeaningfulProgress,
+    onBlocked: requested.onBlocked || parent.onBlocked,
+    onFailure: requested.onFailure || parent.onFailure,
+    onCompletion: requested.onCompletion || parent.onCompletion,
+    activeProgressIntervalMinutes: Math.min(
+      requested.activeProgressIntervalMinutes,
+      parent.activeProgressIntervalMinutes
+    ),
+  };
+}
+
+function capSelfEvolutionPolicyToParent(
+  requested: AssignmentSelfEvolutionPolicy,
+  parent: AssignmentSelfEvolutionPolicy
+): AssignmentSelfEvolutionPolicy {
+  const allowedByParent = new Set(parent.allowedMutationClasses);
+  return {
+    enabled: requested.enabled && parent.enabled,
+    allowedMutationClasses: requested.allowedMutationClasses.filter((item) =>
+      allowedByParent.has(item)
+    ),
+    maxRiskClass: capRiskClass(requested.maxRiskClass, parent.maxRiskClass),
+  };
+}
+
+const SELF_EVOLUTION_RISK_ORDER = [
+  "low",
+  "medium",
+  "high",
+  "critical",
+] as const satisfies readonly AssignmentSelfEvolutionRiskClass[];
+
+function capRiskClass(
+  requested: AssignmentSelfEvolutionRiskClass,
+  parent: AssignmentSelfEvolutionRiskClass
+): AssignmentSelfEvolutionRiskClass {
+  return riskRank(requested) > riskRank(parent) ? parent : requested;
+}
+
+function riskRank(riskClass: AssignmentSelfEvolutionRiskClass): number {
+  return SELF_EVOLUTION_RISK_ORDER.indexOf(riskClass);
+}
+
+function capAutonomyLevel(
+  requested: AssignmentAutonomyLevel,
+  parent: AssignmentAutonomyLevel
+): AssignmentAutonomyLevel {
+  return autonomyRank(requested) > autonomyRank(parent) ? parent : requested;
+}
+
+function autonomyRank(level: AssignmentAutonomyLevel): number {
+  return ASSIGNMENT_AUTONOMY_LEVELS.indexOf(level);
+}
+
+function mergeChildMetadata(
+  metadata: JsonValue | undefined,
+  childMetadata: Record<string, JsonValue>
+): JsonValue {
+  if (metadata && typeof metadata === "object" && !Array.isArray(metadata)) {
+    return {
+      ...(metadata as Record<string, JsonValue>),
+      ...childMetadata,
+    };
+  }
+  if (metadata !== undefined) {
+    return {
+      value: metadata,
+      ...childMetadata,
+    };
+  }
+  return childMetadata;
 }
 
 function toAssignmentEventRecord(
@@ -1031,6 +1490,14 @@ function normalizeOptionalText(value: string | undefined): string | undefined {
 function validatePositiveInteger(value: number, field: string): void {
   if (!Number.isInteger(value) || value <= 0) {
     throw new AssignmentValidationError(`${field} must be a positive integer`);
+  }
+}
+
+function validateNonNegativeInteger(value: number, field: string): void {
+  if (!Number.isInteger(value) || value < 0) {
+    throw new AssignmentValidationError(
+      `${field} must be a non-negative integer`
+    );
   }
 }
 
