@@ -119,7 +119,7 @@ export class AssignmentWakeupPlanner {
         const marker = parsePlannerMarkers(result.outputText, {
           allowMutations: shouldAllowPlannerMutationMarkers(completed),
         });
-        this.applyPlannerMutation({
+        const afterMutation = this.applyPlannerMutation({
           assignmentId: input.assignmentId,
           runId: result.runId,
           mutation: marker.mutation,
@@ -147,8 +147,8 @@ export class AssignmentWakeupPlanner {
           };
         }
         if (
-          completed.assignment.wakeupCount >=
-          completed.assignment.policy.maxWakeups
+          afterMutation.assignment.wakeupCount >=
+          afterMutation.assignment.policy.maxWakeups
         ) {
           return {
             status: "expired",
@@ -268,9 +268,9 @@ export class AssignmentWakeupPlanner {
     assignmentId: string;
     runId: string;
     mutation?: PlannerMutationRequest;
-  }): void {
+  }): AssignmentDetail {
     if (!this.mutations || !input.mutation) {
-      return;
+      return this.assignments.getRequired(input.assignmentId);
     }
     try {
       this.mutations.apply({
@@ -285,10 +285,11 @@ export class AssignmentWakeupPlanner {
       });
     } catch (error) {
       if (error instanceof AutonomousMutationExecutionError) {
-        return;
+        return this.assignments.getRequired(input.assignmentId);
       }
       throw error;
     }
+    return this.assignments.getRequired(input.assignmentId);
   }
 }
 
