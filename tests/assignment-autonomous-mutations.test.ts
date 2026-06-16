@@ -235,6 +235,97 @@ test("AutonomousMutationExecutor audits unsupported and malformed autonomous mut
   database.close();
 });
 
+test("AutonomousMutationExecutor audits self-evolution policy denials as failed", () => {
+  const { assignments, database, executor, ledger, settings } = createHarness();
+  const disabled = assignments.create({
+    objective: "Disabled self-evolution policy",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        enabled: false,
+      },
+    },
+  });
+  const disallowed = assignments.create({
+    objective: "Disallowed self-evolution mutation class",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [],
+      },
+    },
+  });
+
+  assert.throws(
+    () =>
+      executor.apply({
+        assignmentId: disabled.assignment.id,
+        target: "configuration",
+        mutationType: "operator_settings",
+        rationale: "Try to mutate while self-evolution is disabled.",
+        proposedChange: {
+          operatorSettings: { dashboardRefreshSeconds: 12 },
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 403);
+      assert.equal(error.mutation?.status, "failed");
+      assert.match(error.message, /self-evolution policy is disabled/);
+      return true;
+    }
+  );
+
+  assert.throws(
+    () =>
+      executor.apply({
+        assignmentId: disallowed.assignment.id,
+        target: "configuration",
+        mutationType: "operator_settings",
+        rationale: "Try to mutate without an allowed mutation class.",
+        proposedChange: {
+          operatorSettings: { dashboardRefreshSeconds: 12 },
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 403);
+      assert.equal(error.mutation?.status, "failed");
+      assert.match(error.message, /does not allow/);
+      return true;
+    }
+  );
+
+  assert.equal(settings.get().dashboardRefreshSeconds, 5);
+  assert.deepEqual(
+    ledger.list({ assignmentId: disabled.assignment.id }).map((mutation) => ({
+      status: mutation.status,
+      errorMessage: mutation.errorMessage,
+    })),
+    [
+      {
+        status: "failed",
+        errorMessage: "Assignment self-evolution policy is disabled",
+      },
+    ]
+  );
+  assert.deepEqual(
+    ledger.list({ assignmentId: disallowed.assignment.id }).map((mutation) => ({
+      status: mutation.status,
+      errorMessage: mutation.errorMessage,
+    })),
+    [
+      {
+        status: "failed",
+        errorMessage:
+          "Assignment self-evolution policy does not allow configuration.operator_settings",
+      },
+    ]
+  );
+
+  database.close();
+});
+
 test("AutonomousMutationExecutor rolls back applied operator settings mutations", () => {
   const { assignments, database, executor, settings } = createHarness();
   const assignment = assignments.create({

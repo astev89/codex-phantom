@@ -1128,6 +1128,70 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     );
     assert.equal(unauthenticatedApply.status, 401);
 
+    const legacyAssignmentCreate = await fetch(`${baseUrl}/admin/assignments`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.operatorBearerToken}`,
+      },
+      body: JSON.stringify({
+        objective: "Legacy evolve assignment without self-evolution policy",
+        autonomyLevel: "evolve",
+      }),
+    });
+    assert.equal(legacyAssignmentCreate.status, 201);
+    const legacyAssignmentJson = (await legacyAssignmentCreate.json()) as {
+      assignment: { id: string };
+    };
+    const legacyPolicy = {
+      ...assignments.getRequired(legacyAssignmentJson.assignment.id).assignment
+        .policy,
+    } as Record<string, unknown>;
+    delete legacyPolicy.selfEvolution;
+    database.run(
+      "UPDATE assignments SET policy_json = ? WHERE id = ?",
+      JSON.stringify(legacyPolicy),
+      legacyAssignmentJson.assignment.id
+    );
+
+    const legacyApply = await fetch(
+      `${baseUrl}/admin/assignments/${legacyAssignmentJson.assignment.id}/mutations/apply`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify(autonomousApplyBody),
+      }
+    );
+    assert.equal(legacyApply.status, 403);
+    const legacyAssignmentMutations = await fetch(
+      `${baseUrl}/admin/assignments/${legacyAssignmentJson.assignment.id}/mutations`,
+      {
+        headers: {
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+      }
+    );
+    assert.equal(legacyAssignmentMutations.status, 200);
+    const legacyAssignmentMutationsJson =
+      (await legacyAssignmentMutations.json()) as {
+        mutations: Array<{ status: string; errorMessage?: string }>;
+      };
+    assert.deepEqual(
+      legacyAssignmentMutationsJson.mutations.map((mutation) => ({
+        status: mutation.status,
+        errorMessage: mutation.errorMessage,
+      })),
+      [
+        {
+          status: "failed",
+          errorMessage: "Assignment self-evolution policy is disabled",
+        },
+      ]
+    );
+
     const autonomousApply = await fetch(
       `${baseUrl}/admin/assignments/${autonomousAssignmentJson.assignment.id}/mutations/apply`,
       {

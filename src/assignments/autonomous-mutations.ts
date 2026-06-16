@@ -221,9 +221,17 @@ export class AutonomousMutationExecutor {
     }
     const policy = assignment.policy.selfEvolution;
     if (!policy.enabled) {
+      const failed = this.recordFailedPolicyMutation(
+        assignment,
+        input,
+        riskClass,
+        policy,
+        "Assignment self-evolution policy is disabled"
+      );
       throw new AutonomousMutationExecutionError(
         403,
-        "Assignment self-evolution policy is disabled"
+        failed.errorMessage ?? "",
+        failed
       );
     }
     if (
@@ -250,9 +258,17 @@ export class AutonomousMutationExecutor {
       );
     }
     if (!policy.allowedMutationClasses.includes(MUTATION_CLASS)) {
+      const failed = this.recordFailedPolicyMutation(
+        assignment,
+        input,
+        riskClass,
+        policy,
+        "Assignment self-evolution policy does not allow configuration.operator_settings"
+      );
       throw new AutonomousMutationExecutionError(
         403,
-        "Assignment self-evolution policy does not allow configuration.operator_settings"
+        failed.errorMessage ?? "",
+        failed
       );
     }
     if (riskRank(riskClass) > riskRank(policy.maxRiskClass)) {
@@ -275,6 +291,27 @@ export class AutonomousMutationExecutor {
         failed
       );
     }
+  }
+
+  private recordFailedPolicyMutation(
+    assignment: AssignmentRecord,
+    input: ApplyAutonomousMutationInput,
+    riskClass: SelfEvolutionRiskClass,
+    policy: AssignmentSelfEvolutionPolicy,
+    errorMessage: string
+  ): AutonomousMutationRecord {
+    return this.ledger.recordFailed({
+      assignmentId: assignment.id,
+      runId: input.runId,
+      target: input.target,
+      mutationType: input.mutationType,
+      autonomyLevel: assignment.autonomyLevel,
+      authorizingPolicy: authorizingPolicy(policy, input.actor),
+      rationale: input.rationale,
+      riskClass,
+      actor: input.actor,
+      errorMessage,
+    });
   }
 }
 

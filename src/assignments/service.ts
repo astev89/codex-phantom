@@ -16,6 +16,7 @@ import type {
   AssignmentPolicyPatch,
   AssignmentRecord,
   AssignmentRunLinkRecord,
+  AssignmentSelfEvolutionPolicy,
   AssignmentSource,
   AssignmentTimeline,
   ApplyAssignmentWakeupDecisionInput,
@@ -906,9 +907,11 @@ function toAssignmentRecord(row: AssignmentRow): AssignmentRecord {
     lifecycleState: row.lifecycle_state,
     autonomyLevel: row.autonomy_level,
     source: decodeJson<AssignmentSource>(row.source_json, {}),
-    policy: decodeJson<AssignmentPolicy>(
-      row.policy_json,
-      defaultAssignmentPolicy()
+    policy: normalizeStoredAssignmentPolicy(
+      decodeJson<Partial<AssignmentPolicy>>(
+        row.policy_json,
+        failClosedAssignmentPolicyFallback()
+      )
     ),
     context: decodeJson<JsonValue[]>(row.context_json, []),
     metadata: decodeJson<JsonValue>(row.metadata_json, {}),
@@ -919,6 +922,59 @@ function toAssignmentRecord(row: AssignmentRow): AssignmentRecord {
     updatedAt: row.updated_at,
     lastActivityAt: row.last_activity_at,
     terminalReason: row.terminal_reason ?? undefined,
+  };
+}
+
+function normalizeStoredAssignmentPolicy(
+  policy: Partial<AssignmentPolicy>
+): AssignmentPolicy {
+  const defaults = defaultAssignmentPolicy();
+  return {
+    ...defaults,
+    ...policy,
+    notificationCadence: {
+      ...defaults.notificationCadence,
+      ...(policy.notificationCadence ?? {}),
+    },
+    selfEvolution: normalizeStoredSelfEvolutionPolicy(policy.selfEvolution),
+  };
+}
+
+function normalizeStoredSelfEvolutionPolicy(
+  policy: Partial<AssignmentSelfEvolutionPolicy> | undefined
+): AssignmentSelfEvolutionPolicy {
+  if (!policy || typeof policy !== "object" || Array.isArray(policy)) {
+    return failClosedSelfEvolutionPolicy();
+  }
+  return {
+    enabled: typeof policy.enabled === "boolean" ? policy.enabled : false,
+    allowedMutationClasses:
+      Array.isArray(policy.allowedMutationClasses) &&
+      policy.allowedMutationClasses.every(
+        (item) => typeof item === "string" && item.trim() !== ""
+      )
+        ? policy.allowedMutationClasses
+        : [],
+    maxRiskClass: ["low", "medium", "high", "critical"].includes(
+      policy.maxRiskClass ?? ""
+    )
+      ? (policy.maxRiskClass ?? "low")
+      : "low",
+  };
+}
+
+function failClosedSelfEvolutionPolicy(): AssignmentSelfEvolutionPolicy {
+  return {
+    enabled: false,
+    allowedMutationClasses: [],
+    maxRiskClass: "low",
+  };
+}
+
+function failClosedAssignmentPolicyFallback(): AssignmentPolicy {
+  return {
+    ...defaultAssignmentPolicy(),
+    selfEvolution: failClosedSelfEvolutionPolicy(),
   };
 }
 
