@@ -5,6 +5,12 @@ import {
   type MemoryPolicyStore,
 } from "../memory/policy.ts";
 import {
+  normalizeRuntimeConfigLimitsSnapshot,
+  normalizeRuntimeConfigLimitsPatch,
+  runtimeConfigLimitValues,
+  type RuntimeConfigLimitsStore,
+} from "../config/runtime-limits.ts";
+import {
   applyOperatorSettingsMutation,
   rollbackOperatorSettingsMutation,
   type OperatorSettingsMutationPort,
@@ -80,6 +86,7 @@ export type AutonomousMutationExecutorOptions = {
   ledger: AutonomousMutationLedger;
   settings: OperatorSettingsMutationPort;
   memoryPolicy?: MemoryPolicyStore;
+  runtimeConfigLimits?: RuntimeConfigLimitsStore;
   promptGuidance?: PromptRuntimeGuidanceStore;
   rolePolicy?: RolePolicyRuntimeStore;
   projectFileDrafts?: ProjectFileDraftStore;
@@ -92,6 +99,7 @@ export type AutonomousMutationAdapter = {
   readonly mutationType: string;
   readonly mutationClass: string;
   readonly affectedResources: JsonValue;
+  readonly minimumRiskClass?: SelfEvolutionRiskClass;
   readonly rollbackConflictScope?: "assignment" | "global";
   apply(input: {
     assignment: AssignmentRecord;
@@ -118,10 +126,11 @@ const TOOL_BUNDLE_ENABLE_MUTATION_CLASS = "tool.bundle_enable";
 const PROMPT_RUNTIME_GUIDANCE_MUTATION_CLASS = "prompt.runtime_guidance";
 const MEMORY_POLICY_RUNTIME_BOUNDS_MUTATION_CLASS =
   "memory_policy.runtime_bounds";
+const RUNTIME_CONFIG_LIMITS_MUTATION_CLASS = "configuration.runtime_limits";
 const ROLE_PERMISSION_POLICY_MUTATION_CLASS = "role.permission_policy";
 const PROJECT_FILE_DRAFT_MUTATION_CLASS = "project_file.draft";
 const UNSUPPORTED_MUTATION_ERROR =
-  "Only configuration.operator_settings, configuration.assignment_policy, tool.bundle_enable, prompt.runtime_guidance, memory_policy.runtime_bounds, role.permission_policy, and project_file.draft autonomous mutations are supported in this slice";
+  "Only configuration.operator_settings, configuration.assignment_policy, configuration.runtime_limits, tool.bundle_enable, prompt.runtime_guidance, memory_policy.runtime_bounds, role.permission_policy, and project_file.draft autonomous mutations are supported in this slice";
 const RISK_ORDER: SelfEvolutionRiskClass[] = [
   "low",
   "medium",
@@ -155,6 +164,13 @@ export class AutonomousMutationExecutor {
               ),
             ]
           : []),
+        ...(options.runtimeConfigLimits
+          ? [
+              createRuntimeConfigLimitsAutonomousMutationAdapter(
+                options.runtimeConfigLimits
+              ),
+            ]
+          : []),
         ...(options.rolePolicy
           ? [
               createRolePermissionPolicyAutonomousMutationAdapter(
@@ -184,11 +200,11 @@ export class AutonomousMutationExecutor {
     input: ApplyAutonomousMutationInput
   ): AutonomousMutationExecutionResult {
     const assignment = this.assignments.getRequired(input.assignmentId);
-    const riskClass = input.riskClass ?? "low";
-    const adapter = this.assertAssignmentCanMutate(
+    const requestedRiskClass = input.riskClass ?? "low";
+    const { adapter, riskClass } = this.assertAssignmentCanMutate(
       assignment.assignment,
       input,
-      riskClass
+      requestedRiskClass
     );
     const planned = this.ledger.recordPlanned({
       assignmentId: assignment.assignment.id,
@@ -323,7 +339,7 @@ export class AutonomousMutationExecutor {
     assignment: AssignmentRecord,
     input: ApplyAutonomousMutationInput,
     riskClass: SelfEvolutionRiskClass
-  ): AutonomousMutationAdapter {
+  ): { adapter: AutonomousMutationAdapter; riskClass: SelfEvolutionRiskClass } {
     if (assignment.autonomyLevel !== "evolve") {
       throw new AutonomousMutationExecutionError(
         403,
@@ -351,11 +367,15 @@ export class AutonomousMutationExecutor {
         failed
       );
     }
+    const effectiveRiskClass = highestRiskClass(
+      riskClass,
+      adapter.minimumRiskClass ?? "low"
+    );
     if (!policy.enabled) {
       const failed = this.recordFailedPolicyMutation(
         assignment,
         input,
-        riskClass,
+        effectiveRiskClass,
         policy,
         "Assignment self-evolution policy is disabled",
         adapter.mutationClass
@@ -370,7 +390,7 @@ export class AutonomousMutationExecutor {
       const failed = this.recordFailedPolicyMutation(
         assignment,
         input,
-        riskClass,
+        effectiveRiskClass,
         policy,
         `Assignment self-evolution policy does not allow ${adapter.mutationClass}`,
         adapter.mutationClass
@@ -381,7 +401,7 @@ export class AutonomousMutationExecutor {
         failed
       );
     }
-    if (riskRank(riskClass) > riskRank(policy.maxRiskClass)) {
+    if (riskRank(effectiveRiskClass) > riskRank(policy.maxRiskClass)) {
       const failed = this.ledger.recordFailed({
         assignmentId: assignment.id,
         runId: input.runId,
@@ -394,7 +414,7 @@ export class AutonomousMutationExecutor {
           adapter.mutationClass
         ),
         rationale: input.rationale,
-        riskClass,
+        riskClass: effectiveRiskClass,
         actor: input.actor,
         errorMessage:
           "Autonomous mutation risk exceeds assignment self-evolution policy",
@@ -405,7 +425,7 @@ export class AutonomousMutationExecutor {
         failed
       );
     }
-    return adapter;
+    return { adapter, riskClass: effectiveRiskClass };
   }
 
   private recordFailedPolicyMutation(
@@ -687,6 +707,68 @@ function createMemoryPolicyRuntimeBoundsAutonomousMutationAdapter(
   };
 }
 
+function createRuntimeConfigLimitsAutonomousMutationAdapter(
+  runtimeConfigLimits: RuntimeConfigLimitsStore
+): AutonomousMutationAdapter {
+  const affectedResources = [{ type: "runtime_config", id: "limits" }];
+  return {
+    target: "configuration",
+    mutationType: "runtime_limits",
+    mutationClass: RUNTIME_CONFIG_LIMITS_MUTATION_CLASS,
+    minimumRiskClass: "medium",
+    affectedResources,
+    rollbackConflictScope: "global",
+    apply(input) {
+      const proposedChange = asJsonObject(
+        input.proposedChange,
+        "proposedChange"
+      );
+      const runtimeLimitsPatch = normalizeRuntimeConfigLimitsPatch(
+        asJsonObject(
+          proposedChange.runtimeLimits,
+          "proposedChange.runtimeLimits"
+        )
+      );
+      const beforeSnapshot = runtimeConfigLimits.snapshot();
+      const before = beforeSnapshot.values;
+      const after = runtimeConfigLimitValues(
+        runtimeConfigLimits.update(
+          runtimeLimitsPatch,
+          input.request.actor ?? "autonomous_mutation"
+        )
+      );
+      return {
+        before: before as unknown as JsonValue,
+        after: after as unknown as JsonValue,
+        rollback: {
+          runtimeLimits: before,
+          runtimeLimitsOverlay: beforeSnapshot,
+        } as unknown as JsonValue,
+        affectedResources,
+        verificationMethod: "runtime_config_limits_update",
+      };
+    },
+    rollback(input) {
+      const rollback = asJsonObject(input.rollback, "rollback");
+      if (!("runtimeLimitsOverlay" in rollback)) {
+        runtimeConfigLimits.restoreLegacyValues(
+          rollback.runtimeLimits,
+          input.actor ?? "autonomous_mutation_rollback"
+        );
+        return { verificationMethod: "runtime_config_limits_rollback" };
+      }
+      const runtimeLimitsRollback = normalizeRuntimeConfigLimitsSnapshot(
+        rollback.runtimeLimitsOverlay
+      );
+      runtimeConfigLimits.restoreSnapshot(
+        runtimeLimitsRollback,
+        input.actor ?? "autonomous_mutation_rollback"
+      );
+      return { verificationMethod: "runtime_config_limits_rollback" };
+    },
+  };
+}
+
 function createRolePermissionPolicyAutonomousMutationAdapter(
   rolePolicy: RolePolicyRuntimeStore
 ): AutonomousMutationAdapter {
@@ -851,6 +933,13 @@ function adapterKey(
 
 function riskRank(riskClass: SelfEvolutionRiskClass): number {
   return RISK_ORDER.indexOf(riskClass);
+}
+
+function highestRiskClass(
+  left: SelfEvolutionRiskClass,
+  right: SelfEvolutionRiskClass
+): SelfEvolutionRiskClass {
+  return riskRank(left) >= riskRank(right) ? left : right;
 }
 
 function asJsonObject(

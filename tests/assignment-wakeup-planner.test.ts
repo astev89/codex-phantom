@@ -4,6 +4,7 @@ import { AppDatabase } from "../src/platform/database.ts";
 import { AutonomousAssignmentService } from "../src/assignments/service.ts";
 import { AutonomousMutationExecutor } from "../src/assignments/autonomous-mutations.ts";
 import { AutonomousMutationLedger } from "../src/assignments/mutation-ledger.ts";
+import { RuntimeConfigLimitsStore } from "../src/config/runtime-limits.ts";
 import { MemoryPolicyStore } from "../src/memory/policy.ts";
 import { loadRolePolicyConfig } from "../src/orchestration/role-config.ts";
 import { RolePolicyRuntimeStore } from "../src/orchestration/role-policy-runtime.ts";
@@ -438,6 +439,67 @@ test("AssignmentWakeupPlanner applies explicitly allowed assignment policy mutat
   assert.equal(mutations[0]?.status, "applied");
   assert.equal(mutations[0]?.mutationType, "assignment_policy");
   assert.equal(mutations[0]?.runId, "coord_wakeup_1");
+});
+
+test("AssignmentWakeupPlanner applies explicitly allowed runtime config limit mutation markers", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-06-16T12:35:00.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const database = new AppDatabase(":memory:");
+  t.after(() => database.close());
+  const config = makeConfig();
+  const assignments = new AutonomousAssignmentService(database);
+  const ledger = new AutonomousMutationLedger(database, assignments);
+  const settings = new OperatorSettingsStore(database);
+  const runtimeConfigLimits = new RuntimeConfigLimitsStore(database, config);
+  const executor = new AutonomousMutationExecutor({
+    assignments,
+    ledger,
+    settings,
+    runtimeConfigLimits,
+  });
+  const runs = new RunGraphStore(database);
+  const { scheduler } = makeScheduler(now);
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, [
+      [
+        "Adjusted runtime limits.",
+        'ASSIGNMENT_MUTATION: {"target":"configuration","mutationType":"runtime_limits","rationale":"Allow a longer next run.","proposedChange":{"runtimeLimits":{"defaultRunTimeoutMs":45000}}}',
+        "ASSIGNMENT_STATUS: continue",
+      ].join("\n"),
+    ]),
+    mutations: executor,
+  });
+  const assignment = assignments.create({
+    objective: "Planner should tune runtime config limits",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "configuration.runtime_limits",
+        ],
+      },
+    },
+  });
+
+  const result = await planner.wakeNow({
+    assignmentId: assignment.assignment.id,
+    actor: "scheduler",
+    reason: "scheduled wakeup",
+  });
+
+  assert.equal(result.status, "scheduled");
+  assert.equal(config.defaultRunTimeoutMs, 45_000);
+  const mutations = ledger.list({ assignmentId: assignment.assignment.id });
+  assert.equal(mutations[0]?.status, "applied");
+  assert.equal(mutations[0]?.mutationType, "runtime_limits");
+  assert.equal(mutations[0]?.runId, "coord_wakeup_1");
+  assert.deepEqual(mutations[0]?.affectedResources, [
+    { type: "runtime_config", id: "limits" },
+  ]);
 });
 
 test("AssignmentWakeupPlanner applies explicitly allowed prompt runtime guidance mutation markers", async (t) => {

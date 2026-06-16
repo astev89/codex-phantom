@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   type AutonomousMutationAdapter,
@@ -9,6 +10,10 @@ import {
 } from "../src/assignments/autonomous-mutations.ts";
 import { AutonomousMutationLedger } from "../src/assignments/mutation-ledger.ts";
 import { AutonomousAssignmentService } from "../src/assignments/service.ts";
+import {
+  RuntimeConfigLimitsStore,
+  runtimeConfigLimitValues,
+} from "../src/config/runtime-limits.ts";
 import { MemoryPolicyStore, memoryPolicyValues } from "../src/memory/policy.ts";
 import { loadRolePolicyConfig } from "../src/orchestration/role-config.ts";
 import {
@@ -23,6 +28,7 @@ import { ToolBundleImportStore } from "../src/tools/bundles.ts";
 import { ToolBundleLifecycleService } from "../src/tools/bundle-lifecycle.ts";
 import { DynamicToolRegistry } from "../src/tools/dynamic-registry.ts";
 import { ToolRegistry } from "../src/tools/registry.ts";
+import type { JsonValue } from "../src/shared/types.ts";
 import { makeConfig } from "./helpers.ts";
 
 function createHarness() {
@@ -138,6 +144,30 @@ function createProjectFileDraftHarness() {
   };
 }
 
+function createRuntimeConfigLimitsHarness() {
+  const database = new AppDatabase(":memory:");
+  const config = makeConfig();
+  const assignments = new AutonomousAssignmentService(database);
+  const ledger = new AutonomousMutationLedger(database, assignments);
+  const settings = new OperatorSettingsStore(database);
+  const runtimeConfigLimits = new RuntimeConfigLimitsStore(database, config);
+  const executor = new AutonomousMutationExecutor({
+    assignments,
+    ledger,
+    settings,
+    runtimeConfigLimits,
+  });
+  return {
+    assignments,
+    config,
+    database,
+    executor,
+    ledger,
+    runtimeConfigLimits,
+    settings,
+  };
+}
+
 function previewApprovedReadOnlyBundle(toolBundles: ToolBundleImportStore) {
   const preview = toolBundles.preview({
     importedBy: "operator",
@@ -232,6 +262,803 @@ test("AutonomousMutationExecutor applies bounded operator settings mutations for
       .map((event) => (event.payload as { actor?: string }).actor),
     ["alice", "alice"]
   );
+
+  database.close();
+});
+
+test("AutonomousMutationExecutor applies explicit runtime config limit mutations", () => {
+  const {
+    assignments,
+    config,
+    database,
+    executor,
+    ledger,
+    runtimeConfigLimits,
+  } = createRuntimeConfigLimitsHarness();
+  const assignment = assignments.create({
+    objective: "Tune runtime execution limits",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        enabled: true,
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "configuration.runtime_limits",
+        ],
+        maxRiskClass: "medium",
+      },
+    },
+  });
+
+  const result = executor.apply({
+    assignmentId: assignment.assignment.id,
+    runId: "coord_runtime_limits",
+    target: "configuration",
+    mutationType: "runtime_limits",
+    rationale: "Give autonomous execution more room for this assignment.",
+    actor: "alice",
+    proposedChange: {
+      runtimeLimits: {
+        defaultRunTimeoutMs: 45_000,
+        defaultMaxToolCalls: 9,
+        openAiRequestTimeoutMs: 25_000,
+        emailPollIntervalMs: 15_000,
+        emailPollBatchSize: 4,
+        emailMaxMessageBytes: 524_288,
+      },
+    },
+  });
+
+  const expectedAfter = {
+    defaultRunTimeoutMs: 45_000,
+    defaultMaxToolCalls: 9,
+    openAiRequestTimeoutMs: 25_000,
+    emailPollIntervalMs: 15_000,
+    emailPollBatchSize: 4,
+    emailMaxMessageBytes: 524_288,
+  };
+  assert.deepEqual(
+    runtimeConfigLimitValues(runtimeConfigLimits.get()),
+    expectedAfter
+  );
+  assert.equal(config.defaultRunTimeoutMs, 45_000);
+  assert.equal(config.defaultMaxToolCalls, 9);
+  assert.equal(config.openAiRequestTimeoutMs, 25_000);
+  assert.equal(config.emailPollIntervalMs, 15_000);
+  assert.equal(config.emailPollBatchSize, 4);
+  assert.equal(config.emailMaxMessageBytes, 524_288);
+  assert.equal(result.mutation.status, "applied");
+  assert.equal(result.mutation.riskClass, "medium");
+  assert.equal(result.mutation.target, "configuration");
+  assert.equal(result.mutation.mutationType, "runtime_limits");
+  assert.deepEqual(result.mutation.authorizingPolicy, {
+    rule: "assignment.policy.selfEvolution",
+    maxRiskClass: "medium",
+    allowedMutationClasses: [
+      "configuration.operator_settings",
+      "configuration.runtime_limits",
+    ],
+    mutationClass: "configuration.runtime_limits",
+    actor: "alice",
+  });
+  assert.deepEqual(result.mutation.before, {
+    defaultRunTimeoutMs: 5_000,
+    defaultMaxToolCalls: 4,
+    openAiRequestTimeoutMs: 60_000,
+    emailPollIntervalMs: 30_000,
+    emailPollBatchSize: 10,
+    emailMaxMessageBytes: 1_048_576,
+  });
+  assert.deepEqual(result.mutation.after, expectedAfter);
+  assert.deepEqual(result.mutation.rollback, {
+    runtimeLimits: {
+      defaultRunTimeoutMs: 5_000,
+      defaultMaxToolCalls: 4,
+      openAiRequestTimeoutMs: 60_000,
+      emailPollIntervalMs: 30_000,
+      emailPollBatchSize: 10,
+      emailMaxMessageBytes: 1_048_576,
+    },
+    runtimeLimitsOverlay: {
+      hasOverlay: false,
+      overlay: {},
+      values: {
+        defaultRunTimeoutMs: 5_000,
+        defaultMaxToolCalls: 4,
+        openAiRequestTimeoutMs: 60_000,
+        emailPollIntervalMs: 30_000,
+        emailPollBatchSize: 10,
+        emailMaxMessageBytes: 1_048_576,
+      },
+    },
+  });
+  assert.deepEqual(result.mutation.affectedResources, [
+    { type: "runtime_config", id: "limits" },
+  ]);
+  assert.deepEqual(
+    ledger.list({ assignmentId: assignment.assignment.id }).map((mutation) => ({
+      id: mutation.id,
+      status: mutation.status,
+    })),
+    [{ id: result.mutation.id, status: "applied" }]
+  );
+
+  database.close();
+});
+
+test("RuntimeConfigLimitsStore preserves env-derived startup limits until an overlay is applied", () => {
+  const database = new AppDatabase(":memory:");
+  const config = makeConfig(".", {
+    defaultRunTimeoutMs: 500_000,
+    defaultMaxToolCalls: 75,
+    openAiRequestTimeoutMs: 450_000,
+    emailPollBatchSize: 250,
+  });
+  const runtimeConfigLimits = new RuntimeConfigLimitsStore(database, config);
+
+  assert.deepEqual(runtimeConfigLimitValues(runtimeConfigLimits.get()), {
+    defaultRunTimeoutMs: 500_000,
+    defaultMaxToolCalls: 75,
+    openAiRequestTimeoutMs: 450_000,
+    emailPollIntervalMs: 30_000,
+    emailPollBatchSize: 250,
+    emailMaxMessageBytes: 1_048_576,
+  });
+  assert.equal(config.defaultRunTimeoutMs, 500_000);
+  assert.equal(config.defaultMaxToolCalls, 75);
+  assert.equal(config.openAiRequestTimeoutMs, 450_000);
+  assert.equal(config.emailPollBatchSize, 250);
+  assert.equal(
+    database.get<{ id: string }>(
+      "SELECT id FROM runtime_config_limits WHERE id = ?",
+      "runtime"
+    ),
+    null
+  );
+
+  database.close();
+});
+
+test("RuntimeConfigLimitsStore persists only explicit overlay fields", () => {
+  const database = new AppDatabase(":memory:");
+  const config = makeConfig(".", {
+    defaultRunTimeoutMs: 500_000,
+    defaultMaxToolCalls: 75,
+    openAiRequestTimeoutMs: 450_000,
+    emailPollBatchSize: 250,
+  });
+  const runtimeConfigLimits = new RuntimeConfigLimitsStore(database, config);
+
+  runtimeConfigLimits.update({ defaultRunTimeoutMs: 45_000 }, "alice");
+
+  assert.deepEqual(runtimeConfigLimitValues(runtimeConfigLimits.get()), {
+    defaultRunTimeoutMs: 45_000,
+    defaultMaxToolCalls: 75,
+    openAiRequestTimeoutMs: 450_000,
+    emailPollIntervalMs: 30_000,
+    emailPollBatchSize: 250,
+    emailMaxMessageBytes: 1_048_576,
+  });
+  assert.deepEqual(
+    {
+      ...database.get<{
+        default_run_timeout_ms: number | null;
+        default_max_tool_calls: number | null;
+        openai_request_timeout_ms: number | null;
+        email_poll_batch_size: number | null;
+      }>(
+        `
+          SELECT
+            default_run_timeout_ms,
+            default_max_tool_calls,
+            openai_request_timeout_ms,
+            email_poll_batch_size
+          FROM runtime_config_limits
+          WHERE id = ?
+        `,
+        "runtime"
+      ),
+    },
+    {
+      default_run_timeout_ms: 45_000,
+      default_max_tool_calls: null,
+      openai_request_timeout_ms: null,
+      email_poll_batch_size: null,
+    }
+  );
+
+  const restartConfig = makeConfig(".", {
+    defaultRunTimeoutMs: 250_000,
+    defaultMaxToolCalls: 80,
+    openAiRequestTimeoutMs: 120_000,
+    emailPollBatchSize: 88,
+  });
+  const restartRuntimeConfigLimits = new RuntimeConfigLimitsStore(
+    database,
+    restartConfig
+  );
+
+  assert.deepEqual(runtimeConfigLimitValues(restartRuntimeConfigLimits.get()), {
+    defaultRunTimeoutMs: 45_000,
+    defaultMaxToolCalls: 80,
+    openAiRequestTimeoutMs: 120_000,
+    emailPollIntervalMs: 30_000,
+    emailPollBatchSize: 88,
+    emailMaxMessageBytes: 1_048_576,
+  });
+
+  database.close();
+});
+
+test("RuntimeConfigLimitsStore drops ambiguous legacy full-row overlays", () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "codex-phantom-runtime-limits-"));
+  const databasePath = join(dataDir, "phantom.sqlite");
+  const legacyDatabase = new AppDatabase(databasePath);
+  legacyDatabase.exec(`
+    DROP TABLE runtime_config_limits;
+    CREATE TABLE runtime_config_limits (
+      id TEXT PRIMARY KEY,
+      default_run_timeout_ms INTEGER NOT NULL,
+      default_max_tool_calls INTEGER NOT NULL,
+      openai_request_timeout_ms INTEGER NOT NULL,
+      email_poll_interval_ms INTEGER NOT NULL,
+      email_poll_batch_size INTEGER NOT NULL,
+      email_max_message_bytes INTEGER NOT NULL,
+      updated_by TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    INSERT INTO runtime_config_limits (
+      id, default_run_timeout_ms, default_max_tool_calls,
+      openai_request_timeout_ms, email_poll_interval_ms,
+      email_poll_batch_size, email_max_message_bytes,
+      updated_by, created_at, updated_at
+    ) VALUES (
+      'runtime', 45000, 75, 450000, 30000, 250, 1048576,
+      'legacy', '2026-06-16T00:00:00.000Z', '2026-06-16T00:00:00.000Z'
+    );
+  `);
+  legacyDatabase.close();
+
+  const database = new AppDatabase(databasePath);
+  const config = makeConfig(".", {
+    defaultRunTimeoutMs: 500_000,
+    defaultMaxToolCalls: 75,
+    openAiRequestTimeoutMs: 450_000,
+    emailPollBatchSize: 250,
+  });
+  const runtimeConfigLimits = new RuntimeConfigLimitsStore(database, config);
+
+  assert.deepEqual(runtimeConfigLimitValues(runtimeConfigLimits.get()), {
+    defaultRunTimeoutMs: 500_000,
+    defaultMaxToolCalls: 75,
+    openAiRequestTimeoutMs: 450_000,
+    emailPollIntervalMs: 30_000,
+    emailPollBatchSize: 250,
+    emailMaxMessageBytes: 1_048_576,
+  });
+  assert.equal(
+    database.get<{ id: string }>(
+      "SELECT id FROM runtime_config_limits WHERE id = ?",
+      "runtime"
+    ),
+    null
+  );
+
+  database.close();
+});
+
+test("AutonomousMutationExecutor keeps runtime config limits explicitly opt-in", () => {
+  const {
+    assignments,
+    config,
+    database,
+    executor,
+    ledger,
+    runtimeConfigLimits,
+  } = createRuntimeConfigLimitsHarness();
+  const before = runtimeConfigLimitValues(runtimeConfigLimits.get());
+  const assignment = assignments.create({
+    objective: "Default policy should not mutate runtime limits",
+    autonomyLevel: "evolve",
+  });
+
+  assert.throws(
+    () =>
+      executor.apply({
+        assignmentId: assignment.assignment.id,
+        target: "configuration",
+        mutationType: "runtime_limits",
+        rationale: "Try runtime limit mutation without explicit opt-in.",
+        proposedChange: {
+          runtimeLimits: { defaultRunTimeoutMs: 45_000 },
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 403);
+      assert.equal(error.mutation?.status, "failed");
+      assert.match(
+        error.message,
+        /does not allow configuration\.runtime_limits/
+      );
+      return true;
+    }
+  );
+
+  assert.deepEqual(runtimeConfigLimitValues(runtimeConfigLimits.get()), before);
+  assert.equal(config.defaultRunTimeoutMs, before.defaultRunTimeoutMs);
+  assert.deepEqual(
+    ledger.list({ assignmentId: assignment.assignment.id }).map((mutation) => ({
+      status: mutation.status,
+      mutationType: mutation.mutationType,
+      authorizingPolicy: mutation.authorizingPolicy,
+      errorMessage: mutation.errorMessage,
+    })),
+    [
+      {
+        status: "failed",
+        mutationType: "runtime_limits",
+        authorizingPolicy: {
+          rule: "assignment.policy.selfEvolution",
+          maxRiskClass: "medium",
+          allowedMutationClasses: ["configuration.operator_settings"],
+          mutationClass: "configuration.runtime_limits",
+        },
+        errorMessage:
+          "Assignment self-evolution policy does not allow configuration.runtime_limits",
+      },
+    ]
+  );
+
+  for (const autonomyLevel of ["execute", "draft", "observe"] as const) {
+    const blocked = assignments.create({
+      objective: `Blocked ${autonomyLevel} runtime limits`,
+      autonomyLevel,
+      policy: {
+        selfEvolution: {
+          enabled: true,
+          allowedMutationClasses: [
+            "configuration.operator_settings",
+            "configuration.runtime_limits",
+          ],
+          maxRiskClass: "medium",
+        },
+      },
+    });
+
+    assert.throws(
+      () =>
+        executor.apply({
+          assignmentId: blocked.assignment.id,
+          target: "configuration",
+          mutationType: "runtime_limits",
+          rationale: "Non-evolve assignments cannot mutate runtime limits.",
+          proposedChange: {
+            runtimeLimits: { defaultRunTimeoutMs: 45_000 },
+          },
+        }),
+      (error) => {
+        assert.ok(error instanceof AutonomousMutationExecutionError);
+        assert.equal(error.status, 403);
+        assert.match(error.message, /autonomyLevel must be evolve/);
+        return true;
+      }
+    );
+    assert.deepEqual(ledger.list({ assignmentId: blocked.assignment.id }), []);
+  }
+
+  assert.deepEqual(runtimeConfigLimitValues(runtimeConfigLimits.get()), before);
+  database.close();
+});
+
+test("AutonomousMutationExecutor classifies runtime config limit mutations as medium risk", () => {
+  const {
+    assignments,
+    config,
+    database,
+    executor,
+    ledger,
+    runtimeConfigLimits,
+  } = createRuntimeConfigLimitsHarness();
+  const before = runtimeConfigLimitValues(runtimeConfigLimits.get());
+  const assignment = assignments.create({
+    objective: "Low-risk policy should not mutate runtime limits",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        enabled: true,
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "configuration.runtime_limits",
+        ],
+        maxRiskClass: "low",
+      },
+    },
+  });
+
+  assert.throws(
+    () =>
+      executor.apply({
+        assignmentId: assignment.assignment.id,
+        target: "configuration",
+        mutationType: "runtime_limits",
+        rationale: "Try to omit the runtime-limits risk class.",
+        proposedChange: {
+          runtimeLimits: { defaultRunTimeoutMs: 45_000 },
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 403);
+      assert.equal(error.mutation?.status, "failed");
+      assert.equal(error.mutation?.riskClass, "medium");
+      assert.match(
+        error.message,
+        /risk exceeds assignment self-evolution policy/
+      );
+      return true;
+    }
+  );
+
+  assert.deepEqual(runtimeConfigLimitValues(runtimeConfigLimits.get()), before);
+  assert.equal(config.defaultRunTimeoutMs, before.defaultRunTimeoutMs);
+  assert.deepEqual(
+    ledger.list({ assignmentId: assignment.assignment.id }).map((mutation) => ({
+      status: mutation.status,
+      mutationType: mutation.mutationType,
+      riskClass: mutation.riskClass,
+      errorMessage: mutation.errorMessage,
+    })),
+    [
+      {
+        status: "failed",
+        mutationType: "runtime_limits",
+        riskClass: "medium",
+        errorMessage:
+          "Autonomous mutation risk exceeds assignment self-evolution policy",
+      },
+    ]
+  );
+
+  database.close();
+});
+
+test("AutonomousMutationExecutor rejects malformed runtime config limits without changing config", () => {
+  const {
+    assignments,
+    config,
+    database,
+    executor,
+    ledger,
+    runtimeConfigLimits,
+  } = createRuntimeConfigLimitsHarness();
+  const before = runtimeConfigLimitValues(runtimeConfigLimits.get());
+  const assignment = assignments.create({
+    objective: "Reject unsafe runtime limit changes",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        enabled: true,
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "configuration.runtime_limits",
+        ],
+        maxRiskClass: "medium",
+      },
+    },
+  });
+
+  const invalidChanges: Array<{ proposedChange: JsonValue; message: RegExp }> =
+    [
+      {
+        proposedChange: {},
+        message: /proposedChange\.runtimeLimits must be a JSON object/,
+      },
+      {
+        proposedChange: { runtimeLimits: "fast" },
+        message: /proposedChange\.runtimeLimits must be a JSON object/,
+      },
+      {
+        proposedChange: { runtimeLimits: { model: "gpt-5.1" } },
+        message: /runtimeLimits\.model is not supported/,
+      },
+      {
+        proposedChange: { runtimeLimits: { defaultMaxToolCalls: 2.5 } },
+        message: /runtimeLimits\.defaultMaxToolCalls must be an integer/,
+      },
+      {
+        proposedChange: { runtimeLimits: { defaultRunTimeoutMs: 999 } },
+        message:
+          /runtimeLimits\.defaultRunTimeoutMs must be greater than or equal to 1000/,
+      },
+      {
+        proposedChange: { runtimeLimits: { emailPollBatchSize: 101 } },
+        message:
+          /runtimeLimits\.emailPollBatchSize must be less than or equal to 100/,
+      },
+    ];
+
+  for (const { proposedChange, message } of invalidChanges) {
+    assert.throws(
+      () =>
+        executor.apply({
+          assignmentId: assignment.assignment.id,
+          target: "configuration",
+          mutationType: "runtime_limits",
+          rationale: "Reject malformed runtime limits.",
+          proposedChange,
+        }),
+      (error) => {
+        assert.ok(error instanceof AutonomousMutationExecutionError);
+        assert.equal(error.status, 400);
+        assert.equal(error.mutation?.status, "failed");
+        assert.match(error.message, message);
+        return true;
+      }
+    );
+    assert.deepEqual(
+      runtimeConfigLimitValues(runtimeConfigLimits.get()),
+      before
+    );
+    assert.equal(config.defaultRunTimeoutMs, before.defaultRunTimeoutMs);
+  }
+
+  assert.deepEqual(
+    ledger.list({ assignmentId: assignment.assignment.id }).map((mutation) => ({
+      status: mutation.status,
+      mutationType: mutation.mutationType,
+      target: mutation.target,
+    })),
+    invalidChanges.map(() => ({
+      status: "failed",
+      mutationType: "runtime_limits",
+      target: "configuration",
+    }))
+  );
+
+  database.close();
+});
+
+test("AutonomousMutationExecutor rolls back runtime config limit mutations", () => {
+  const { assignments, config, database, executor, runtimeConfigLimits } =
+    createRuntimeConfigLimitsHarness();
+  const before = runtimeConfigLimitValues(runtimeConfigLimits.get());
+  const assignment = assignments.create({
+    objective: "Rollback runtime config limits",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "configuration.runtime_limits",
+        ],
+      },
+    },
+  });
+
+  const applied = executor.apply({
+    assignmentId: assignment.assignment.id,
+    target: "configuration",
+    mutationType: "runtime_limits",
+    rationale: "Temporarily allow longer runs.",
+    actor: "alice",
+    proposedChange: {
+      runtimeLimits: {
+        defaultRunTimeoutMs: 90_000,
+        defaultMaxToolCalls: 12,
+      },
+    },
+  });
+
+  assert.equal(config.defaultRunTimeoutMs, 90_000);
+  assert.equal(config.defaultMaxToolCalls, 12);
+
+  const rolledBack = executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: applied.mutation.id,
+    actor: "bob",
+  });
+
+  assert.deepEqual(runtimeConfigLimitValues(runtimeConfigLimits.get()), before);
+  assert.equal(config.defaultRunTimeoutMs, before.defaultRunTimeoutMs);
+  assert.equal(config.defaultMaxToolCalls, before.defaultMaxToolCalls);
+  assert.equal(
+    database.get<{ id: string }>(
+      "SELECT id FROM runtime_config_limits WHERE id = ?",
+      "runtime"
+    ),
+    null
+  );
+  assert.equal(rolledBack.mutation.status, "rolled_back");
+  assert.deepEqual(rolledBack.mutation.verification, {
+    attempted: true,
+    result: "passed",
+    method: "runtime_config_limits_rollback",
+  });
+  assert.deepEqual(
+    assignments
+      .timeline(assignment.assignment.id)
+      .events.map((event) => event.type),
+    ["created", "mutation_planned", "mutation_applied", "mutation_rolled_back"]
+  );
+
+  database.close();
+});
+
+test("AutonomousMutationExecutor rolls back legacy runtime config limit evidence", () => {
+  const database = new AppDatabase(":memory:");
+  const config = makeConfig(".", {
+    defaultRunTimeoutMs: 5_000,
+    defaultMaxToolCalls: 4,
+    openAiRequestTimeoutMs: 60_000,
+    emailPollBatchSize: 10,
+  });
+  const assignments = new AutonomousAssignmentService(database);
+  const ledger = new AutonomousMutationLedger(database, assignments);
+  const settings = new OperatorSettingsStore(database);
+  const runtimeConfigLimits = new RuntimeConfigLimitsStore(database, config);
+  const executor = new AutonomousMutationExecutor({
+    assignments,
+    ledger,
+    settings,
+    runtimeConfigLimits,
+  });
+  const legacyBefore = {
+    defaultRunTimeoutMs: 500_000,
+    defaultMaxToolCalls: 75,
+    openAiRequestTimeoutMs: 450_000,
+    emailPollIntervalMs: 30_000,
+    emailPollBatchSize: 250,
+    emailMaxMessageBytes: 1_048_576,
+  };
+  const assignment = assignments.create({
+    objective: "Rollback legacy runtime config limits",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "configuration.runtime_limits",
+        ],
+      },
+    },
+  });
+
+  const applied = executor.apply({
+    assignmentId: assignment.assignment.id,
+    target: "configuration",
+    mutationType: "runtime_limits",
+    rationale: "Temporarily allow longer runs.",
+    proposedChange: {
+      runtimeLimits: { defaultRunTimeoutMs: 90_000 },
+    },
+  });
+  database.run(
+    "UPDATE assignment_mutations SET rollback_json = ? WHERE id = ?",
+    JSON.stringify({ runtimeLimits: legacyBefore }),
+    applied.mutation.id
+  );
+
+  executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: applied.mutation.id,
+  });
+
+  assert.deepEqual(
+    runtimeConfigLimitValues(runtimeConfigLimits.get()),
+    legacyBefore
+  );
+  assert.equal(config.defaultRunTimeoutMs, legacyBefore.defaultRunTimeoutMs);
+  assert.equal(config.defaultMaxToolCalls, legacyBefore.defaultMaxToolCalls);
+  assert.equal(
+    database
+      .get<{
+        updated_by: string;
+      }>("SELECT updated_by FROM runtime_config_limits WHERE id = ?", "runtime")
+      ?.updated_by.startsWith("legacy_runtime_config_limits_rollback"),
+    true
+  );
+
+  const secondApplied = executor.apply({
+    assignmentId: assignment.assignment.id,
+    target: "configuration",
+    mutationType: "runtime_limits",
+    rationale: "Apply a normal mutation after legacy rollback.",
+    proposedChange: {
+      runtimeLimits: { defaultRunTimeoutMs: 45_000 },
+    },
+  });
+  executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: secondApplied.mutation.id,
+  });
+
+  assert.deepEqual(
+    runtimeConfigLimitValues(runtimeConfigLimits.get()),
+    legacyBefore
+  );
+  assert.equal(config.defaultRunTimeoutMs, legacyBefore.defaultRunTimeoutMs);
+  assert.equal(config.defaultMaxToolCalls, legacyBefore.defaultMaxToolCalls);
+
+  runtimeConfigLimits.update({ defaultRunTimeoutMs: 45_000 }, "alice");
+
+  assert.deepEqual(runtimeConfigLimitValues(runtimeConfigLimits.get()), {
+    defaultRunTimeoutMs: 45_000,
+    defaultMaxToolCalls: 4,
+    openAiRequestTimeoutMs: 60_000,
+    emailPollIntervalMs: 30_000,
+    emailPollBatchSize: 10,
+    emailMaxMessageBytes: 1_048_576,
+  });
+
+  database.close();
+});
+
+test("AutonomousMutationExecutor blocks stale runtime config limit rollback across assignments", () => {
+  const { assignments, config, database, executor } =
+    createRuntimeConfigLimitsHarness();
+  const first = assignments.create({
+    objective: "First runtime limits change",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "configuration.runtime_limits",
+        ],
+      },
+    },
+  });
+  const second = assignments.create({
+    objective: "Second runtime limits change",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "configuration.runtime_limits",
+        ],
+      },
+    },
+  });
+
+  const firstMutation = executor.apply({
+    assignmentId: first.assignment.id,
+    target: "configuration",
+    mutationType: "runtime_limits",
+    rationale: "First runtime timeout change.",
+    proposedChange: {
+      runtimeLimits: { defaultRunTimeoutMs: 45_000 },
+    },
+  });
+  executor.apply({
+    assignmentId: second.assignment.id,
+    target: "configuration",
+    mutationType: "runtime_limits",
+    rationale: "Newer runtime timeout change.",
+    proposedChange: {
+      runtimeLimits: { defaultRunTimeoutMs: 75_000 },
+    },
+  });
+
+  assert.throws(
+    () =>
+      executor.rollback({
+        assignmentId: first.assignment.id,
+        mutationId: firstMutation.mutation.id,
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 409);
+      assert.match(
+        error.message,
+        /newer applied configuration\.runtime_limits mutation exists/
+      );
+      return true;
+    }
+  );
+  assert.equal(config.defaultRunTimeoutMs, 75_000);
 
   database.close();
 });
@@ -2595,7 +3422,7 @@ test("AutonomousMutationExecutor audits unsupported and malformed autonomous mut
         mutationType: "tool_bundle_enable",
         status: "failed",
         errorMessage:
-          "Only configuration.operator_settings, configuration.assignment_policy, tool.bundle_enable, prompt.runtime_guidance, memory_policy.runtime_bounds, role.permission_policy, and project_file.draft autonomous mutations are supported in this slice",
+          "Only configuration.operator_settings, configuration.assignment_policy, configuration.runtime_limits, tool.bundle_enable, prompt.runtime_guidance, memory_policy.runtime_bounds, role.permission_policy, and project_file.draft autonomous mutations are supported in this slice",
       },
     ]
   );

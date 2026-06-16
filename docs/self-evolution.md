@@ -2,7 +2,7 @@
 
 Governed self-evolution lets Codex Phantom change its own behavior under explicit policy, audit, rollback, and operator-interruption controls. [ADR-0003](adr/0003-delegate-autonomous-assignments-and-self-evolution.md) extends the target model beyond proposal-only HITL: autonomous assignments may use delegated autonomous self-evolution when assignment policy grants `evolve` or higher authority.
 
-The current implementation is still narrower than that target. Today, Codex Phantom can create auditable proposals, apply approved proposal-based operator-settings mutations through operator-authenticated APIs, and apply assignment-authorized autonomous operator-settings, assignment-policy, approved read-only tool-bundle enable, prompt runtime-guidance overlay, memory policy runtime-bounds overlay, role permission-policy overlay, and project-file draft-record mutations for `evolve` assignments. Filesystem writes, broader prompt rewriting, broader memory mutation, and broader configuration mutation classes remain future work.
+The current implementation is still narrower than that target. Today, Codex Phantom can create auditable proposals, apply approved proposal-based operator-settings mutations through operator-authenticated APIs, and apply assignment-authorized autonomous operator-settings, assignment-policy, runtime config-limits overlay, approved read-only tool-bundle enable, prompt runtime-guidance overlay, memory policy runtime-bounds overlay, role permission-policy overlay, and project-file draft-record mutations for `evolve` assignments. Filesystem writes, broader prompt rewriting, broader memory mutation, and broader configuration beyond runtime limits remain future work.
 
 ## Proposal Scope
 
@@ -80,7 +80,7 @@ curl -X POST http://localhost:3210/admin/self-evolution/proposals/sep_123/rollba
   -d '{"rolledBackBy":"operator"}'
 ```
 
-Current proposal apply support is intentionally narrow. Only `configuration` proposals with `proposedChange.operatorSettings` can apply. The mutation record captures `before`, `after`, and rollback metadata before the operator settings are changed. Prompt, memory policy, tool, role, project-file, and broader runtime configuration proposals remain auditable proposals until safe proposal mutation classes are added for them. The assignment-authorized prompt runtime-guidance, memory policy runtime-bounds, role permission-policy, and project-file draft paths described below are separate autonomous mutation paths and do not make proposals directly apply-capable.
+Current proposal apply support is intentionally narrow. Only `configuration` proposals with `proposedChange.operatorSettings` can apply. The mutation record captures `before`, `after`, and rollback metadata before the operator settings are changed. Prompt, memory policy, tool, role, project-file, and broader runtime configuration proposals remain auditable proposals until safe proposal mutation classes are added for them. The assignment-authorized runtime config-limits, prompt runtime-guidance, memory policy runtime-bounds, role permission-policy, and project-file draft paths described below are separate autonomous mutation paths and do not make proposals directly apply-capable.
 
 Apply and rollback execution lives behind the self-evolution mutation module. HTTP routes validate operator requests and serialize responses; target adapters own mutation validation, before/after/rollback payload construction, failure audit, and rollback effects.
 
@@ -132,6 +132,28 @@ curl -X POST http://localhost:3210/admin/assignments/asgn_123/mutations/apply \
 ```
 
 `configuration.assignment_policy` is not in the default assignment self-evolution allow-list. Operators must explicitly include it in `assignment.policy.selfEvolution.allowedMutationClasses`. Autonomous assignment-policy mutations may tune execution bounds and notification cadence, but they cannot change `assignmentPolicy.selfEvolution`; mutation authority cannot be widened through this adapter.
+
+Apply an explicitly allowed runtime config-limits mutation:
+
+```bash
+curl -X POST http://localhost:3210/admin/assignments/asgn_123/mutations/apply \
+  -H "Authorization: Bearer $OPERATOR_BEARER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "target": "configuration",
+    "mutationType": "runtime_limits",
+    "riskClass": "medium",
+    "rationale": "Allow a longer autonomous run budget for this assignment.",
+    "proposedChange": {
+      "runtimeLimits": {
+        "defaultRunTimeoutMs": 45000,
+        "defaultMaxToolCalls": 9
+      }
+    }
+  }'
+```
+
+`configuration.runtime_limits` is not in the default assignment self-evolution allow-list. Operators must explicitly include it in `assignment.policy.selfEvolution.allowedMutationClasses`. The adapter is classified as at least medium risk by the executor even if a caller omits or understates `riskClass`, so assignments with `maxRiskClass: "low"` cannot apply it. It updates only a durable sparse numeric runtime config overlay for fields that existing runtime components read from the shared config object during normal execution: `defaultRunTimeoutMs` (`1000..300000`), `defaultMaxToolCalls` (`1..50`), `openAiRequestTimeoutMs` (`1000..300000`), `emailPollIntervalMs` (`1000..3600000`), `emailPollBatchSize` (`1..100`), and `emailMaxMessageBytes` (`1024..10485760`). Unchanged fields continue to resolve from startup/env config rather than being persisted as sibling overlay values. It records before/after/rollback evidence in the autonomous mutation ledger, restores the prior overlay state on rollback including deleting the overlay row when there was no prior overlay, preserves env-derived startup values until an overlay is explicitly applied, and blocks stale rollback across assignments because the overlay is shared runtime configuration. It does not edit secrets, auth tokens, model names, base URLs, file paths, channel enablement, prompts, memory entries, tools, roles, project files, source files, install state, MCP write capability, or runtime fields captured by already-created transports/services such as embedding timeout, Qdrant timeout, SMTP send timeout, or IMAP attachment size.
 
 Apply an explicitly allowed tool-bundle enable mutation:
 
@@ -249,17 +271,17 @@ curl -X POST http://localhost:3210/admin/assignments/asgn_123/mutations/asgnmut_
   -d '{"actor":"operator"}'
 ```
 
-The default assignment self-evolution policy allows only low- or medium-risk `configuration.operator_settings` mutations, and only assignments at `evolve` authority may use it. Unsupported classes, disallowed classes, malformed settings, malformed assignment-policy patches, unsafe tool-bundle enable attempts, malformed prompt runtime-guidance attempts, malformed memory policy runtime-bounds attempts, malformed or widening role permission-policy attempts, and unsafe project-file draft attempts are rejected without changing state and are audited as failed autonomous mutation evidence when policy permits the attempt to reach the mutation executor.
+The default assignment self-evolution policy allows only low- or medium-risk `configuration.operator_settings` mutations, and only assignments at `evolve` authority may use it. Unsupported classes, disallowed classes, malformed settings, malformed assignment-policy patches, malformed runtime config-limits attempts, unsafe tool-bundle enable attempts, malformed prompt runtime-guidance attempts, malformed memory policy runtime-bounds attempts, malformed or widening role permission-policy attempts, and unsafe project-file draft attempts are rejected without changing state and are audited as failed autonomous mutation evidence when policy permits the attempt to reach the mutation executor.
 
 ## Planner-Driven Mutation Markers
 
 Mutation-authorized assignment wakeups may request one bounded autonomous mutation by returning a single-line marker. The wakeup planner only advertises this marker to assignments with `autonomyLevel: "evolve"`, enabled self-evolution policy, and at least one allowed mutation class.
 
 ```text
-ASSIGNMENT_MUTATION: {"target":"memory_policy","mutationType":"runtime_bounds","rationale":"Reduce memory context for this work.","proposedChange":{"memoryPolicy":{"memoryPerCategoryLimit":1,"memorySummaryLimit":1}}}
+ASSIGNMENT_MUTATION: {"target":"configuration","mutationType":"runtime_limits","riskClass":"medium","rationale":"Allow a longer next run.","proposedChange":{"runtimeLimits":{"defaultRunTimeoutMs":45000}}}
 ```
 
-Planner-driven mutation still uses the assignment-authorized autonomous executor. The marker is bound to the current assignment and coordinator run id, uses `actor: "planner"`, and must pass the same `evolve` authority, self-evolution allow-list, risk, validation, ledger, and rollback evidence checks as the admin/internal apply route. This includes explicitly allow-listed `prompt.runtime_guidance`, `memory_policy.runtime_bounds`, `role.permission_policy`, and `project_file.draft` markers. Failed executor attempts do not fail the wakeup; the autonomous mutation ledger owns the failure evidence.
+Planner-driven mutation still uses the assignment-authorized autonomous executor. The marker is bound to the current assignment and coordinator run id, uses `actor: "planner"`, and must pass the same `evolve` authority, self-evolution allow-list, risk, validation, ledger, and rollback evidence checks as the admin/internal apply route. This includes explicitly allow-listed `configuration.runtime_limits`, `prompt.runtime_guidance`, `memory_policy.runtime_bounds`, `role.permission_policy`, and `project_file.draft` markers. Failed executor attempts do not fail the wakeup; the autonomous mutation ledger owns the failure evidence.
 
 This is not MCP write capability. MCP assignment mutation tooling remains read-only, and planner markers only cover mutation classes that already have built-in adapters and explicit assignment policy.
 
