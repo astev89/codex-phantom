@@ -7,6 +7,7 @@ import {
 } from "../src/assignments/autonomous-mutations.ts";
 import { AutonomousMutationLedger } from "../src/assignments/mutation-ledger.ts";
 import { AutonomousAssignmentService } from "../src/assignments/service.ts";
+import { MemoryPolicyStore, memoryPolicyValues } from "../src/memory/policy.ts";
 import { AppDatabase } from "../src/platform/database.ts";
 import { PromptRuntimeGuidanceStore } from "../src/prompts/runtime-guidance.ts";
 import { OperatorSettingsStore } from "../src/server/settings.ts";
@@ -14,6 +15,7 @@ import { ToolBundleImportStore } from "../src/tools/bundles.ts";
 import { ToolBundleLifecycleService } from "../src/tools/bundle-lifecycle.ts";
 import { DynamicToolRegistry } from "../src/tools/dynamic-registry.ts";
 import { ToolRegistry } from "../src/tools/registry.ts";
+import { makeConfig } from "./helpers.ts";
 
 function createHarness() {
   const database = new AppDatabase(":memory:");
@@ -71,6 +73,21 @@ function createPromptGuidanceHarness() {
     promptGuidance,
   });
   return { assignments, database, executor, ledger, promptGuidance, settings };
+}
+
+function createMemoryPolicyHarness() {
+  const database = new AppDatabase(":memory:");
+  const assignments = new AutonomousAssignmentService(database);
+  const ledger = new AutonomousMutationLedger(database, assignments);
+  const settings = new OperatorSettingsStore(database);
+  const memoryPolicy = new MemoryPolicyStore(database, makeConfig());
+  const executor = new AutonomousMutationExecutor({
+    assignments,
+    ledger,
+    settings,
+    memoryPolicy,
+  });
+  return { assignments, database, executor, ledger, memoryPolicy, settings };
 }
 
 function previewApprovedReadOnlyBundle(toolBundles: ToolBundleImportStore) {
@@ -689,6 +706,314 @@ test("AutonomousMutationExecutor rolls back first prompt runtime guidance mutati
   });
 
   assert.equal(promptGuidance.get().text, "");
+  database.close();
+});
+
+test("AutonomousMutationExecutor applies explicit memory policy runtime bounds mutations", () => {
+  const { assignments, database, executor, ledger, memoryPolicy } =
+    createMemoryPolicyHarness();
+  const before = memoryPolicyValues(memoryPolicy.get());
+  const assignment = assignments.create({
+    objective: "Tune memory runtime bounds",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "memory_policy.runtime_bounds",
+        ],
+      },
+    },
+  });
+
+  const applied = executor.apply({
+    assignmentId: assignment.assignment.id,
+    runId: "coord_memory_policy",
+    target: "memory_policy",
+    mutationType: "runtime_bounds",
+    rationale: "Reduce memory retrieval context for autonomous work.",
+    actor: "alice",
+    proposedChange: {
+      memoryPolicy: {
+        memoryPerCategoryLimit: 2,
+        memorySummaryLimit: 1,
+        semanticPruneLimit: 10,
+      },
+    },
+  });
+
+  assert.equal(memoryPolicy.get().memoryPerCategoryLimit, 2);
+  assert.equal(memoryPolicy.get().memorySummaryLimit, 1);
+  assert.equal(memoryPolicy.get().semanticPruneLimit, 10);
+  assert.equal(applied.mutation.status, "applied");
+  assert.equal(applied.mutation.target, "memory_policy");
+  assert.equal(applied.mutation.mutationType, "runtime_bounds");
+  assert.deepEqual(applied.mutation.authorizingPolicy, {
+    rule: "assignment.policy.selfEvolution",
+    maxRiskClass: "medium",
+    allowedMutationClasses: [
+      "configuration.operator_settings",
+      "memory_policy.runtime_bounds",
+    ],
+    mutationClass: "memory_policy.runtime_bounds",
+    actor: "alice",
+  });
+  assert.deepEqual(applied.mutation.before, before);
+  assert.deepEqual(applied.mutation.after, {
+    ...before,
+    memoryPerCategoryLimit: 2,
+    memorySummaryLimit: 1,
+    semanticPruneLimit: 10,
+  });
+  assert.deepEqual(applied.mutation.rollback, {
+    memoryPolicy: before,
+  });
+  assert.deepEqual(applied.mutation.affectedResources, [
+    { type: "memory_policy", id: "runtime_bounds" },
+  ]);
+  assert.deepEqual(applied.mutation.verification, {
+    attempted: true,
+    result: "passed",
+    method: "memory_policy_runtime_bounds_update",
+  });
+  assert.deepEqual(
+    ledger.list({ assignmentId: assignment.assignment.id }).map((mutation) => ({
+      id: mutation.id,
+      status: mutation.status,
+    })),
+    [{ id: applied.mutation.id, status: "applied" }]
+  );
+
+  const rolledBack = executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: applied.mutation.id,
+    actor: "bob",
+  });
+
+  assert.deepEqual(memoryPolicyValues(memoryPolicy.get()), before);
+  assert.equal(rolledBack.mutation.status, "rolled_back");
+  assert.deepEqual(rolledBack.mutation.verification, {
+    attempted: true,
+    result: "passed",
+    method: "memory_policy_runtime_bounds_rollback",
+  });
+  assert.deepEqual(
+    assignments
+      .timeline(assignment.assignment.id)
+      .events.map((event) => event.type),
+    ["created", "mutation_planned", "mutation_applied", "mutation_rolled_back"]
+  );
+
+  database.close();
+});
+
+test("AutonomousMutationExecutor keeps memory policy mutations explicitly opt-in", () => {
+  const { assignments, database, executor, ledger, memoryPolicy } =
+    createMemoryPolicyHarness();
+  const before = memoryPolicyValues(memoryPolicy.get());
+  const assignment = assignments.create({
+    objective: "Default policy should not mutate memory policy",
+    autonomyLevel: "evolve",
+  });
+
+  assert.throws(
+    () =>
+      executor.apply({
+        assignmentId: assignment.assignment.id,
+        target: "memory_policy",
+        mutationType: "runtime_bounds",
+        rationale: "Try memory policy mutation without explicit opt-in.",
+        proposedChange: {
+          memoryPolicy: { memorySummaryLimit: 1 },
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 403);
+      assert.equal(error.mutation?.status, "failed");
+      assert.match(
+        error.message,
+        /does not allow memory_policy\.runtime_bounds/
+      );
+      return true;
+    }
+  );
+
+  assert.deepEqual(memoryPolicyValues(memoryPolicy.get()), before);
+  assert.deepEqual(
+    ledger.list({ assignmentId: assignment.assignment.id }).map((mutation) => ({
+      status: mutation.status,
+      mutationType: mutation.mutationType,
+      authorizingPolicy: mutation.authorizingPolicy,
+      errorMessage: mutation.errorMessage,
+    })),
+    [
+      {
+        status: "failed",
+        mutationType: "runtime_bounds",
+        authorizingPolicy: {
+          rule: "assignment.policy.selfEvolution",
+          maxRiskClass: "medium",
+          allowedMutationClasses: ["configuration.operator_settings"],
+          mutationClass: "memory_policy.runtime_bounds",
+        },
+        errorMessage:
+          "Assignment self-evolution policy does not allow memory_policy.runtime_bounds",
+      },
+    ]
+  );
+  database.close();
+});
+
+test("AutonomousMutationExecutor rejects malformed memory policy mutations without changing policy", () => {
+  const { assignments, database, executor, ledger, memoryPolicy } =
+    createMemoryPolicyHarness();
+  const before = memoryPolicyValues(memoryPolicy.get());
+  const assignment = assignments.create({
+    objective: "Reject unsafe memory policy bounds",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "memory_policy.runtime_bounds",
+        ],
+      },
+    },
+  });
+
+  assert.throws(
+    () =>
+      executor.apply({
+        assignmentId: assignment.assignment.id,
+        target: "memory_policy",
+        mutationType: "runtime_bounds",
+        rationale: "Try an invalid memory retrieval bound.",
+        proposedChange: {
+          memoryPolicy: { memoryTopK: 0 },
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 400);
+      assert.equal(error.mutation?.status, "failed");
+      assert.match(error.message, /memoryPolicy\.memoryTopK/);
+      return true;
+    }
+  );
+
+  assert.throws(
+    () =>
+      executor.apply({
+        assignmentId: assignment.assignment.id,
+        target: "memory_policy",
+        mutationType: "runtime_bounds",
+        rationale: "Try an unsupported memory policy field.",
+        proposedChange: {
+          memoryPolicy: { memoryEntryRewriteLimit: 3 },
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 400);
+      assert.equal(error.mutation?.status, "failed");
+      assert.match(error.message, /memoryPolicy\.memoryEntryRewriteLimit/);
+      return true;
+    }
+  );
+
+  assert.deepEqual(memoryPolicyValues(memoryPolicy.get()), before);
+  assert.deepEqual(
+    ledger
+      .list({ assignmentId: assignment.assignment.id })
+      .map((mutation) => ({
+        target: mutation.target,
+        mutationType: mutation.mutationType,
+        status: mutation.status,
+        errorMessage: mutation.errorMessage,
+      }))
+      .sort((left, right) =>
+        String(left.errorMessage).localeCompare(String(right.errorMessage))
+      ),
+    [
+      {
+        target: "memory_policy",
+        mutationType: "runtime_bounds",
+        status: "failed",
+        errorMessage: "memoryPolicy.memoryEntryRewriteLimit is not supported",
+      },
+      {
+        target: "memory_policy",
+        mutationType: "runtime_bounds",
+        status: "failed",
+        errorMessage:
+          "memoryPolicy.memoryTopK must be an integer between 1 and 50",
+      },
+    ]
+  );
+
+  database.close();
+});
+
+test("AutonomousMutationExecutor blocks stale memory policy rollback across assignments", () => {
+  const { assignments, database, executor, memoryPolicy } =
+    createMemoryPolicyHarness();
+  const selfEvolution = {
+    allowedMutationClasses: [
+      "configuration.operator_settings",
+      "memory_policy.runtime_bounds",
+    ],
+  };
+  const first = assignments.create({
+    objective: "First memory policy mutation",
+    autonomyLevel: "evolve",
+    policy: { selfEvolution },
+  });
+  const second = assignments.create({
+    objective: "Second memory policy mutation",
+    autonomyLevel: "evolve",
+    policy: { selfEvolution },
+  });
+
+  const firstApplied = executor.apply({
+    assignmentId: first.assignment.id,
+    target: "memory_policy",
+    mutationType: "runtime_bounds",
+    rationale: "Set first memory policy bound.",
+    proposedChange: {
+      memoryPolicy: { memorySummaryLimit: 1 },
+    },
+  });
+  const secondApplied = executor.apply({
+    assignmentId: second.assignment.id,
+    target: "memory_policy",
+    mutationType: "runtime_bounds",
+    rationale: "Set second memory policy bound.",
+    proposedChange: {
+      memoryPolicy: { memorySummaryLimit: 2 },
+    },
+  });
+
+  assert.equal(secondApplied.mutation.status, "applied");
+  assert.equal(memoryPolicy.get().memorySummaryLimit, 2);
+  assert.throws(
+    () =>
+      executor.rollback({
+        assignmentId: first.assignment.id,
+        mutationId: firstApplied.mutation.id,
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 409);
+      assert.match(
+        error.message,
+        /newer applied memory_policy\.runtime_bounds/
+      );
+      return true;
+    }
+  );
+  assert.equal(memoryPolicy.get().memorySummaryLimit, 2);
+
   database.close();
 });
 
@@ -1441,7 +1766,7 @@ test("AutonomousMutationExecutor audits unsupported and malformed autonomous mut
         mutationType: "tool_bundle_enable",
         status: "failed",
         errorMessage:
-          "Only configuration.operator_settings, configuration.assignment_policy, tool.bundle_enable, and prompt.runtime_guidance autonomous mutations are supported in this slice",
+          "Only configuration.operator_settings, configuration.assignment_policy, tool.bundle_enable, prompt.runtime_guidance, and memory_policy.runtime_bounds autonomous mutations are supported in this slice",
       },
     ]
   );

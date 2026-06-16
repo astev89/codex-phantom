@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { MemoryPolicyStore } from "../src/memory/policy.ts";
 import { MemoryStore } from "../src/memory/store.ts";
 import { AppDatabase } from "../src/platform/database.ts";
 import type { EmbeddingService } from "../src/memory/embedding.ts";
@@ -326,6 +327,177 @@ test("embedding failures degrade embedding backfill instead of aborting startup"
 
   await assert.doesNotReject(async () => memory.backfillEmbeddings());
   assert.equal(memory.getStatus().pendingBackfillCount, 1);
+  database.close();
+});
+
+test("memory policy overlay bounds query summaries and categories", async () => {
+  const database = new AppDatabase(":memory:");
+  const config = makeConfig(".", { semanticRetrievalEnabled: false });
+  const memoryPolicy = new MemoryPolicyStore(database, config);
+  memoryPolicy.update(
+    { memoryPerCategoryLimit: 1, memorySummaryLimit: 1 },
+    "operator"
+  );
+  const memory = new MemoryStore(
+    database,
+    config,
+    makeDisabledEmbeddings(),
+    makeFakeVectorStore({
+      backend: "qdrant",
+      available: false,
+      configured: false,
+    }),
+    makeFakeVectorStore({ backend: "sqlite_fallback", available: true }),
+    memoryPolicy
+  );
+
+  for (let index = 0; index < 2; index += 1) {
+    await memory.storeEntry({
+      category: "semantic",
+      content: `Release restore semantic fact ${index}`,
+      sourceType: "semantic_fact",
+      importance: 0.8,
+      isFact: true,
+    });
+    await memory.storeEntry({
+      category: "procedural",
+      content: `Release restore procedure ${index}`,
+      sourceType: "procedural_note",
+      importance: 0.8,
+      isFact: true,
+    });
+    await memory.storeEntry({
+      category: "episodic",
+      content: `Release restore summary ${index}`,
+      sourceType: "summary",
+      importance: 0.8,
+      isSummary: true,
+    });
+  }
+
+  const result = await memory.query("release restore");
+
+  assert.equal(result.summaries.length, 1);
+  assert.equal(result.semantic.length, 1);
+  assert.equal(result.procedural.length, 1);
+  database.close();
+});
+
+test("memory policy overlay bounds fallback retrieval top-k", async () => {
+  const database = new AppDatabase(":memory:");
+  const config = makeConfig(".", { semanticRetrievalEnabled: false });
+  const memoryPolicy = new MemoryPolicyStore(database, config);
+  memoryPolicy.update(
+    { memoryTopK: 1, memoryPerCategoryLimit: 5, memorySummaryLimit: 0 },
+    "operator"
+  );
+  const memory = new MemoryStore(
+    database,
+    config,
+    makeDisabledEmbeddings(),
+    makeFakeVectorStore({
+      backend: "qdrant",
+      available: false,
+      configured: false,
+    }),
+    makeFakeVectorStore({ backend: "sqlite_fallback", available: true }),
+    memoryPolicy
+  );
+
+  for (let index = 0; index < 3; index += 1) {
+    await memory.storeEntry({
+      category: "semantic",
+      content: `Release restore fallback fact ${index}`,
+      sourceType: "semantic_fact",
+      importance: 0.8,
+      isFact: true,
+    });
+  }
+  await memory.storeEntry({
+    category: "procedural",
+    content: "Release restore fallback procedure",
+    sourceType: "procedural_note",
+    importance: 0.8,
+    isFact: true,
+  });
+
+  const result = await memory.query("release restore fallback");
+  const returned = [
+    ...result.summaries,
+    ...result.episodic,
+    ...result.semantic,
+    ...result.procedural,
+  ];
+
+  assert.equal(returned.length, 1);
+  database.close();
+});
+
+test("memory policy clamps config-derived defaults into runtime bounds", () => {
+  const database = new AppDatabase(":memory:");
+  const memoryPolicy = new MemoryPolicyStore(
+    database,
+    makeConfig(".", {
+      memoryTopK: 99,
+      memoryPerCategoryLimit: 99,
+      memorySummaryLimit: 99,
+      memorySummaryTriggerCount: 99,
+      memorySummaryClusterSize: 99,
+    })
+  );
+
+  const policy = memoryPolicy.get();
+
+  assert.equal(policy.memoryTopK, 50);
+  assert.equal(policy.memoryPerCategoryLimit, 20);
+  assert.equal(policy.memorySummaryLimit, 20);
+  assert.equal(policy.memorySummaryTriggerCount, 50);
+  assert.equal(policy.memorySummaryClusterSize, 50);
+  database.close();
+});
+
+test("memory policy repairs invalid persisted rows before runtime use", () => {
+  const database = new AppDatabase(":memory:");
+  const memoryPolicy = new MemoryPolicyStore(database, makeConfig());
+  database.run(
+    `
+      UPDATE memory_policy_settings
+      SET memory_top_k = ?,
+          memory_per_category_limit = ?,
+          memory_summary_trigger_count = ?,
+          memory_summary_cluster_size = ?
+      WHERE id = ?
+    `,
+    999,
+    999,
+    2,
+    50,
+    "runtime"
+  );
+
+  const repaired = memoryPolicy.get();
+
+  assert.equal(repaired.memoryTopK, 50);
+  assert.equal(repaired.memoryPerCategoryLimit, 20);
+  assert.equal(repaired.memorySummaryTriggerCount, 2);
+  assert.equal(repaired.memorySummaryClusterSize, 2);
+  assert.equal(repaired.updatedBy, "memory_policy_validation");
+  const persisted = database.get<{
+    memory_top_k: number;
+    memory_per_category_limit: number;
+    memory_summary_cluster_size: number;
+  }>(
+    "SELECT memory_top_k, memory_per_category_limit, memory_summary_cluster_size FROM memory_policy_settings WHERE id = ?",
+    "runtime"
+  );
+  assert.deepEqual(
+    { ...persisted },
+    {
+      memory_top_k: 50,
+      memory_per_category_limit: 20,
+      memory_summary_cluster_size: 2,
+    }
+  );
   database.close();
 });
 

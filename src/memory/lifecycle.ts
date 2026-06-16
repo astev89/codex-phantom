@@ -171,8 +171,13 @@ export class MemoryLifecycleService {
 
   async compactEpisodicMemories(
     record?: MemoryTurnRecord,
-    summaryHint?: string
+    summaryHint?: string,
+    options: { triggerCount?: number; clusterSize?: number } = {}
   ): Promise<{ summaryMemoryId: string; sourceMemoryIds: string[] } | null> {
+    const triggerCount =
+      options.triggerCount ?? this.config.memorySummaryTriggerCount;
+    const clusterSize =
+      options.clusterSize ?? this.config.memorySummaryClusterSize;
     const recentRaw = this.database.all<MemoryRow>(
       `
         SELECT ${MEMORY_ROW_COLUMNS}
@@ -181,10 +186,10 @@ export class MemoryLifecycleService {
         ORDER BY created_at DESC
         LIMIT ?
       `,
-      this.config.memorySummaryTriggerCount
+      triggerCount
     );
 
-    if (recentRaw.length < this.config.memorySummaryTriggerCount) {
+    if (recentRaw.length < triggerCount) {
       return null;
     }
 
@@ -193,7 +198,7 @@ export class MemoryLifecycleService {
         (left, right) =>
           Date.parse(left.created_at) - Date.parse(right.created_at)
       )
-      .slice(0, this.config.memorySummaryClusterSize);
+      .slice(0, clusterSize);
     const summaryContent = trimLine(
       summaryHint && summaryHint.trim() !== ""
         ? summaryHint

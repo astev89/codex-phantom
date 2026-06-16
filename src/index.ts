@@ -17,6 +17,7 @@ import {
 } from "./channels/inbound.ts";
 import { ChannelRegistry } from "./channels/registry.ts";
 import { MemoryStore } from "./memory/store.ts";
+import { MemoryPolicyStore } from "./memory/policy.ts";
 import { MemoryMaintenanceService } from "./memory/maintenance.ts";
 import { OpenAiEmbeddingService } from "./memory/embedding.ts";
 import { ToolRegistry } from "./tools/registry.ts";
@@ -62,7 +63,15 @@ const channels = new ChannelRegistry(database, config);
 const channelDeliveries = new ChannelDeliveryStore(database);
 const channelInbound = new InboundChannelEventStore(database);
 const embeddings = new OpenAiEmbeddingService(config);
-const memory = new MemoryStore(database, config, embeddings);
+const memoryPolicy = new MemoryPolicyStore(database, config);
+const memory = new MemoryStore(
+  database,
+  config,
+  embeddings,
+  undefined,
+  undefined,
+  memoryPolicy
+);
 const memoryMaintenance = new MemoryMaintenanceService(database, memory);
 const tools = new ToolRegistry();
 const dynamicTools = new DynamicToolRegistry(database, tools);
@@ -81,6 +90,7 @@ const assignmentMutationExecutor = new AutonomousMutationExecutor({
   assignments,
   ledger: assignmentMutations,
   settings: operatorSettings,
+  memoryPolicy,
   promptGuidance,
   toolBundles: toolBundleLifecycle,
 });
@@ -234,7 +244,8 @@ const server = new HttpServer(
   assignmentWakeups,
   assignmentIntake,
   assignmentMutations,
-  promptGuidance
+  promptGuidance,
+  memoryPolicy
 );
 
 await memory.backfillEmbeddings();

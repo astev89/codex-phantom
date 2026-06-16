@@ -1,5 +1,10 @@
 import type { JsonValue } from "../shared/types.ts";
 import {
+  memoryPolicyValues,
+  normalizeMemoryPolicyPatch,
+  type MemoryPolicyStore,
+} from "../memory/policy.ts";
+import {
   applyOperatorSettingsMutation,
   rollbackOperatorSettingsMutation,
   type OperatorSettingsMutationPort,
@@ -64,6 +69,7 @@ export type AutonomousMutationExecutorOptions = {
   assignments: AutonomousAssignmentService;
   ledger: AutonomousMutationLedger;
   settings: OperatorSettingsMutationPort;
+  memoryPolicy?: MemoryPolicyStore;
   promptGuidance?: PromptRuntimeGuidanceStore;
   toolBundles?: ToolBundleLifecycleService;
   adapters?: AutonomousMutationAdapter[];
@@ -98,8 +104,10 @@ const OPERATOR_SETTINGS_MUTATION_CLASS = "configuration.operator_settings";
 const ASSIGNMENT_POLICY_MUTATION_CLASS = "configuration.assignment_policy";
 const TOOL_BUNDLE_ENABLE_MUTATION_CLASS = "tool.bundle_enable";
 const PROMPT_RUNTIME_GUIDANCE_MUTATION_CLASS = "prompt.runtime_guidance";
+const MEMORY_POLICY_RUNTIME_BOUNDS_MUTATION_CLASS =
+  "memory_policy.runtime_bounds";
 const UNSUPPORTED_MUTATION_ERROR =
-  "Only configuration.operator_settings, configuration.assignment_policy, tool.bundle_enable, and prompt.runtime_guidance autonomous mutations are supported in this slice";
+  "Only configuration.operator_settings, configuration.assignment_policy, tool.bundle_enable, prompt.runtime_guidance, and memory_policy.runtime_bounds autonomous mutations are supported in this slice";
 const RISK_ORDER: SelfEvolutionRiskClass[] = [
   "low",
   "medium",
@@ -123,6 +131,13 @@ export class AutonomousMutationExecutor {
           ? [
               createPromptRuntimeGuidanceAutonomousMutationAdapter(
                 options.promptGuidance
+              ),
+            ]
+          : []),
+        ...(options.memoryPolicy
+          ? [
+              createMemoryPolicyRuntimeBoundsAutonomousMutationAdapter(
+                options.memoryPolicy
               ),
             ]
           : []),
@@ -593,6 +608,53 @@ function createPromptRuntimeGuidanceAutonomousMutationAdapter(
         input.actor ?? "autonomous_mutation_rollback"
       );
       return { verificationMethod: "prompt_runtime_guidance_rollback" };
+    },
+  };
+}
+
+function createMemoryPolicyRuntimeBoundsAutonomousMutationAdapter(
+  memoryPolicy: MemoryPolicyStore
+): AutonomousMutationAdapter {
+  const affectedResources = [{ type: "memory_policy", id: "runtime_bounds" }];
+  return {
+    target: "memory_policy",
+    mutationType: "runtime_bounds",
+    mutationClass: MEMORY_POLICY_RUNTIME_BOUNDS_MUTATION_CLASS,
+    affectedResources,
+    rollbackConflictScope: "global",
+    apply(input) {
+      const proposedChange = asJsonObject(
+        input.proposedChange,
+        "proposedChange"
+      );
+      const memoryPolicyPatch = normalizeMemoryPolicyPatch(
+        asJsonObject(proposedChange.memoryPolicy, "proposedChange.memoryPolicy")
+      );
+      const before = memoryPolicyValues(memoryPolicy.get());
+      const after = memoryPolicyValues(
+        memoryPolicy.update(
+          memoryPolicyPatch,
+          input.request.actor ?? "autonomous_mutation"
+        )
+      );
+      return {
+        before: before as unknown as JsonValue,
+        after: after as unknown as JsonValue,
+        rollback: { memoryPolicy: before } as unknown as JsonValue,
+        affectedResources,
+        verificationMethod: "memory_policy_runtime_bounds_update",
+      };
+    },
+    rollback(input) {
+      const rollback = asJsonObject(input.rollback, "rollback");
+      const memoryPolicyRollback = normalizeMemoryPolicyPatch(
+        asJsonObject(rollback.memoryPolicy, "rollback.memoryPolicy")
+      );
+      memoryPolicy.update(
+        memoryPolicyRollback,
+        input.actor ?? "autonomous_mutation_rollback"
+      );
+      return { verificationMethod: "memory_policy_runtime_bounds_rollback" };
     },
   };
 }

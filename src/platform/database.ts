@@ -447,6 +447,21 @@ export class AppDatabase {
         updated_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS memory_policy_settings (
+        id TEXT PRIMARY KEY,
+        memory_top_k INTEGER NOT NULL,
+        memory_per_category_limit INTEGER NOT NULL,
+        memory_summary_limit INTEGER NOT NULL,
+        memory_summary_trigger_count INTEGER NOT NULL,
+        memory_summary_cluster_size INTEGER NOT NULL,
+        semantic_prune_limit INTEGER NOT NULL,
+        procedural_prune_limit INTEGER NOT NULL,
+        episodic_prune_limit INTEGER NOT NULL,
+        updated_by TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS request_audit_logs (
         request_id TEXT PRIMARY KEY,
         method TEXT NOT NULL,
@@ -509,6 +524,7 @@ export class AppDatabase {
       CREATE INDEX IF NOT EXISTS idx_inbound_channel_feedback_channel ON inbound_channel_feedback(channel_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_operator_settings_updated_at ON operator_settings(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_prompt_runtime_guidance_updated_at ON prompt_runtime_guidance(updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_memory_policy_settings_updated_at ON memory_policy_settings(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_request_audit_logs_created_at ON request_audit_logs(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_mcp_audit_logs_created_at ON mcp_audit_logs(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_mcp_audit_logs_method ON mcp_audit_logs(method, created_at DESC);
