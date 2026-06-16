@@ -3,16 +3,35 @@
 This is the living status ledger for `codex-phantom`. Update it at the end of each development wave, after tests pass and before handing off or opening a PR.
 
 Last updated: 2026-06-12
-Branch: `jarvis/autonomous-mutation-ledger`
-Latest verified implementation commit: `7830f11 feat(assignments): add autonomous mutation ledger`
+Branch: `jarvis/delegated-autonomous-self-evolution`
+Latest verified implementation commit: `55d8d3f feat(assignments): execute delegated autonomous settings mutations`
 
 ## Current State
 
-`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, durable autonomous assignment records with operator controls, deterministic scheduler-backed wakeup planning, explicit channel/API assignment intake, assignment-scoped autonomous mutation ledger evidence with read-only MCP/operator/export visibility, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, module-backed operator exports, a Codex-native `/chat` product surface with durable/searchable attachment continuity, explicit artifacts, and bounded automatic artifact extraction, hybrid long-term memory with Qdrant-backed vector recall, SQLite fallback, lifecycle controls, restart-safe maintenance, decay/reinforcement-aware ranking, governed self-evolution proposals with mutation module-backed operator-approved apply/rollback for settings changes, governed internal tool bundles with preview, approval, enable, disable, and uninstall lifecycle, and a disabled-by-default Email runtime channel with bounded IMAP polling and audited SMTP replies.
+`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, durable autonomous assignment records with operator controls, deterministic scheduler-backed wakeup planning, explicit channel/API assignment intake, assignment-scoped autonomous mutation ledger evidence with read-only MCP/operator/export visibility, assignment-authorized autonomous operator-settings self-evolution execution with rollback, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, module-backed operator exports, a Codex-native `/chat` product surface with durable/searchable attachment continuity, explicit artifacts, and bounded automatic artifact extraction, hybrid long-term memory with Qdrant-backed vector recall, SQLite fallback, lifecycle controls, restart-safe maintenance, decay/reinforcement-aware ranking, governed self-evolution proposals with mutation module-backed operator-approved apply/rollback for settings changes, governed internal tool bundles with preview, approval, enable, disable, and uninstall lifecycle, and a disabled-by-default Email runtime channel with bounded IMAP polling and audited SMTP replies.
 
 The project is now past its first serious production-hardening pass. It is not yet equivalent to the original Phantom project, but the core runtime is materially safer to run: request sizes are bounded, secrets are rejected in production when defaults are used, outbound model calls have timeouts, scheduler jobs recover deterministically after restarts, MCP events are durably audited, external webhooks are signed, Slack sends retry transient failures, operator-console workflows have browser coverage, and the Docker image runs compiled JavaScript instead of stripped TypeScript.
 
 ## Just Completed
+
+Delegated autonomous self-evolution execution wave completed locally on 2026-06-12:
+
+- Added assignment-authorized autonomous mutation execution for `evolve` assignments, limited to `configuration.operator_settings` under assignment self-evolution policy.
+- Added default assignment self-evolution policy allowing low/medium `configuration.operator_settings` only, with failed ledger evidence for unsupported, policy-blocked, and malformed attempts.
+- Added operator-authenticated apply and rollback routes, settings rollback evidence, actor-aware assignment mutation milestones, and visibility through the existing mutation, timeline, and export surfaces.
+- Preserved proposal-based self-evolution apply/rollback as a separate governed path and kept MCP assignment mutation tooling read-only.
+- Hardened rollback integrity so older settings mutations cannot roll back over newer applied settings mutations, including same-millisecond ledger ordering edge cases.
+
+Verification from this wave:
+
+```bash
+node --experimental-strip-types --test tests/assignment-autonomous-mutations.test.ts tests/assignment-mutation-ledger.test.ts tests/assignments.test.ts tests/server.test.ts tests/mcp.test.ts tests/operator-export.test.ts tests/self-evolution.test.ts tests/self-evolution-mutations.test.ts
+npm run typecheck
+npm test
+npm run build
+git diff --check
+node .gitnexus/run.cjs detect-changes --scope staged --repo codex-phantom
+```
 
 Autonomous mutation ledger wave completed locally on 2026-06-12:
 
@@ -714,13 +733,13 @@ npm run build
 
 Use `docs/phantom-parity.md` as the canonical production-level parity roadmap. Keep this section limited to immediate handoff notes and proof gaps.
 
-### P1: Autonomous Self-Evolution Execution
+### P1: Autonomous Mutation Adapter Expansion And Planner Integration
 
 Suggested work:
 
-- Add safe delegated autonomous mutation adapters behind assignment policy for the first bounded mutation class.
-- Keep autonomous mutation execution separate from the ledger read model; every successful apply still needs rollback payload or before snapshot evidence.
-- Preserve proposal-based self-evolution apply/rollback behavior as its own governed path.
+- Add the next safe autonomous mutation classes one at a time behind explicit assignment self-evolution policy and adapter-level rollback evidence.
+- Wire planner-driven `mutate` decisions only after each adapter has service-level and HTTP-level safety coverage.
+- Keep child assignment execution and retention compaction as separate durable autonomy slices so mutation authority does not expand by accident.
 
 ### P2: Channel And Parity Polish
 

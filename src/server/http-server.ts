@@ -87,6 +87,10 @@ import type {
   AutonomousMutationTarget,
 } from "../assignments/mutation-ledger.ts";
 import {
+  AutonomousMutationExecutionError,
+  AutonomousMutationExecutor,
+} from "../assignments/autonomous-mutations.ts";
+import {
   AUTONOMOUS_MUTATION_STATUSES,
   AUTONOMOUS_MUTATION_TARGETS,
   AutonomousMutationLedger,
@@ -105,6 +109,8 @@ import {
   parseJsonBody,
   validateAssignmentControlBody,
   validateAssignmentCreateBody,
+  validateAutonomousMutationApplyBody,
+  validateAutonomousMutationRollbackBody,
   validateOperatorSettingsBody,
   validateSlackMessageBody,
   validateChatArtifactBody,
@@ -148,6 +154,7 @@ export class HttpServer {
   private readonly assignmentWakeups?: AssignmentWakeupPlanner;
   private readonly assignmentIntake: AssignmentIntakeService;
   private readonly assignmentMutations: AutonomousMutationLedger;
+  private readonly assignmentMutationExecutor: AutonomousMutationExecutor;
   private readonly chatArtifacts: ChatArtifactService;
   private readonly governance: ToolGovernanceService;
   private readonly selfEvolution: SelfEvolutionProposalStore;
@@ -219,10 +226,6 @@ export class HttpServer {
     this.governance = governance;
     this.selfEvolution = new SelfEvolutionProposalStore(database);
     this.settings = new OperatorSettingsStore(database);
-    this.selfEvolutionMutations = new SelfEvolutionMutationService({
-      proposals: this.selfEvolution,
-      adapters: [createOperatorSettingsMutationAdapter(this.settings)],
-    });
     this.slack = new SlackChannel(
       config,
       channels,
@@ -246,6 +249,15 @@ export class HttpServer {
     this.assignmentMutations =
       assignmentMutations ??
       new AutonomousMutationLedger(database, assignments);
+    this.assignmentMutationExecutor = new AutonomousMutationExecutor({
+      assignments,
+      ledger: this.assignmentMutations,
+      settings: this.settings,
+    });
+    this.selfEvolutionMutations = new SelfEvolutionMutationService({
+      proposals: this.selfEvolution,
+      adapters: [createOperatorSettingsMutationAdapter(this.settings)],
+    });
     this.requestAudits = new RequestAuditStore(database);
     this.mcpAudit = new McpAuditStore(database);
     this.operatorExports = new OperatorExportService({
@@ -741,6 +753,51 @@ export class HttpServer {
             ),
           }),
         });
+        return;
+      }
+
+      if (
+        req.method === "POST" &&
+        url.pathname.startsWith("/admin/assignments/") &&
+        trimTrailingSlash(url.pathname).endsWith("/mutations/apply")
+      ) {
+        this.requireOperatorAuth(req);
+        const assignmentId = decodeURIComponent(
+          url.pathname
+            .replace("/admin/assignments/", "")
+            .replace("/mutations/apply", "")
+            .replace(/\/$/, "")
+        );
+        const body = validateAutonomousMutationApplyBody(
+          parseJsonBody(await readTextBody(req))
+        );
+        const result = this.assignmentMutationExecutor.apply({
+          assignmentId,
+          ...body,
+          actor: body.actor ?? "operator",
+        });
+        this.json(res, 200, { requestId, ...result });
+        return;
+      }
+
+      if (
+        req.method === "POST" &&
+        url.pathname.startsWith("/admin/assignments/") &&
+        trimTrailingSlash(url.pathname).includes("/mutations/") &&
+        trimTrailingSlash(url.pathname).endsWith("/rollback")
+      ) {
+        this.requireOperatorAuth(req);
+        const { assignmentId, mutationId } =
+          parseAssignmentMutationRollbackPath(url.pathname);
+        const body = validateAutonomousMutationRollbackBody(
+          parseJsonBody(await readTextBody(req))
+        );
+        const result = this.assignmentMutationExecutor.rollback({
+          assignmentId,
+          mutationId,
+          actor: body.actor ?? "operator",
+        });
+        this.json(res, 200, { requestId, ...result });
         return;
       }
 
@@ -1950,6 +2007,13 @@ function normalizeHttpError(error: unknown): unknown {
   if (error instanceof SelfEvolutionMutationError) {
     return toSelfEvolutionHttpError(error);
   }
+  if (error instanceof AutonomousMutationExecutionError) {
+    return new HttpError(
+      error.status,
+      error.message,
+      error.mutation as unknown as JsonValue | undefined
+    );
+  }
   if (error instanceof AssignmentNotFoundError) {
     return new HttpError(404, error.message);
   }
@@ -1976,6 +2040,22 @@ function toSelfEvolutionHttpError(
     error.message,
     error.mutation as unknown as JsonValue | undefined
   );
+}
+
+function parseAssignmentMutationRollbackPath(pathname: string): {
+  assignmentId: string;
+  mutationId: string;
+} {
+  const match = trimTrailingSlash(pathname).match(
+    /^\/admin\/assignments\/([^/]+)\/mutations\/([^/]+)\/rollback$/
+  );
+  if (!match) {
+    throw new HttpError(404, "Not found");
+  }
+  return {
+    assignmentId: decodeURIComponent(match[1] ?? ""),
+    mutationId: decodeURIComponent(match[2] ?? ""),
+  };
 }
 
 function parseAssignmentLifecycleQuery(

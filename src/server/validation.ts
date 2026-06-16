@@ -16,6 +16,8 @@ import type {
   SelfEvolutionRiskClass,
   SelfEvolutionTarget,
 } from "../self-evolution/proposals.ts";
+import type { AutonomousMutationTarget } from "../assignments/mutation-ledger.ts";
+import { AUTONOMOUS_MUTATION_TARGETS } from "../assignments/mutation-ledger.ts";
 
 export class HttpError extends Error {
   readonly status: number;
@@ -124,6 +126,19 @@ export type ToolBundleLifecycleInput = {
 
 export type AssignmentCreateInput = CreateAssignmentInput;
 export type AssignmentControlBodyInput = AssignmentControlInput;
+export type AutonomousMutationApplyBodyInput = {
+  target: AutonomousMutationTarget;
+  mutationType: string;
+  rationale: string;
+  runId?: string;
+  actor?: string;
+  riskClass?: SelfEvolutionRiskClass;
+  proposedChange: JsonValue;
+};
+
+export type AutonomousMutationRollbackBodyInput = {
+  actor?: string;
+};
 
 export function parseJsonBody(text: string): unknown {
   if (!text) {
@@ -415,6 +430,51 @@ export function validateAssignmentControlBody(
   };
 }
 
+export function validateAutonomousMutationApplyBody(
+  input: unknown
+): AutonomousMutationApplyBodyInput {
+  const value = asRecord(input);
+  const target = nonEmptyString(value.target, "target");
+  if (!isAutonomousMutationTarget(target)) {
+    throw new HttpError(
+      400,
+      "target must be prompt, memory_policy, tool, role, configuration, or project_file"
+    );
+  }
+  const riskClass =
+    value.riskClass === undefined
+      ? undefined
+      : nonEmptyString(value.riskClass, "riskClass");
+  if (riskClass !== undefined && !isSelfEvolutionRiskClass(riskClass)) {
+    throw new HttpError(
+      400,
+      "riskClass must be low, medium, high, or critical"
+    );
+  }
+  const proposedChange = toJsonValue(value.proposedChange, "proposedChange");
+  if (!isJsonObject(proposedChange)) {
+    throw new HttpError(400, "proposedChange must be a JSON object");
+  }
+  return {
+    target,
+    mutationType: nonEmptyString(value.mutationType, "mutationType"),
+    rationale: nonEmptyString(value.rationale, "rationale"),
+    runId: optionalString(value.runId),
+    actor: optionalString(value.actor),
+    riskClass,
+    proposedChange,
+  };
+}
+
+export function validateAutonomousMutationRollbackBody(
+  input: unknown
+): AutonomousMutationRollbackBodyInput {
+  const value = asRecord(input);
+  return {
+    actor: optionalString(value.actor),
+  };
+}
+
 function validateSubagents(input: unknown): SubagentRequest[] | undefined {
   if (input === undefined) {
     return undefined;
@@ -490,6 +550,10 @@ function validateAssignmentPolicyPatch(
     value.notificationCadence === undefined
       ? undefined
       : validateAssignmentNotificationCadence(value.notificationCadence);
+  const selfEvolution =
+    value.selfEvolution === undefined
+      ? undefined
+      : validateAssignmentSelfEvolutionPolicy(value.selfEvolution);
   return {
     maxWakeups: optionalPositiveInteger(value.maxWakeups, "maxWakeups"),
     maxTotalRuntimeMinutes: optionalPositiveInteger(
@@ -510,6 +574,7 @@ function validateAssignmentPolicyPatch(
       "wakeupDelayMaxMinutes"
     ),
     notificationCadence,
+    selfEvolution,
   };
 }
 
@@ -579,6 +644,33 @@ function validateAssignmentNotificationCadence(
       value.activeProgressIntervalMinutes,
       "notificationCadence.activeProgressIntervalMinutes"
     ),
+  };
+}
+
+function validateAssignmentSelfEvolutionPolicy(
+  input: unknown
+): Partial<AssignmentPolicy["selfEvolution"]> {
+  const value = asRecord(input, "selfEvolution");
+  const maxRiskClass =
+    value.maxRiskClass === undefined
+      ? undefined
+      : nonEmptyString(value.maxRiskClass, "selfEvolution.maxRiskClass");
+  if (maxRiskClass !== undefined && !isSelfEvolutionRiskClass(maxRiskClass)) {
+    throw new HttpError(
+      400,
+      "selfEvolution.maxRiskClass must be low, medium, high, or critical"
+    );
+  }
+  return {
+    enabled:
+      value.enabled === undefined
+        ? undefined
+        : requireBoolean(value.enabled, "selfEvolution.enabled"),
+    allowedMutationClasses: optionalStringArray(
+      value.allowedMutationClasses,
+      "selfEvolution.allowedMutationClasses"
+    ),
+    maxRiskClass,
   };
 }
 
@@ -774,6 +866,14 @@ function isSelfEvolutionRiskClass(
   value: string
 ): value is SelfEvolutionRiskClass {
   return ["low", "medium", "high", "critical"].includes(value);
+}
+
+function isAutonomousMutationTarget(
+  value: string
+): value is AutonomousMutationTarget {
+  return AUTONOMOUS_MUTATION_TARGETS.includes(
+    value as AutonomousMutationTarget
+  );
 }
 
 function isJsonObject(value: JsonValue): value is { [key: string]: JsonValue } {

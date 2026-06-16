@@ -190,6 +190,12 @@ export type OperatorSettingsMutationPort = {
   update(partial: Partial<OperatorSettings>): OperatorSettings;
 };
 
+export type OperatorSettingsMutationResult = {
+  before: JsonValue;
+  after: JsonValue;
+  rollback: JsonValue;
+};
+
 export function createOperatorSettingsMutationAdapter(
   settings: OperatorSettingsMutationPort
 ): SelfEvolutionMutationAdapter {
@@ -197,24 +203,43 @@ export function createOperatorSettingsMutationAdapter(
     target: "configuration",
     mutationType: "operator_settings",
     apply(proposal) {
-      const patch = extractOperatorSettingsPatch(proposal);
-      const before = settings.get();
-      const after = settings.update(patch);
-      return {
-        before: before as unknown as JsonValue,
-        after: after as unknown as JsonValue,
-        rollback: { operatorSettings: before },
-      };
+      return applyOperatorSettingsMutation(
+        settings,
+        extractOperatorSettingsPatch(proposal)
+      );
     },
     rollback(mutation) {
-      const rollback = asJsonObject(mutation.rollback, "rollback");
-      const operatorSettings = asJsonObject(
-        rollback.operatorSettings,
-        "rollback.operatorSettings"
-      );
-      settings.update(toOperatorSettingsPatch(operatorSettings));
+      rollbackOperatorSettingsMutation(settings, mutation.rollback);
     },
   };
+}
+
+export function applyOperatorSettingsMutation(
+  settings: OperatorSettingsMutationPort,
+  operatorSettings: JsonValue
+): OperatorSettingsMutationResult {
+  const patch = toOperatorSettingsPatch(
+    asJsonObject(operatorSettings, "operatorSettings")
+  );
+  const before = settings.get();
+  const after = settings.update(patch);
+  return {
+    before: before as unknown as JsonValue,
+    after: after as unknown as JsonValue,
+    rollback: { operatorSettings: before },
+  };
+}
+
+export function rollbackOperatorSettingsMutation(
+  settings: OperatorSettingsMutationPort,
+  rollbackPayload: JsonValue
+): void {
+  const rollback = asJsonObject(rollbackPayload, "rollback");
+  const operatorSettings = asJsonObject(
+    rollback.operatorSettings,
+    "rollback.operatorSettings"
+  );
+  settings.update(toOperatorSettingsPatch(operatorSettings));
 }
 
 function extractOperatorSettingsPatch(
@@ -250,6 +275,11 @@ function toOperatorSettingsPatch(
         "operatorSettings.dashboardRefreshSeconds must be a positive integer"
       );
     }
+    if (value.dashboardRefreshSeconds > 120) {
+      throw new Error(
+        "operatorSettings.dashboardRefreshSeconds must be less than or equal to 120"
+      );
+    }
     patch.dashboardRefreshSeconds = value.dashboardRefreshSeconds;
   }
   if (value.chatDefaultConversationId !== undefined) {
@@ -271,6 +301,11 @@ function toOperatorSettingsPatch(
     ) {
       throw new Error(
         "operatorSettings.memoryTimelineLimit must be a positive integer"
+      );
+    }
+    if (value.memoryTimelineLimit > 100) {
+      throw new Error(
+        "operatorSettings.memoryTimelineLimit must be less than or equal to 100"
       );
     }
     patch.memoryTimelineLimit = value.memoryTimelineLimit;

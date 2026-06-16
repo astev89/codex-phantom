@@ -1,16 +1,19 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { AppDatabase } from "../src/platform/database.ts";
+import { AppDatabase, encodeJson } from "../src/platform/database.ts";
 import { AutonomousAssignmentService } from "../src/assignments/service.ts";
 import { RunGraphStore } from "../src/orchestration/run-graph-store.ts";
 
 function withAssignments(
-  work: (assignments: AutonomousAssignmentService) => void
+  work: (
+    assignments: AutonomousAssignmentService,
+    database: AppDatabase
+  ) => void
 ): void {
   const database = new AppDatabase(":memory:");
   const assignments = new AutonomousAssignmentService(database);
   try {
-    work(assignments);
+    work(assignments, database);
   } finally {
     database.close();
   }
@@ -42,6 +45,11 @@ test("AutonomousAssignmentService creates an active assignment with default poli
         .activeProgressIntervalMinutes,
       30
     );
+    assert.deepEqual(created.assignment.policy.selfEvolution, {
+      enabled: true,
+      allowedMutationClasses: ["configuration.operator_settings"],
+      maxRiskClass: "medium",
+    });
 
     const timeline = assignments.timeline(created.assignment.id);
     assert.equal(timeline.assignmentId, created.assignment.id);
@@ -102,6 +110,127 @@ test("AutonomousAssignmentService lists and gets assignments through domain filt
       "Parent Slack assignment"
     );
     assert.equal(assignments.get("asgn_missing"), null);
+  });
+});
+
+test("AutonomousAssignmentService fails closed for legacy policy rows without selfEvolution", () => {
+  withAssignments((assignments, database) => {
+    const created = assignments.create({
+      objective: "Legacy evolve assignment",
+      autonomyLevel: "evolve",
+    });
+    const legacyPolicy = {
+      ...created.assignment.policy,
+    } as Record<string, unknown>;
+    delete legacyPolicy.selfEvolution;
+    database.run(
+      "UPDATE assignments SET policy_json = ? WHERE id = ?",
+      encodeJson(legacyPolicy),
+      created.assignment.id
+    );
+
+    assert.deepEqual(
+      assignments.get(created.assignment.id)?.assignment.policy.selfEvolution,
+      {
+        enabled: false,
+        allowedMutationClasses: [],
+        maxRiskClass: "low",
+      }
+    );
+  });
+});
+
+test("AutonomousAssignmentService fails closed for corrupt policy rows", () => {
+  withAssignments((assignments, database) => {
+    const created = assignments.create({
+      objective: "Corrupt policy assignment",
+      autonomyLevel: "evolve",
+    });
+    database.run(
+      "UPDATE assignments SET policy_json = ? WHERE id = ?",
+      "{not-json",
+      created.assignment.id
+    );
+
+    assert.deepEqual(
+      assignments.get(created.assignment.id)?.assignment.policy.selfEvolution,
+      {
+        enabled: false,
+        allowedMutationClasses: [],
+        maxRiskClass: "low",
+      }
+    );
+  });
+});
+
+test("AutonomousAssignmentService normalizes malformed selfEvolution fields fail-closed", () => {
+  withAssignments((assignments, database) => {
+    const cases = [
+      {
+        policy: [],
+        expected: {
+          enabled: false,
+          allowedMutationClasses: [],
+          maxRiskClass: "low",
+        },
+      },
+      {
+        policy: {
+          enabled: "yes",
+          allowedMutationClasses: ["configuration.operator_settings"],
+          maxRiskClass: "medium",
+        },
+        expected: {
+          enabled: false,
+          allowedMutationClasses: ["configuration.operator_settings"],
+          maxRiskClass: "medium",
+        },
+      },
+      {
+        policy: {
+          enabled: true,
+          allowedMutationClasses: ["configuration.operator_settings", ""],
+          maxRiskClass: "medium",
+        },
+        expected: {
+          enabled: true,
+          allowedMutationClasses: [],
+          maxRiskClass: "medium",
+        },
+      },
+      {
+        policy: {
+          enabled: true,
+          allowedMutationClasses: ["configuration.operator_settings"],
+          maxRiskClass: "extreme",
+        },
+        expected: {
+          enabled: true,
+          allowedMutationClasses: ["configuration.operator_settings"],
+          maxRiskClass: "low",
+        },
+      },
+    ];
+
+    for (const [index, scenario] of cases.entries()) {
+      const created = assignments.create({
+        objective: `Malformed self-evolution assignment ${index}`,
+        autonomyLevel: "evolve",
+      });
+      database.run(
+        "UPDATE assignments SET policy_json = ? WHERE id = ?",
+        encodeJson({
+          ...created.assignment.policy,
+          selfEvolution: scenario.policy,
+        }),
+        created.assignment.id
+      );
+
+      assert.deepEqual(
+        assignments.get(created.assignment.id)?.assignment.policy.selfEvolution,
+        scenario.expected
+      );
+    }
   });
 });
 
@@ -185,6 +314,9 @@ test("AutonomousAssignmentService persists context additions and policy changes 
           ...created.assignment.policy.notificationCadence,
           activeProgressIntervalMinutes: 45,
         },
+        selfEvolution: {
+          maxRiskClass: "low",
+        },
       },
     });
     assert.equal(withPolicy.assignment.policy.maxWakeups, 7);
@@ -193,6 +325,11 @@ test("AutonomousAssignmentService persists context additions and policy changes 
         .activeProgressIntervalMinutes,
       45
     );
+    assert.deepEqual(withPolicy.assignment.policy.selfEvolution, {
+      enabled: true,
+      allowedMutationClasses: ["configuration.operator_settings"],
+      maxRiskClass: "low",
+    });
 
     const events = assignments.timeline(created.assignment.id).events;
     const contextEvent = events.find((event) => event.type === "context_added");
