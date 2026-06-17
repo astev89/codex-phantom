@@ -29,6 +29,10 @@ import {
   projectFileDraftSummary,
   type ProjectFileDraftStore,
 } from "../project-files/drafts.ts";
+import {
+  type ProjectFileApplyBeforeSnapshot,
+  type ProjectFileApplyService,
+} from "../project-files/apply.ts";
 import type { SelfEvolutionRiskClass } from "../self-evolution/proposals.ts";
 import type {
   AutonomousMutationRecord,
@@ -90,6 +94,7 @@ export type AutonomousMutationExecutorOptions = {
   promptGuidance?: PromptRuntimeGuidanceStore;
   rolePolicy?: RolePolicyRuntimeStore;
   projectFileDrafts?: ProjectFileDraftStore;
+  projectFileApply?: ProjectFileApplyService;
   toolBundles?: ToolBundleLifecycleService;
   adapters?: AutonomousMutationAdapter[];
 };
@@ -103,6 +108,7 @@ export type AutonomousMutationAdapter = {
   readonly rollbackConflictScope?: "assignment" | "global";
   apply(input: {
     assignment: AssignmentRecord;
+    mutationId: string;
     request: ApplyAutonomousMutationInput;
     proposedChange: JsonValue;
   }): {
@@ -129,8 +135,9 @@ const MEMORY_POLICY_RUNTIME_BOUNDS_MUTATION_CLASS =
 const RUNTIME_CONFIG_LIMITS_MUTATION_CLASS = "configuration.runtime_limits";
 const ROLE_PERMISSION_POLICY_MUTATION_CLASS = "role.permission_policy";
 const PROJECT_FILE_DRAFT_MUTATION_CLASS = "project_file.draft";
+const PROJECT_FILE_APPLY_DRAFT_MUTATION_CLASS = "project_file.apply_draft";
 const UNSUPPORTED_MUTATION_ERROR =
-  "Only configuration.operator_settings, configuration.assignment_policy, configuration.runtime_limits, tool.bundle_enable, prompt.runtime_guidance, memory_policy.runtime_bounds, role.permission_policy, and project_file.draft autonomous mutations are supported in this slice";
+  "Only configuration.operator_settings, configuration.assignment_policy, configuration.runtime_limits, tool.bundle_enable, prompt.runtime_guidance, memory_policy.runtime_bounds, role.permission_policy, project_file.draft, and project_file.apply_draft autonomous mutations are supported in this slice";
 const RISK_ORDER: SelfEvolutionRiskClass[] = [
   "low",
   "medium",
@@ -185,6 +192,14 @@ export class AutonomousMutationExecutor {
               ),
             ]
           : []),
+        ...(options.projectFileDrafts && options.projectFileApply
+          ? [
+              createProjectFileApplyDraftAutonomousMutationAdapter(
+                options.projectFileDrafts,
+                options.projectFileApply
+              ),
+            ]
+          : []),
         ...(options.toolBundles
           ? [
               createToolBundleEnableAutonomousMutationAdapter(
@@ -226,6 +241,7 @@ export class AutonomousMutationExecutor {
     try {
       const result = adapter.apply({
         assignment: assignment.assignment,
+        mutationId: planned.id,
         request: input,
         proposedChange: input.proposedChange,
       });
@@ -894,6 +910,95 @@ function createProjectFileDraftAutonomousMutationAdapter(
   };
 }
 
+function createProjectFileApplyDraftAutonomousMutationAdapter(
+  projectFileDrafts: ProjectFileDraftStore,
+  projectFileApply: ProjectFileApplyService
+): AutonomousMutationAdapter {
+  return {
+    target: "project_file",
+    mutationType: "apply_draft",
+    mutationClass: PROJECT_FILE_APPLY_DRAFT_MUTATION_CLASS,
+    minimumRiskClass: "high",
+    rollbackConflictScope: "global",
+    affectedResources: [{ type: "project_file" }],
+    apply(input) {
+      const proposedChange = asJsonObject(
+        input.proposedChange,
+        "proposedChange"
+      );
+      const projectFileApplyInput = asJsonObject(
+        proposedChange.projectFileApply,
+        "proposedChange.projectFileApply"
+      );
+      const draftId = requiredString(
+        projectFileApplyInput.draftId,
+        "projectFileApply.draftId"
+      );
+      const draft = projectFileDrafts.get(draftId);
+      if (!draft) {
+        throw new Error("Project file draft not found");
+      }
+      if (draft.assignmentId !== input.assignment.id) {
+        throw new Error("Project file draft does not belong to assignment");
+      }
+      if (draft.status !== "active") {
+        throw new Error("Project file draft is not active");
+      }
+      const result = projectFileApply.apply({
+        path: draft.path,
+        content: draft.content,
+      });
+      let appliedDraft;
+      try {
+        appliedDraft = projectFileDrafts.markApplied(draft.id, {
+          mutationId: input.mutationId,
+          sha256: result.after.sha256,
+        });
+      } catch (error) {
+        projectFileApply.rollback(result.before);
+        throw error;
+      }
+      const affectedResources = [
+        { type: "project_file", id: draft.path, path: draft.path },
+      ];
+      return {
+        before: result.before as unknown as JsonValue,
+        after: {
+          draft: projectFileDraftSummary(appliedDraft),
+          file: result.after,
+        } as unknown as JsonValue,
+        rollback: {
+          projectFileApply: {
+            draftId: draft.id,
+            path: draft.path,
+            beforeFile: result.before,
+          },
+        } as unknown as JsonValue,
+        affectedResources,
+        verificationMethod: "project_file_apply_draft_write",
+      };
+    },
+    rollback(input) {
+      const rollback = asJsonObject(input.rollback, "rollback");
+      const projectFileApplyRollback = asJsonObject(
+        rollback.projectFileApply,
+        "rollback.projectFileApply"
+      );
+      const draftId = requiredString(
+        projectFileApplyRollback.draftId,
+        "rollback.projectFileApply.draftId"
+      );
+      projectFileApply.rollback(
+        normalizeProjectFileApplyBeforeSnapshot(
+          projectFileApplyRollback.beforeFile
+        )
+      );
+      projectFileDrafts.markActiveAfterApplyRollback(draftId);
+      return { verificationMethod: "project_file_apply_draft_rollback" };
+    },
+  };
+}
+
 function authorizingPolicy(
   policy: AssignmentSelfEvolutionPolicy,
   actor?: string,
@@ -940,6 +1045,48 @@ function highestRiskClass(
   right: SelfEvolutionRiskClass
 ): SelfEvolutionRiskClass {
   return riskRank(left) >= riskRank(right) ? left : right;
+}
+
+function normalizeProjectFileApplyBeforeSnapshot(
+  value: JsonValue
+): ProjectFileApplyBeforeSnapshot {
+  const snapshot = asJsonObject(value, "rollback.projectFileApply.beforeFile");
+  const path = requiredString(
+    snapshot.path,
+    "rollback.projectFileApply.beforeFile.path"
+  );
+  if (typeof snapshot.existed !== "boolean") {
+    throw new Error(
+      "rollback.projectFileApply.beforeFile.existed must be a boolean"
+    );
+  }
+  if (!snapshot.existed) {
+    return { path, existed: false };
+  }
+  if (
+    typeof snapshot.contentBase64 !== "string" &&
+    typeof snapshot.content !== "string"
+  ) {
+    throw new Error(
+      "rollback.projectFileApply.beforeFile.contentBase64 must be a string"
+    );
+  }
+  const before: ProjectFileApplyBeforeSnapshot = {
+    path,
+    existed: true,
+  };
+  if (typeof snapshot.contentBase64 === "string") {
+    before.contentBase64 = snapshot.contentBase64;
+  } else if (typeof snapshot.content === "string") {
+    before.content = snapshot.content;
+  }
+  if (typeof snapshot.sizeBytes === "number") {
+    before.sizeBytes = snapshot.sizeBytes;
+  }
+  if (typeof snapshot.sha256 === "string") {
+    before.sha256 = snapshot.sha256;
+  }
+  return before;
 }
 
 function asJsonObject(

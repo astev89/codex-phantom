@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { join } from "node:path";
 import { AppDatabase } from "../src/platform/database.ts";
 import { AutonomousAssignmentService } from "../src/assignments/service.ts";
 import { AutonomousMutationExecutor } from "../src/assignments/autonomous-mutations.ts";
@@ -9,6 +11,7 @@ import { MemoryPolicyStore } from "../src/memory/policy.ts";
 import { loadRolePolicyConfig } from "../src/orchestration/role-config.ts";
 import { RolePolicyRuntimeStore } from "../src/orchestration/role-policy-runtime.ts";
 import { ProjectFileDraftStore } from "../src/project-files/drafts.ts";
+import { ProjectFileApplyService } from "../src/project-files/apply.ts";
 import {
   ASSIGNMENT_WAKEUP_JOB_NAME,
   AssignmentWakeupPlanner,
@@ -790,6 +793,93 @@ test("AssignmentWakeupPlanner applies explicitly allowed project file draft muta
       "project_file.draft",
     ],
     mutationClass: "project_file.draft",
+    actor: "planner",
+  });
+});
+
+test("AssignmentWakeupPlanner applies explicitly allowed project file apply draft mutation markers", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-06-16T12:44:30.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const targetPath = join(process.cwd(), "docs/planner-project-file-apply.md");
+  const database = new AppDatabase(":memory:");
+  t.after(() => {
+    if (existsSync(targetPath)) {
+      unlinkSync(targetPath);
+    }
+    database.close();
+  });
+  const assignments = new AutonomousAssignmentService(database);
+  const ledger = new AutonomousMutationLedger(database, assignments);
+  const settings = new OperatorSettingsStore(database);
+  const projectFileDrafts = new ProjectFileDraftStore(database);
+  const projectFileApply = new ProjectFileApplyService({
+    repoRoot: process.cwd(),
+  });
+  const executor = new AutonomousMutationExecutor({
+    assignments,
+    ledger,
+    settings,
+    projectFileDrafts,
+    projectFileApply,
+  });
+  const runs = new RunGraphStore(database);
+  const { scheduler } = makeScheduler(now);
+  const assignment = assignments.create({
+    objective: "Planner should apply a project file draft",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "project_file.apply_draft",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+  const draft = projectFileDrafts.create({
+    assignmentId: assignment.assignment.id,
+    path: "docs/planner-project-file-apply.md",
+    content: "# Planner Apply\n",
+    contentType: "text/markdown",
+  });
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, [
+      [
+        "Applied a reviewed project file draft.",
+        `ASSIGNMENT_MUTATION: {"target":"project_file","mutationType":"apply_draft","riskClass":"high","rationale":"Apply reviewed project file draft.","proposedChange":{"projectFileApply":{"draftId":"${draft.id}"}}}`,
+        "ASSIGNMENT_STATUS: complete",
+      ].join("\n"),
+    ]),
+    mutations: executor,
+  });
+
+  const result = await planner.wakeNow({
+    assignmentId: assignment.assignment.id,
+    actor: "scheduler",
+    reason: "scheduled wakeup",
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(readFileSync(targetPath, "utf8"), "# Planner Apply\n");
+  assert.equal(projectFileDrafts.get(draft.id)?.status, "applied");
+  const mutations = ledger.list({ assignmentId: assignment.assignment.id });
+  assert.equal(mutations.length, 1);
+  assert.equal(mutations[0]?.status, "applied");
+  assert.equal(mutations[0]?.target, "project_file");
+  assert.equal(mutations[0]?.mutationType, "apply_draft");
+  assert.equal(mutations[0]?.runId, "coord_wakeup_1");
+  assert.deepEqual(mutations[0]?.authorizingPolicy, {
+    rule: "assignment.policy.selfEvolution",
+    maxRiskClass: "high",
+    allowedMutationClasses: [
+      "configuration.operator_settings",
+      "project_file.apply_draft",
+    ],
+    mutationClass: "project_file.apply_draft",
     actor: "planner",
   });
 });

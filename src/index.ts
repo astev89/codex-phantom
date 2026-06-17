@@ -46,6 +46,7 @@ import { RunGraphStore } from "./orchestration/run-graph-store.ts";
 import { OrchestrationService } from "./orchestration/service.ts";
 import { loadRolePolicyConfig } from "./orchestration/role-config.ts";
 import { RolePolicyRuntimeStore } from "./orchestration/role-policy-runtime.ts";
+import { ProjectFileApplyService } from "./project-files/apply.ts";
 import { ProjectFileDraftStore } from "./project-files/drafts.ts";
 import { SchedulerService } from "./scheduler/service.ts";
 import { McpAuditStore } from "./mcp/audit.ts";
@@ -93,6 +94,9 @@ const promptGuidance = new PromptRuntimeGuidanceStore(database);
 const loadedRolePolicy = loadRolePolicyConfig(config.roleConfigPath);
 const rolePolicy = new RolePolicyRuntimeStore(database, loadedRolePolicy);
 const projectFileDrafts = new ProjectFileDraftStore(database);
+const projectFileApply = new ProjectFileApplyService({
+  repoRoot: process.cwd(),
+});
 const assignmentMutationExecutor = new AutonomousMutationExecutor({
   assignments,
   ledger: assignmentMutations,
@@ -102,6 +106,7 @@ const assignmentMutationExecutor = new AutonomousMutationExecutor({
   promptGuidance,
   rolePolicy,
   projectFileDrafts,
+  projectFileApply,
   toolBundles: toolBundleLifecycle,
 });
 const runs = new RunGraphStore(database);
@@ -257,7 +262,8 @@ const server = new HttpServer(
   memoryPolicy,
   runtimeConfigLimits,
   rolePolicy,
-  projectFileDrafts
+  projectFileDrafts,
+  projectFileApply
 );
 
 await memory.backfillEmbeddings();
