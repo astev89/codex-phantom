@@ -10,7 +10,7 @@ import {
 
 export const MAX_PROJECT_FILE_DRAFT_BYTES = 200_000;
 
-export type ProjectFileDraftStatus = "active" | "rolled_back";
+export type ProjectFileDraftStatus = "active" | "applied" | "rolled_back";
 
 export type ProjectFileDraftRecord = {
   id: string;
@@ -23,6 +23,9 @@ export type ProjectFileDraftRecord = {
   sha256: string;
   metadata: JsonValue;
   status: ProjectFileDraftStatus;
+  appliedMutationId?: string;
+  appliedAt?: string;
+  appliedSha256?: string;
   createdAt: string;
   updatedAt: string;
   rolledBackAt?: string;
@@ -53,6 +56,9 @@ type ProjectFileDraftRow = {
   sha256: string;
   metadata_json: string;
   status: ProjectFileDraftStatus;
+  applied_mutation_id: string | null;
+  applied_at: string | null;
+  applied_sha256: string | null;
   created_at: string;
   updated_at: string;
   rolled_back_at: string | null;
@@ -160,6 +166,11 @@ export class ProjectFileDraftStore {
     if (current.status === "rolled_back") {
       return current;
     }
+    if (current.status === "applied") {
+      throw new Error(
+        "Applied project file draft cannot be rolled back before its apply mutation is rolled back"
+      );
+    }
     const now = new Date().toISOString();
     this.database.run(
       `
@@ -169,6 +180,67 @@ export class ProjectFileDraftStore {
       `,
       "rolled_back",
       now,
+      now,
+      id
+    );
+    return this.get(id) ?? current;
+  }
+
+  markApplied(
+    id: string,
+    input: { mutationId: string; sha256: string }
+  ): ProjectFileDraftRecord {
+    const current = this.get(id);
+    if (!current) {
+      throw new Error("Project file draft not found");
+    }
+    if (current.status !== "active") {
+      throw new Error("Project file draft is not active");
+    }
+    const now = new Date().toISOString();
+    this.database.run(
+      `
+        UPDATE project_file_drafts
+        SET status = ?,
+            applied_mutation_id = ?,
+            applied_at = ?,
+            applied_sha256 = ?,
+            updated_at = ?
+        WHERE id = ?
+      `,
+      "applied",
+      input.mutationId,
+      now,
+      input.sha256,
+      now,
+      id
+    );
+    return this.get(id) ?? current;
+  }
+
+  markActiveAfterApplyRollback(id: string): ProjectFileDraftRecord {
+    const current = this.get(id);
+    if (!current) {
+      throw new Error("Project file draft not found");
+    }
+    if (current.status === "active") {
+      return current;
+    }
+    if (current.status === "rolled_back") {
+      throw new Error("Rolled back project file draft cannot be reactivated");
+    }
+    const now = new Date().toISOString();
+    this.database.run(
+      `
+        UPDATE project_file_drafts
+        SET status = ?,
+            applied_mutation_id = NULL,
+            applied_at = NULL,
+            applied_sha256 = NULL,
+            updated_at = ?
+        WHERE id = ?
+      `,
+      "active",
       now,
       id
     );
@@ -188,6 +260,11 @@ export function projectFileDraftSummary(
     sizeBytes: draft.sizeBytes,
     sha256: draft.sha256,
     status: draft.status,
+    ...(draft.appliedMutationId
+      ? { appliedMutationId: draft.appliedMutationId }
+      : {}),
+    ...(draft.appliedAt ? { appliedAt: draft.appliedAt } : {}),
+    ...(draft.appliedSha256 ? { appliedSha256: draft.appliedSha256 } : {}),
   };
 }
 
@@ -286,6 +363,9 @@ function toProjectFileDraftRecord(
     sha256: row.sha256,
     metadata: decodeJson(row.metadata_json, null),
     status: row.status,
+    appliedMutationId: row.applied_mutation_id ?? undefined,
+    appliedAt: row.applied_at ?? undefined,
+    appliedSha256: row.applied_sha256 ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     rolledBackAt: row.rolled_back_at ?? undefined,

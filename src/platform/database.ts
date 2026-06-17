@@ -494,6 +494,9 @@ export class AppDatabase {
         sha256 TEXT NOT NULL,
         metadata_json TEXT NOT NULL,
         status TEXT NOT NULL,
+        applied_mutation_id TEXT,
+        applied_at TEXT,
+        applied_sha256 TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         rolled_back_at TEXT,
@@ -694,6 +697,9 @@ export class AppDatabase {
       "slack_response_message_ts",
       "TEXT"
     );
+    ensureColumn(this.db, "project_file_drafts", "applied_mutation_id", "TEXT");
+    ensureColumn(this.db, "project_file_drafts", "applied_at", "TEXT");
+    ensureColumn(this.db, "project_file_drafts", "applied_sha256", "TEXT");
     ensureRuntimeConfigLimitsOverlaySchema(this.db);
 
     this.db.exec(`

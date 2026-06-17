@@ -55,6 +55,7 @@ import type { AgentRunEvent } from "../agent/types.ts";
 import { RunGraphStore } from "../orchestration/run-graph-store.ts";
 import { loadRolePolicyConfig } from "../orchestration/role-config.ts";
 import { RolePolicyRuntimeStore } from "../orchestration/role-policy-runtime.ts";
+import { ProjectFileApplyService } from "../project-files/apply.ts";
 import { ProjectFileDraftStore } from "../project-files/drafts.ts";
 import { RuntimeConfigLimitsStore } from "../config/runtime-limits.ts";
 import { AppDatabase } from "../platform/database.ts";
@@ -176,6 +177,7 @@ export class HttpServer {
   private readonly promptGuidance: PromptRuntimeGuidanceStore;
   private readonly rolePolicy: RolePolicyRuntimeStore;
   private readonly projectFileDrafts: ProjectFileDraftStore;
+  private readonly projectFileApply: ProjectFileApplyService;
   private readonly slack: SlackChannel;
   private readonly settings: OperatorSettingsStore;
   private readonly requestAudits: RequestAuditStore;
@@ -211,7 +213,8 @@ export class HttpServer {
     memoryPolicy?: MemoryPolicyStore,
     runtimeConfigLimits?: RuntimeConfigLimitsStore,
     rolePolicy?: RolePolicyRuntimeStore,
-    projectFileDrafts?: ProjectFileDraftStore
+    projectFileDrafts?: ProjectFileDraftStore,
+    projectFileApply?: ProjectFileApplyService
   ) {
     if (!assignments) {
       throw new Error("AutonomousAssignmentService is required");
@@ -265,6 +268,9 @@ export class HttpServer {
       );
     this.projectFileDrafts =
       projectFileDrafts ?? new ProjectFileDraftStore(database);
+    this.projectFileApply =
+      projectFileApply ??
+      new ProjectFileApplyService({ repoRoot: process.cwd() });
     this.slack = new SlackChannel(
       config,
       channels,
@@ -297,6 +303,7 @@ export class HttpServer {
       promptGuidance: this.promptGuidance,
       rolePolicy: this.rolePolicy,
       projectFileDrafts: this.projectFileDrafts,
+      projectFileApply: this.projectFileApply,
       toolBundles: this.toolBundleLifecycle,
     });
     this.selfEvolutionMutations = new SelfEvolutionMutationService({

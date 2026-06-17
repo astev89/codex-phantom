@@ -1,6 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdtempSync,
+  readFileSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -21,6 +29,7 @@ import {
   rolePolicyRuntimeSnapshot,
 } from "../src/orchestration/role-policy-runtime.ts";
 import { AppDatabase } from "../src/platform/database.ts";
+import { ProjectFileApplyService } from "../src/project-files/apply.ts";
 import { ProjectFileDraftStore } from "../src/project-files/drafts.ts";
 import { PromptRuntimeGuidanceStore } from "../src/prompts/runtime-guidance.ts";
 import { OperatorSettingsStore } from "../src/server/settings.ts";
@@ -128,10 +137,14 @@ function createProjectFileDraftHarness() {
   const ledger = new AutonomousMutationLedger(database, assignments);
   const settings = new OperatorSettingsStore(database);
   const projectFileDrafts = new ProjectFileDraftStore(database);
+  const projectFileApply = new ProjectFileApplyService({
+    repoRoot: process.cwd(),
+  });
   const executor = new AutonomousMutationExecutor({
     assignments,
     ledger,
     settings,
+    projectFileApply,
     projectFileDrafts,
   });
   return {
@@ -142,6 +155,18 @@ function createProjectFileDraftHarness() {
     projectFileDrafts,
     settings,
   };
+}
+
+function unlinkIfPresent(path: string): void {
+  try {
+    lstatSync(path);
+  } catch (error) {
+    if ((error as { code?: string }).code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
+  unlinkSync(path);
 }
 
 function createRuntimeConfigLimitsHarness() {
@@ -2361,6 +2386,89 @@ test("AutonomousMutationExecutor applies explicit project file draft mutations",
   database.close();
 });
 
+test("AutonomousMutationExecutor applies an existing project file draft to the repository filesystem", (t) => {
+  const { assignments, database, executor, projectFileDrafts } =
+    createProjectFileDraftHarness();
+  const cleanupPath = join(
+    process.cwd(),
+    "docs/autonomous-project-file-apply-test.md"
+  );
+  t.after(() => {
+    if (existsSync(cleanupPath)) {
+      unlinkSync(cleanupPath);
+    }
+    database.close();
+  });
+  const assignment = assignments.create({
+    objective: "Apply docs draft",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "project_file.draft",
+          "project_file.apply_draft",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+  const draftApply = executor.apply({
+    assignmentId: assignment.assignment.id,
+    runId: "coord_project_file_apply_draft",
+    target: "project_file",
+    mutationType: "draft",
+    rationale: "Create draft before applying.",
+    proposedChange: {
+      projectFileDraft: {
+        path: "docs/autonomous-project-file-apply-test.md",
+        content: "# Applied Draft\n",
+        contentType: "text/markdown",
+      },
+    },
+  });
+  const draftId = (
+    draftApply.mutation.rollback as { projectFileDraft: { id: string } }
+  ).projectFileDraft.id;
+
+  const applied = executor.apply({
+    assignmentId: assignment.assignment.id,
+    runId: "coord_project_file_apply",
+    target: "project_file",
+    mutationType: "apply_draft",
+    riskClass: "high",
+    rationale: "Apply the already-audited project file draft.",
+    proposedChange: {
+      projectFileApply: { draftId },
+    },
+  });
+
+  assert.equal(readFileSync(cleanupPath, "utf8"), "# Applied Draft\n");
+  assert.equal(applied.mutation.status, "applied");
+  assert.equal(applied.mutation.target, "project_file");
+  assert.equal(applied.mutation.mutationType, "apply_draft");
+  assert.deepEqual(applied.mutation.affectedResources, [
+    {
+      type: "project_file",
+      id: "docs/autonomous-project-file-apply-test.md",
+      path: "docs/autonomous-project-file-apply-test.md",
+    },
+  ]);
+  assert.equal(projectFileDrafts.get(draftId)?.status, "applied");
+  assert.deepEqual(
+    assignments
+      .timeline(assignment.assignment.id)
+      .events.map((event) => event.type),
+    [
+      "created",
+      "mutation_planned",
+      "mutation_applied",
+      "mutation_planned",
+      "mutation_applied",
+    ]
+  );
+});
+
 test("AutonomousMutationExecutor keeps project file drafts explicitly opt-in", () => {
   const { assignments, database, executor, projectFileDrafts } =
     createProjectFileDraftHarness();
@@ -2671,6 +2779,597 @@ test("AutonomousMutationExecutor blocks stale project file draft rollback", () =
   );
 
   database.close();
+});
+
+test("AutonomousMutationExecutor keeps project file apply explicitly opt-in and high risk", (t) => {
+  const { assignments, database, executor, projectFileDrafts } =
+    createProjectFileDraftHarness();
+  const cleanupPath = join(process.cwd(), "docs/denied-apply-draft.md");
+  t.after(() => {
+    if (existsSync(cleanupPath)) {
+      unlinkSync(cleanupPath);
+    }
+    database.close();
+  });
+  const assignment = assignments.create({
+    objective: "Denied project file apply",
+    autonomyLevel: "evolve",
+  });
+  const draft = projectFileDrafts.create({
+    assignmentId: assignment.assignment.id,
+    path: "docs/denied-apply-draft.md",
+    content: "Denied apply",
+  });
+
+  assert.throws(
+    () =>
+      executor.apply({
+        assignmentId: assignment.assignment.id,
+        target: "project_file",
+        mutationType: "apply_draft",
+        riskClass: "high",
+        rationale: "Default policy should not permit project file apply.",
+        proposedChange: { projectFileApply: { draftId: draft.id } },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 403);
+      assert.match(error.message, /does not allow project_file\.apply_draft/);
+      return true;
+    }
+  );
+  assert.equal(existsSync(cleanupPath), false);
+
+  const mediumRiskAssignment = assignments.create({
+    objective: "Medium risk cannot apply project file",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "project_file.apply_draft",
+        ],
+        maxRiskClass: "medium",
+      },
+    },
+  });
+  const mediumRiskDraft = projectFileDrafts.create({
+    assignmentId: mediumRiskAssignment.assignment.id,
+    path: "docs/denied-apply-draft.md",
+    content: "Denied by risk",
+  });
+  assert.throws(
+    () =>
+      executor.apply({
+        assignmentId: mediumRiskAssignment.assignment.id,
+        target: "project_file",
+        mutationType: "apply_draft",
+        rationale: "The adapter should classify this as high risk.",
+        proposedChange: { projectFileApply: { draftId: mediumRiskDraft.id } },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 403);
+      assert.match(error.message, /risk exceeds assignment/);
+      assert.equal(error.mutation?.riskClass, "high");
+      return true;
+    }
+  );
+  assert.equal(existsSync(cleanupPath), false);
+
+  for (const autonomyLevel of ["execute", "draft", "observe"] as const) {
+    const blocked = assignments.create({
+      objective: `Denied ${autonomyLevel} project file apply`,
+      autonomyLevel,
+      policy: {
+        selfEvolution: {
+          allowedMutationClasses: [
+            "configuration.operator_settings",
+            "project_file.apply_draft",
+          ],
+          maxRiskClass: "high",
+        },
+      },
+    });
+    const blockedDraft = projectFileDrafts.create({
+      assignmentId: blocked.assignment.id,
+      path: "docs/denied-apply-draft.md",
+      content: `${autonomyLevel} denied`,
+    });
+    assert.throws(
+      () =>
+        executor.apply({
+          assignmentId: blocked.assignment.id,
+          target: "project_file",
+          mutationType: "apply_draft",
+          riskClass: "high",
+          rationale: `${autonomyLevel} assignments cannot apply project files.`,
+          proposedChange: { projectFileApply: { draftId: blockedDraft.id } },
+        }),
+      (error) => {
+        assert.ok(error instanceof AutonomousMutationExecutionError);
+        assert.equal(error.status, 403);
+        assert.match(error.message, /Assignment autonomyLevel must be evolve/);
+        return true;
+      }
+    );
+  }
+  assert.equal(existsSync(cleanupPath), false);
+});
+
+test("AutonomousMutationExecutor rejects unsafe project file apply requests without writing files", (t) => {
+  const { assignments, database, executor, ledger, projectFileDrafts } =
+    createProjectFileDraftHarness();
+  const cleanupPath = join(process.cwd(), "docs/rejected-apply-draft.md");
+  t.after(() => {
+    if (existsSync(cleanupPath)) {
+      unlinkSync(cleanupPath);
+    }
+    database.close();
+  });
+  const selfEvolution = {
+    allowedMutationClasses: [
+      "configuration.operator_settings",
+      "project_file.apply_draft",
+    ],
+    maxRiskClass: "high" as const,
+  };
+  const assignment = assignments.create({
+    objective: "Reject invalid project file apply",
+    autonomyLevel: "evolve",
+    policy: { selfEvolution },
+  });
+  const otherAssignment = assignments.create({
+    objective: "Other assignment draft",
+    autonomyLevel: "evolve",
+    policy: { selfEvolution },
+  });
+  const validDraft = projectFileDrafts.create({
+    assignmentId: assignment.assignment.id,
+    path: "docs/rejected-apply-draft.md",
+    content: "Valid draft",
+  });
+  const wrongAssignmentDraft = projectFileDrafts.create({
+    assignmentId: otherAssignment.assignment.id,
+    path: "docs/rejected-apply-draft.md",
+    content: "Wrong assignment",
+  });
+  const rolledBackDraft = projectFileDrafts.markRolledBack(
+    projectFileDrafts.create({
+      assignmentId: assignment.assignment.id,
+      path: "docs/rejected-apply-draft.md",
+      content: "Rolled back draft",
+    }).id
+  );
+
+  const attempts: Array<{ proposedChange: JsonValue; message: RegExp }> = [
+    {
+      proposedChange: {},
+      message: /proposedChange.projectFileApply must be a JSON object/,
+    },
+    {
+      proposedChange: { projectFileApply: {} },
+      message: /projectFileApply.draftId is required/,
+    },
+    {
+      proposedChange: { projectFileApply: { draftId: "pfd_missing" } },
+      message: /Project file draft not found/,
+    },
+    {
+      proposedChange: {
+        projectFileApply: { draftId: wrongAssignmentDraft.id },
+      },
+      message: /does not belong to assignment/,
+    },
+    {
+      proposedChange: { projectFileApply: { draftId: rolledBackDraft.id } },
+      message: /Project file draft is not active/,
+    },
+  ];
+
+  for (const attempt of attempts) {
+    assert.throws(
+      () =>
+        executor.apply({
+          assignmentId: assignment.assignment.id,
+          target: "project_file",
+          mutationType: "apply_draft",
+          riskClass: "high",
+          rationale: "Reject invalid project file apply.",
+          proposedChange: attempt.proposedChange,
+        }),
+      (error) => {
+        assert.ok(error instanceof AutonomousMutationExecutionError);
+        assert.equal(error.status, 400);
+        assert.equal(error.mutation?.status, "failed");
+        assert.match(error.message, attempt.message);
+        return true;
+      }
+    );
+    assert.equal(existsSync(cleanupPath), false);
+  }
+  assert.equal(projectFileDrafts.get(validDraft.id)?.status, "active");
+  assert.equal(
+    ledger
+      .list({ assignmentId: assignment.assignment.id })
+      .filter((mutation) => mutation.status === "failed").length,
+    attempts.length
+  );
+});
+
+test("AutonomousMutationExecutor rejects symlinked project file apply paths without writing outside the repo", (t) => {
+  const { assignments, database, executor, projectFileDrafts } =
+    createProjectFileDraftHarness();
+  const externalFile = join(
+    mkdtempSync(join(tmpdir(), "phantom-project-file-symlink-file-")),
+    "outside.md"
+  );
+  const externalDirectory = mkdtempSync(
+    join(tmpdir(), "phantom-project-file-symlink-dir-")
+  );
+  const symlinkFilePath = join(process.cwd(), "docs/apply-symlink-file.md");
+  const symlinkDirectoryPath = join(process.cwd(), "docs/apply-symlink-parent");
+  const outsideChildPath = join(externalDirectory, "child.md");
+  unlinkIfPresent(symlinkFilePath);
+  unlinkIfPresent(symlinkDirectoryPath);
+  writeFileSync(externalFile, "outside\n", "utf8");
+  symlinkSync(externalFile, symlinkFilePath);
+  symlinkSync(externalDirectory, symlinkDirectoryPath, "dir");
+  t.after(() => {
+    unlinkIfPresent(symlinkFilePath);
+    unlinkIfPresent(symlinkDirectoryPath);
+    unlinkIfPresent(externalFile);
+    unlinkIfPresent(outsideChildPath);
+    database.close();
+  });
+  const assignment = assignments.create({
+    objective: "Reject symlinked project file apply",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "project_file.apply_draft",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+  const symlinkFileDraft = projectFileDrafts.create({
+    assignmentId: assignment.assignment.id,
+    path: "docs/apply-symlink-file.md",
+    content: "Do not write through file symlink\n",
+  });
+  const symlinkDirectoryDraft = projectFileDrafts.create({
+    assignmentId: assignment.assignment.id,
+    path: "docs/apply-symlink-parent/child.md",
+    content: "Do not write through parent symlink\n",
+  });
+
+  for (const draftId of [symlinkFileDraft.id, symlinkDirectoryDraft.id]) {
+    assert.throws(
+      () =>
+        executor.apply({
+          assignmentId: assignment.assignment.id,
+          target: "project_file",
+          mutationType: "apply_draft",
+          riskClass: "high",
+          rationale: "Reject symlinked apply path.",
+          proposedChange: { projectFileApply: { draftId } },
+        }),
+      (error) => {
+        assert.ok(error instanceof AutonomousMutationExecutionError);
+        assert.equal(error.status, 400);
+        assert.equal(error.mutation?.status, "failed");
+        assert.match(error.message, /cannot target symlinked paths/);
+        return true;
+      }
+    );
+  }
+  assert.equal(readFileSync(externalFile, "utf8"), "outside\n");
+  assert.equal(existsSync(outsideChildPath), false);
+  assert.equal(lstatSync(symlinkFilePath).isSymbolicLink(), true);
+  assert.equal(lstatSync(symlinkDirectoryPath).isSymbolicLink(), true);
+});
+
+test("AutonomousMutationExecutor rolls back project file apply mutations", (t) => {
+  const { assignments, database, executor, projectFileDrafts } =
+    createProjectFileDraftHarness();
+  const createdPath = join(process.cwd(), "docs/rollback-created-apply.md");
+  const existingPath = join(process.cwd(), "docs/rollback-existing-apply.md");
+  t.after(() => {
+    for (const path of [createdPath, existingPath]) {
+      if (existsSync(path)) {
+        unlinkSync(path);
+      }
+    }
+    database.close();
+  });
+  const assignment = assignments.create({
+    objective: "Rollback project file apply",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "project_file.apply_draft",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+  const createdDraft = projectFileDrafts.create({
+    assignmentId: assignment.assignment.id,
+    path: "docs/rollback-created-apply.md",
+    content: "Created file\n",
+  });
+  const createdApply = executor.apply({
+    assignmentId: assignment.assignment.id,
+    target: "project_file",
+    mutationType: "apply_draft",
+    riskClass: "high",
+    rationale: "Apply a new file.",
+    proposedChange: { projectFileApply: { draftId: createdDraft.id } },
+  });
+  assert.equal(readFileSync(createdPath, "utf8"), "Created file\n");
+
+  const createdRollback = executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: createdApply.mutation.id,
+  });
+
+  assert.equal(createdRollback.mutation.status, "rolled_back");
+  assert.equal(existsSync(createdPath), false);
+  assert.equal(projectFileDrafts.get(createdDraft.id)?.status, "active");
+
+  writeFileSync(existingPath, "Original file\n", "utf8");
+  const existingDraft = projectFileDrafts.create({
+    assignmentId: assignment.assignment.id,
+    path: "docs/rollback-existing-apply.md",
+    content: "Replacement file\n",
+  });
+  const existingApply = executor.apply({
+    assignmentId: assignment.assignment.id,
+    target: "project_file",
+    mutationType: "apply_draft",
+    riskClass: "high",
+    rationale: "Apply over an existing file.",
+    proposedChange: { projectFileApply: { draftId: existingDraft.id } },
+  });
+  assert.equal(readFileSync(existingPath, "utf8"), "Replacement file\n");
+
+  const existingRollback = executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: existingApply.mutation.id,
+  });
+
+  assert.equal(existingRollback.mutation.status, "rolled_back");
+  assert.equal(readFileSync(existingPath, "utf8"), "Original file\n");
+  assert.equal(projectFileDrafts.get(existingDraft.id)?.status, "active");
+  assert.deepEqual(
+    assignments
+      .timeline(assignment.assignment.id)
+      .events.map((event) => event.type),
+    [
+      "created",
+      "mutation_planned",
+      "mutation_applied",
+      "mutation_rolled_back",
+      "mutation_planned",
+      "mutation_applied",
+      "mutation_rolled_back",
+    ]
+  );
+});
+
+test("AutonomousMutationExecutor restores preexisting project file bytes on apply rollback", (t) => {
+  const { assignments, database, executor, projectFileDrafts } =
+    createProjectFileDraftHarness();
+  const existingPath = join(process.cwd(), "docs/rollback-binary-apply.md");
+  const originalBytes = Buffer.from([0x00, 0x9f, 0x92, 0x96, 0xff, 0x0a]);
+  t.after(() => {
+    unlinkIfPresent(existingPath);
+    database.close();
+  });
+  const assignment = assignments.create({
+    objective: "Rollback project file apply over existing bytes",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "project_file.apply_draft",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+  writeFileSync(existingPath, originalBytes);
+  const draft = projectFileDrafts.create({
+    assignmentId: assignment.assignment.id,
+    path: "docs/rollback-binary-apply.md",
+    content: "Replacement safe text\n",
+  });
+  const applied = executor.apply({
+    assignmentId: assignment.assignment.id,
+    target: "project_file",
+    mutationType: "apply_draft",
+    riskClass: "high",
+    rationale: "Apply safe text over existing bytes.",
+    proposedChange: { projectFileApply: { draftId: draft.id } },
+  });
+  const rollbackEvidence = applied.mutation.rollback as {
+    projectFileApply: {
+      beforeFile: { contentBase64?: string };
+    };
+  };
+  assert.equal(
+    rollbackEvidence.projectFileApply.beforeFile.contentBase64,
+    originalBytes.toString("base64")
+  );
+  assert.equal(readFileSync(existingPath, "utf8"), "Replacement safe text\n");
+
+  const rolledBack = executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: applied.mutation.id,
+  });
+
+  assert.equal(rolledBack.mutation.status, "rolled_back");
+  assert.deepEqual(readFileSync(existingPath), originalBytes);
+  assert.equal(projectFileDrafts.get(draft.id)?.status, "active");
+});
+
+test("AutonomousMutationExecutor blocks project file draft rollback until apply rollback", (t) => {
+  const { assignments, database, executor, projectFileDrafts } =
+    createProjectFileDraftHarness();
+  const targetPath = join(process.cwd(), "docs/apply-before-draft-rollback.md");
+  t.after(() => {
+    if (existsSync(targetPath)) {
+      unlinkSync(targetPath);
+    }
+    database.close();
+  });
+  const assignment = assignments.create({
+    objective: "Keep applied draft rollback ordered",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "project_file.draft",
+          "project_file.apply_draft",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+  const draftMutation = executor.apply({
+    assignmentId: assignment.assignment.id,
+    target: "project_file",
+    mutationType: "draft",
+    rationale: "Create a project file draft.",
+    proposedChange: {
+      projectFileDraft: {
+        path: "docs/apply-before-draft-rollback.md",
+        content: "Applied draft content\n",
+      },
+    },
+  });
+  const draftId = (
+    draftMutation.mutation.rollback as { projectFileDraft: { id: string } }
+  ).projectFileDraft.id;
+  const applyMutation = executor.apply({
+    assignmentId: assignment.assignment.id,
+    target: "project_file",
+    mutationType: "apply_draft",
+    riskClass: "high",
+    rationale: "Apply the project file draft.",
+    proposedChange: { projectFileApply: { draftId } },
+  });
+
+  assert.throws(
+    () =>
+      executor.rollback({
+        assignmentId: assignment.assignment.id,
+        mutationId: draftMutation.mutation.id,
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 400);
+      assert.match(
+        error.message,
+        /cannot be rolled back before its apply mutation is rolled back/
+      );
+      return true;
+    }
+  );
+  assert.equal(readFileSync(targetPath, "utf8"), "Applied draft content\n");
+  assert.equal(projectFileDrafts.get(draftId)?.status, "applied");
+
+  executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: applyMutation.mutation.id,
+  });
+  assert.equal(existsSync(targetPath), false);
+  assert.equal(projectFileDrafts.get(draftId)?.status, "active");
+
+  const rolledBackDraft = executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: draftMutation.mutation.id,
+  });
+
+  assert.equal(rolledBackDraft.mutation.status, "rolled_back");
+  assert.equal(projectFileDrafts.get(draftId)?.status, "rolled_back");
+});
+
+test("AutonomousMutationExecutor blocks stale project file apply rollback across assignments", (t) => {
+  const { assignments, database, executor, projectFileDrafts } =
+    createProjectFileDraftHarness();
+  const targetPath = join(process.cwd(), "docs/stale-apply-draft.md");
+  t.after(() => {
+    if (existsSync(targetPath)) {
+      unlinkSync(targetPath);
+    }
+    database.close();
+  });
+  const selfEvolution = {
+    allowedMutationClasses: [
+      "configuration.operator_settings",
+      "project_file.apply_draft",
+    ],
+    maxRiskClass: "high" as const,
+  };
+  const firstAssignment = assignments.create({
+    objective: "First project file apply",
+    autonomyLevel: "evolve",
+    policy: { selfEvolution },
+  });
+  const secondAssignment = assignments.create({
+    objective: "Second project file apply",
+    autonomyLevel: "evolve",
+    policy: { selfEvolution },
+  });
+  const firstDraft = projectFileDrafts.create({
+    assignmentId: firstAssignment.assignment.id,
+    path: "docs/stale-apply-draft.md",
+    content: "First content\n",
+  });
+  const secondDraft = projectFileDrafts.create({
+    assignmentId: secondAssignment.assignment.id,
+    path: "docs/stale-apply-draft.md",
+    content: "Second content\n",
+  });
+  const firstApply = executor.apply({
+    assignmentId: firstAssignment.assignment.id,
+    target: "project_file",
+    mutationType: "apply_draft",
+    riskClass: "high",
+    rationale: "Apply first content.",
+    proposedChange: { projectFileApply: { draftId: firstDraft.id } },
+  });
+  executor.apply({
+    assignmentId: secondAssignment.assignment.id,
+    target: "project_file",
+    mutationType: "apply_draft",
+    riskClass: "high",
+    rationale: "Apply second content.",
+    proposedChange: { projectFileApply: { draftId: secondDraft.id } },
+  });
+
+  assert.throws(
+    () =>
+      executor.rollback({
+        assignmentId: firstAssignment.assignment.id,
+        mutationId: firstApply.mutation.id,
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 409);
+      assert.match(error.message, /newer applied project_file\.apply_draft/);
+      return true;
+    }
+  );
+  assert.equal(readFileSync(targetPath, "utf8"), "Second content\n");
 });
 
 test("AutonomousMutationExecutor blocks stale prompt runtime guidance rollback across assignments", () => {
@@ -3422,7 +4121,7 @@ test("AutonomousMutationExecutor audits unsupported and malformed autonomous mut
         mutationType: "tool_bundle_enable",
         status: "failed",
         errorMessage:
-          "Only configuration.operator_settings, configuration.assignment_policy, configuration.runtime_limits, tool.bundle_enable, prompt.runtime_guidance, memory_policy.runtime_bounds, role.permission_policy, and project_file.draft autonomous mutations are supported in this slice",
+          "Only configuration.operator_settings, configuration.assignment_policy, configuration.runtime_limits, tool.bundle_enable, prompt.runtime_guidance, memory_policy.runtime_bounds, role.permission_policy, project_file.draft, and project_file.apply_draft autonomous mutations are supported in this slice",
       },
     ]
   );

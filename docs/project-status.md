@@ -3,16 +3,41 @@
 This is the living status ledger for `codex-phantom`. Update it at the end of each development wave, after tests pass and before handing off or opening a PR.
 
 Last updated: 2026-06-16
-Branch: `jarvis/autonomous-runtime-config-limits`
-Latest verified implementation commit: `e40c01e feat(assignments): add runtime config limits mutation`
+Branch: `jarvis/autonomous-project-file-apply`
+Latest verified implementation commit: `27a9909 feat(assignments): apply project file drafts`
 
 ## Current State
 
-`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, durable autonomous assignment records with operator controls, retention-aware assignment events with bounded summary compaction, deterministic scheduler-backed wakeup planning, bounded planner-promoted child assignment execution, explicit channel/API assignment intake, assignment-scoped autonomous mutation ledger evidence with read-only MCP/operator/export visibility, assignment-authorized autonomous operator-settings, opt-in assignment-policy, opt-in runtime config-limit overlay, opt-in approved read-only tool-bundle, opt-in prompt runtime-guidance, opt-in memory-policy runtime-bound, opt-in role permission-policy, and opt-in project-file draft-record self-evolution execution with rollback, planner-driven autonomous mutation markers routed through the assignment mutation executor, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, module-backed operator exports, a Codex-native `/chat` product surface with durable/searchable attachment continuity, explicit artifacts, and bounded automatic artifact extraction, hybrid long-term memory with Qdrant-backed vector recall, SQLite fallback, lifecycle controls, restart-safe maintenance, decay/reinforcement-aware ranking, governed self-evolution proposals with mutation module-backed operator-approved apply/rollback for settings changes, governed internal tool bundles with preview, approval, enable, disable, and uninstall lifecycle, and a disabled-by-default Email runtime channel with bounded IMAP polling and audited SMTP replies.
+`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, durable autonomous assignment records with operator controls, retention-aware assignment events with bounded summary compaction, deterministic scheduler-backed wakeup planning, bounded planner-promoted child assignment execution, explicit channel/API assignment intake, assignment-scoped autonomous mutation ledger evidence with read-only MCP/operator/export visibility, assignment-authorized autonomous operator-settings, opt-in assignment-policy, opt-in runtime config-limit overlay, opt-in approved read-only tool-bundle, opt-in prompt runtime-guidance, opt-in memory-policy runtime-bound, opt-in role permission-policy, opt-in project-file draft-record execution, and opt-in high-risk single-draft project-file apply execution with byte-exact rollback, planner-driven autonomous mutation markers routed through the assignment mutation executor, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, module-backed operator exports, a Codex-native `/chat` product surface with durable/searchable attachment continuity, explicit artifacts, and bounded automatic artifact extraction, hybrid long-term memory with Qdrant-backed vector recall, SQLite fallback, lifecycle controls, restart-safe maintenance, decay/reinforcement-aware ranking, governed self-evolution proposals with mutation module-backed operator-approved apply/rollback for settings changes, governed internal tool bundles with preview, approval, enable, disable, and uninstall lifecycle, and a disabled-by-default Email runtime channel with bounded IMAP polling and audited SMTP replies.
 
 The project is now past its first serious production-hardening pass. It is not yet equivalent to the original Phantom project, but the core runtime is materially safer to run: request sizes are bounded, secrets are rejected in production when defaults are used, outbound model calls have timeouts, scheduler jobs recover deterministically after restarts, MCP events are durably audited, external webhooks are signed, Slack sends retry transient failures, operator-console workflows have browser coverage, and the Docker image runs compiled JavaScript instead of stripped TypeScript.
 
 ## Just Completed
+
+Autonomous project-file apply mutation wave completed locally on 2026-06-16:
+
+- Added high-risk `project_file.apply_draft` autonomous mutation execution for explicitly opted-in `evolve` assignments.
+- Limited apply to an existing active project-file draft owned by the same assignment; arbitrary inline content, multi-file changes, patches, staging, commits, pushes, installs, protected/generated paths, and MCP write tools remain out of scope.
+- Added `ProjectFileApplyService` to resolve paths under the real repository root, reject symlinked path components, write already-validated safe text draft content, snapshot preexisting file bytes, and restore byte-exact rollback evidence.
+- Extended project-file draft rows with applied status metadata and rollback ordering so an applied draft cannot be rolled back before its apply mutation is rolled back.
+- Routed admin/internal apply and rollback, planner `ASSIGNMENT_MUTATION:` markers, ledger evidence, timelines, HTTP listings, MCP read-only guards, and operator export visibility through existing autonomous mutation surfaces.
+- Preserved proposal-based self-evolution semantics and read-only MCP mutation tooling.
+- Completed a GPT-5.4 xhigh reviewer loop. Initial Critical symlink-escape and Important lossy-rollback findings plus a Minor MCP guard gap were addressed; follow-up review reported no remaining Critical or Important findings.
+
+Verification from this wave:
+
+```bash
+node --experimental-strip-types --test tests/assignment-autonomous-mutations.test.ts tests/mcp.test.ts
+npm run typecheck
+node --experimental-strip-types --test tests/assignment-autonomous-mutations.test.ts tests/assignment-wakeup-planner.test.ts tests/server.test.ts tests/mcp.test.ts
+node --experimental-strip-types --test tests/assignment-mutation-ledger.test.ts tests/self-evolution-mutations.test.ts tests/operator-export.test.ts
+npm test
+npm run build
+git diff --check
+npm_config_cache=/tmp/codex-npm-cache-project-file-detect-2 npx gitnexus detect-changes --scope staged --repo codex-phantom
+GPT-5.4 xhigh reviewer: initial Critical/Important/Minor addressed; follow-up clean
+commit hook: prettier --ignore-unknown --write, npm run typecheck, npm test
+```
 
 Autonomous runtime config-limit mutation wave completed locally on 2026-06-16:
 

@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -2151,9 +2152,11 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
           autonomyLevel: "evolve",
           policy: {
             selfEvolution: {
+              maxRiskClass: "high",
               allowedMutationClasses: [
                 "configuration.operator_settings",
                 "project_file.draft",
+                "project_file.apply_draft",
               ],
             },
           },
@@ -2207,6 +2210,56 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assert.equal(projectFileDraft?.status, "active");
     assert.equal(projectFileDraft?.path, "docs/http-project-file-draft.md");
     assert.equal(projectFileDraft?.content, "# HTTP Draft\n");
+    const projectFilePath = join(
+      process.cwd(),
+      "docs/http-project-file-draft.md"
+    );
+    if (existsSync(projectFilePath)) {
+      unlinkSync(projectFilePath);
+    }
+
+    const projectFileApplyDraft = await fetch(
+      `${baseUrl}/admin/assignments/${projectFileAssignmentJson.assignment.id}/mutations/apply`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          target: "project_file",
+          mutationType: "apply_draft",
+          riskClass: "high",
+          rationale: "Apply the reviewed project file draft.",
+          proposedChange: {
+            projectFileApply: {
+              draftId:
+                projectFileApplyJson.mutation.rollback.projectFileDraft.id,
+            },
+          },
+        }),
+      }
+    );
+    assert.equal(projectFileApplyDraft.status, 200);
+    const projectFileApplyDraftJson = (await projectFileApplyDraft.json()) as {
+      mutation: {
+        id: string;
+        target: string;
+        mutationType: string;
+        status: string;
+      };
+    };
+    assert.equal(projectFileApplyDraftJson.mutation.status, "applied");
+    assert.equal(projectFileApplyDraftJson.mutation.target, "project_file");
+    assert.equal(
+      projectFileApplyDraftJson.mutation.mutationType,
+      "apply_draft"
+    );
+    assert.equal(readFileSync(projectFilePath, "utf8"), "# HTTP Draft\n");
+    assert.equal(
+      projectFileDrafts.get(projectFileDraft?.id ?? "")?.status,
+      "applied"
+    );
 
     const projectFileAssignmentMutations = await fetch(
       `${baseUrl}/admin/assignments/${projectFileAssignmentJson.assignment.id}/mutations`,
@@ -2222,7 +2275,10 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
         id: mutation.id,
         status: mutation.status,
       })),
-      [{ id: projectFileApplyJson.mutation.id, status: "applied" }]
+      [
+        { id: projectFileApplyDraftJson.mutation.id, status: "applied" },
+        { id: projectFileApplyJson.mutation.id, status: "applied" },
+      ]
     );
 
     const projectFileTimeline = await fetch(`${baseUrl}/admin/timeline`, {
@@ -2235,9 +2291,27 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assert.ok(
       projectFileTimelineJson.autonomousMutations.some(
         (mutation) =>
-          mutation.id === projectFileApplyJson.mutation.id &&
+          mutation.id === projectFileApplyDraftJson.mutation.id &&
           mutation.kind === "autonomous_mutation"
       )
+    );
+
+    const projectFileApplyRollback = await fetch(
+      `${baseUrl}/admin/assignments/${projectFileAssignmentJson.assignment.id}/mutations/${projectFileApplyDraftJson.mutation.id}/rollback`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({ actor: "operator" }),
+      }
+    );
+    assert.equal(projectFileApplyRollback.status, 200);
+    assert.equal(existsSync(projectFilePath), false);
+    assert.equal(
+      projectFileDrafts.get(projectFileDraft?.id ?? "")?.status,
+      "active"
     );
 
     const projectFileRollback = await fetch(

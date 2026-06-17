@@ -2,7 +2,7 @@
 
 Governed self-evolution lets Codex Phantom change its own behavior under explicit policy, audit, rollback, and operator-interruption controls. [ADR-0003](adr/0003-delegate-autonomous-assignments-and-self-evolution.md) extends the target model beyond proposal-only HITL: autonomous assignments may use delegated autonomous self-evolution when assignment policy grants `evolve` or higher authority.
 
-The current implementation is still narrower than that target. Today, Codex Phantom can create auditable proposals, apply approved proposal-based operator-settings mutations through operator-authenticated APIs, and apply assignment-authorized autonomous operator-settings, assignment-policy, runtime config-limits overlay, approved read-only tool-bundle enable, prompt runtime-guidance overlay, memory policy runtime-bounds overlay, role permission-policy overlay, and project-file draft-record mutations for `evolve` assignments. Filesystem writes, broader prompt rewriting, broader memory mutation, and broader configuration beyond runtime limits remain future work.
+The current implementation is still narrower than that target. Today, Codex Phantom can create auditable proposals, apply approved proposal-based operator-settings mutations through operator-authenticated APIs, and apply assignment-authorized autonomous operator-settings, assignment-policy, runtime config-limits overlay, approved read-only tool-bundle enable, prompt runtime-guidance overlay, memory policy runtime-bounds overlay, role permission-policy overlay, project-file draft-record mutations, and high-risk single-draft project-file apply mutations for `evolve` assignments. Broader filesystem mutation, broader prompt rewriting, broader memory mutation, and broader configuration beyond runtime limits remain future work.
 
 ## Proposal Scope
 
@@ -262,6 +262,27 @@ curl -X POST http://localhost:3210/admin/assignments/asgn_123/mutations/apply \
 
 `project_file.draft` is not in the default assignment self-evolution allow-list. Operators must explicitly include it in `assignment.policy.selfEvolution.allowedMutationClasses`. The adapter creates a durable assignment-owned project-file draft record with path, safe text content, content type, byte size, SHA-256, assignment/run linkage, and rollback evidence. It rejects absolute paths, parent traversal, protected/generated locations such as `.git`, `.env`, `node_modules`, `dist`, and `coverage`, unsafe content types, empty content, and content over 200 KB. Rollback marks the draft `rolled_back` while preserving the audit row and draft content. This does not write to the repository filesystem, apply patches, stage files, commit changes, install packages, or create MCP write capability.
 
+Apply an explicitly allowed project-file draft to the repository filesystem:
+
+```bash
+curl -X POST http://localhost:3210/admin/assignments/asgn_123/mutations/apply \
+  -H "Authorization: Bearer $OPERATOR_BEARER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "target": "project_file",
+    "mutationType": "apply_draft",
+    "riskClass": "high",
+    "rationale": "Apply the reviewed documentation draft.",
+    "proposedChange": {
+      "projectFileApply": {
+        "draftId": "pfd_123"
+      }
+    }
+  }'
+```
+
+`project_file.apply_draft` is not in the default assignment self-evolution allow-list. Operators must explicitly include it in `assignment.policy.selfEvolution.allowedMutationClasses`, and the executor classifies it as at least high risk even if the caller omits or understates `riskClass`. The adapter applies only an existing active project-file draft owned by the same assignment. It writes exactly that draft's already-validated safe text content to the draft's normalized relative path under the repository root, rejects symlinked path components, records before/after/rollback evidence in the autonomous mutation ledger, marks the draft `applied`, and blocks stale rollback when a newer project-file apply mutation exists. Rollback restores the exact previous file bytes when the file already existed or deletes the file when apply created it, then marks the draft active again. This does not apply arbitrary inline content, apply patches, mutate multiple files, stage files, commit changes, push branches, install packages, edit protected/generated locations, follow symlinks, or create MCP write capability.
+
 Roll back an applied autonomous mutation:
 
 ```bash
@@ -271,7 +292,7 @@ curl -X POST http://localhost:3210/admin/assignments/asgn_123/mutations/asgnmut_
   -d '{"actor":"operator"}'
 ```
 
-The default assignment self-evolution policy allows only low- or medium-risk `configuration.operator_settings` mutations, and only assignments at `evolve` authority may use it. Unsupported classes, disallowed classes, malformed settings, malformed assignment-policy patches, malformed runtime config-limits attempts, unsafe tool-bundle enable attempts, malformed prompt runtime-guidance attempts, malformed memory policy runtime-bounds attempts, malformed or widening role permission-policy attempts, and unsafe project-file draft attempts are rejected without changing state and are audited as failed autonomous mutation evidence when policy permits the attempt to reach the mutation executor.
+The default assignment self-evolution policy allows only low- or medium-risk `configuration.operator_settings` mutations, and only assignments at `evolve` authority may use it. Unsupported classes, disallowed classes, malformed settings, malformed assignment-policy patches, malformed runtime config-limits attempts, unsafe tool-bundle enable attempts, malformed prompt runtime-guidance attempts, malformed memory policy runtime-bounds attempts, malformed or widening role permission-policy attempts, unsafe project-file draft attempts, and unsafe project-file apply attempts are rejected without changing state and are audited as failed autonomous mutation evidence when policy permits the attempt to reach the mutation executor.
 
 ## Planner-Driven Mutation Markers
 
@@ -281,7 +302,7 @@ Mutation-authorized assignment wakeups may request one bounded autonomous mutati
 ASSIGNMENT_MUTATION: {"target":"configuration","mutationType":"runtime_limits","riskClass":"medium","rationale":"Allow a longer next run.","proposedChange":{"runtimeLimits":{"defaultRunTimeoutMs":45000}}}
 ```
 
-Planner-driven mutation still uses the assignment-authorized autonomous executor. The marker is bound to the current assignment and coordinator run id, uses `actor: "planner"`, and must pass the same `evolve` authority, self-evolution allow-list, risk, validation, ledger, and rollback evidence checks as the admin/internal apply route. This includes explicitly allow-listed `configuration.runtime_limits`, `prompt.runtime_guidance`, `memory_policy.runtime_bounds`, `role.permission_policy`, and `project_file.draft` markers. Failed executor attempts do not fail the wakeup; the autonomous mutation ledger owns the failure evidence.
+Planner-driven mutation still uses the assignment-authorized autonomous executor. The marker is bound to the current assignment and coordinator run id, uses `actor: "planner"`, and must pass the same `evolve` authority, self-evolution allow-list, risk, validation, ledger, and rollback evidence checks as the admin/internal apply route. This includes explicitly allow-listed `configuration.runtime_limits`, `prompt.runtime_guidance`, `memory_policy.runtime_bounds`, `role.permission_policy`, `project_file.draft`, and `project_file.apply_draft` markers. Failed executor attempts do not fail the wakeup; the autonomous mutation ledger owns the failure evidence.
 
 This is not MCP write capability. MCP assignment mutation tooling remains read-only, and planner markers only cover mutation classes that already have built-in adapters and explicit assignment policy.
 
