@@ -884,6 +884,111 @@ test("AssignmentWakeupPlanner applies explicitly allowed project file apply draf
   });
 });
 
+test("AssignmentWakeupPlanner applies explicitly allowed project file apply bundle mutation markers", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-06-16T12:44:45.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const firstPath = join(
+    process.cwd(),
+    "docs/planner-project-file-bundle-a.md"
+  );
+  const secondPath = join(
+    process.cwd(),
+    "docs/planner-project-file-bundle-b.md"
+  );
+  const database = new AppDatabase(":memory:");
+  t.after(() => {
+    if (existsSync(firstPath)) {
+      unlinkSync(firstPath);
+    }
+    if (existsSync(secondPath)) {
+      unlinkSync(secondPath);
+    }
+    database.close();
+  });
+  const assignments = new AutonomousAssignmentService(database);
+  const ledger = new AutonomousMutationLedger(database, assignments);
+  const settings = new OperatorSettingsStore(database);
+  const projectFileDrafts = new ProjectFileDraftStore(database);
+  const projectFileApply = new ProjectFileApplyService({
+    repoRoot: process.cwd(),
+  });
+  const executor = new AutonomousMutationExecutor({
+    assignments,
+    ledger,
+    settings,
+    projectFileDrafts,
+    projectFileApply,
+  });
+  const runs = new RunGraphStore(database);
+  const { scheduler } = makeScheduler(now);
+  const assignment = assignments.create({
+    objective: "Planner should apply a project file draft bundle",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "project_file.apply_bundle",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+  const firstDraft = projectFileDrafts.create({
+    assignmentId: assignment.assignment.id,
+    path: "docs/planner-project-file-bundle-a.md",
+    content: "# Planner Bundle A\n",
+    contentType: "text/markdown",
+  });
+  const secondDraft = projectFileDrafts.create({
+    assignmentId: assignment.assignment.id,
+    path: "docs/planner-project-file-bundle-b.md",
+    content: "# Planner Bundle B\n",
+    contentType: "text/markdown",
+  });
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, [
+      [
+        "Applied reviewed project file drafts.",
+        `ASSIGNMENT_MUTATION: {"target":"project_file","mutationType":"apply_bundle","riskClass":"high","rationale":"Apply reviewed project file drafts.","proposedChange":{"projectFileBundle":{"draftIds":["${firstDraft.id}","${secondDraft.id}"]}}}`,
+        "ASSIGNMENT_STATUS: complete",
+      ].join("\n"),
+    ]),
+    mutations: executor,
+  });
+
+  const result = await planner.wakeNow({
+    assignmentId: assignment.assignment.id,
+    actor: "scheduler",
+    reason: "scheduled wakeup",
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(readFileSync(firstPath, "utf8"), "# Planner Bundle A\n");
+  assert.equal(readFileSync(secondPath, "utf8"), "# Planner Bundle B\n");
+  assert.equal(projectFileDrafts.get(firstDraft.id)?.status, "applied");
+  assert.equal(projectFileDrafts.get(secondDraft.id)?.status, "applied");
+  const mutations = ledger.list({ assignmentId: assignment.assignment.id });
+  assert.equal(mutations.length, 1);
+  assert.equal(mutations[0]?.status, "applied");
+  assert.equal(mutations[0]?.target, "project_file");
+  assert.equal(mutations[0]?.mutationType, "apply_bundle");
+  assert.equal(mutations[0]?.runId, "coord_wakeup_1");
+  assert.deepEqual(mutations[0]?.authorizingPolicy, {
+    rule: "assignment.policy.selfEvolution",
+    maxRiskClass: "high",
+    allowedMutationClasses: [
+      "configuration.operator_settings",
+      "project_file.apply_bundle",
+    ],
+    mutationClass: "project_file.apply_bundle",
+    actor: "planner",
+  });
+});
+
 test("AssignmentWakeupPlanner uses planner-updated assignment policy for continuation decisions", async (t) => {
   t.mock.timers.enable({ apis: ["Date"] });
   const now = "2026-06-16T12:45:00.000Z";

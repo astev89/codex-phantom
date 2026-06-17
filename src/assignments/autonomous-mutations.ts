@@ -126,6 +126,25 @@ export type AutonomousMutationAdapter = {
   }): { verificationMethod?: string } | void;
 };
 
+type AutonomousMutationApplyFailureEvidence = {
+  before?: JsonValue;
+  after?: JsonValue;
+  rollback?: JsonValue;
+};
+
+class AutonomousMutationApplyFailure extends Error {
+  readonly evidence: AutonomousMutationApplyFailureEvidence;
+
+  constructor(
+    message: string,
+    evidence: AutonomousMutationApplyFailureEvidence
+  ) {
+    super(message);
+    this.name = "AutonomousMutationApplyFailure";
+    this.evidence = evidence;
+  }
+}
+
 const OPERATOR_SETTINGS_MUTATION_CLASS = "configuration.operator_settings";
 const ASSIGNMENT_POLICY_MUTATION_CLASS = "configuration.assignment_policy";
 const TOOL_BUNDLE_ENABLE_MUTATION_CLASS = "tool.bundle_enable";
@@ -136,8 +155,10 @@ const RUNTIME_CONFIG_LIMITS_MUTATION_CLASS = "configuration.runtime_limits";
 const ROLE_PERMISSION_POLICY_MUTATION_CLASS = "role.permission_policy";
 const PROJECT_FILE_DRAFT_MUTATION_CLASS = "project_file.draft";
 const PROJECT_FILE_APPLY_DRAFT_MUTATION_CLASS = "project_file.apply_draft";
+const PROJECT_FILE_APPLY_BUNDLE_MUTATION_CLASS = "project_file.apply_bundle";
+const MAX_PROJECT_FILE_BUNDLE_DRAFTS = 10;
 const UNSUPPORTED_MUTATION_ERROR =
-  "Only configuration.operator_settings, configuration.assignment_policy, configuration.runtime_limits, tool.bundle_enable, prompt.runtime_guidance, memory_policy.runtime_bounds, role.permission_policy, project_file.draft, and project_file.apply_draft autonomous mutations are supported in this slice";
+  "Only configuration.operator_settings, configuration.assignment_policy, configuration.runtime_limits, tool.bundle_enable, prompt.runtime_guidance, memory_policy.runtime_bounds, role.permission_policy, project_file.draft, project_file.apply_draft, and project_file.apply_bundle autonomous mutations are supported in this slice";
 const RISK_ORDER: SelfEvolutionRiskClass[] = [
   "low",
   "medium",
@@ -195,6 +216,10 @@ export class AutonomousMutationExecutor {
         ...(options.projectFileDrafts && options.projectFileApply
           ? [
               createProjectFileApplyDraftAutonomousMutationAdapter(
+                options.projectFileDrafts,
+                options.projectFileApply
+              ),
+              createProjectFileApplyBundleAutonomousMutationAdapter(
                 options.projectFileDrafts,
                 options.projectFileApply
               ),
@@ -266,7 +291,12 @@ export class AutonomousMutationExecutor {
         error instanceof Error
           ? error.message
           : "Failed to apply autonomous mutation";
+      const evidence =
+        error instanceof AutonomousMutationApplyFailure ? error.evidence : {};
       const failed = this.ledger.recordFailedOutcome(planned.id, {
+        before: evidence.before,
+        after: evidence.after,
+        rollback: evidence.rollback,
         verification: {
           attempted: true,
           result: "failed",
@@ -999,6 +1029,147 @@ function createProjectFileApplyDraftAutonomousMutationAdapter(
   };
 }
 
+type ProjectFileBundleApplyItem = {
+  draftId: string;
+  path: string;
+  beforeFile: ProjectFileApplyBeforeSnapshot;
+  afterFile: {
+    path: string;
+    sizeBytes: number;
+    sha256: string;
+  };
+};
+
+function createProjectFileApplyBundleAutonomousMutationAdapter(
+  projectFileDrafts: ProjectFileDraftStore,
+  projectFileApply: ProjectFileApplyService
+): AutonomousMutationAdapter {
+  return {
+    target: "project_file",
+    mutationType: "apply_bundle",
+    mutationClass: PROJECT_FILE_APPLY_BUNDLE_MUTATION_CLASS,
+    minimumRiskClass: "high",
+    rollbackConflictScope: "global",
+    affectedResources: [{ type: "project_file_bundle" }],
+    apply(input) {
+      const proposedChange = asJsonObject(
+        input.proposedChange,
+        "proposedChange"
+      );
+      const projectFileBundle = asJsonObject(
+        proposedChange.projectFileBundle,
+        "proposedChange.projectFileBundle"
+      );
+      const draftIds = requireProjectFileBundleDraftIds(
+        projectFileBundle.draftIds
+      );
+      const drafts = draftIds.map((draftId) => {
+        const draft = projectFileDrafts.get(draftId);
+        if (!draft) {
+          throw new Error(`Project file draft not found: ${draftId}`);
+        }
+        if (draft.assignmentId !== input.assignment.id) {
+          throw new Error("Project file draft does not belong to assignment");
+        }
+        if (draft.status !== "active") {
+          throw new Error("Project file draft is not active");
+        }
+        return draft;
+      });
+      const paths = drafts.map((draft) => draft.path);
+      if (new Set(paths).size !== paths.length) {
+        throw new Error(
+          "projectFileBundle.draftIds cannot target duplicate paths"
+        );
+      }
+
+      const applied: ProjectFileBundleApplyItem[] = [];
+      const appliedDraftIds: string[] = [];
+      const appliedDraftSummaries = new Map<
+        string,
+        ReturnType<typeof projectFileDraftSummary>
+      >();
+      try {
+        for (const draft of drafts) {
+          const result = projectFileApply.apply({
+            path: draft.path,
+            content: draft.content,
+          });
+          applied.push({
+            draftId: draft.id,
+            path: draft.path,
+            beforeFile: result.before,
+            afterFile: result.after,
+          });
+          const appliedDraft = projectFileDrafts.markApplied(draft.id, {
+            mutationId: input.mutationId,
+            sha256: result.after.sha256,
+          });
+          appliedDraftIds.push(draft.id);
+          appliedDraftSummaries.set(
+            draft.id,
+            projectFileDraftSummary(appliedDraft)
+          );
+        }
+      } catch (error) {
+        for (const item of applied.slice().reverse()) {
+          projectFileApply.rollback(item.beforeFile);
+        }
+        for (const draftId of appliedDraftIds.reverse()) {
+          projectFileDrafts.markActiveAfterApplyRollback(draftId);
+        }
+        if (applied.length > 0) {
+          throw new AutonomousMutationApplyFailure(
+            error instanceof Error
+              ? error.message
+              : "Failed to apply autonomous mutation",
+            projectFileBundleApplyEvidence(applied, appliedDraftSummaries)
+          );
+        }
+        throw error;
+      }
+
+      const affectedResources = applied.map((item) => ({
+        type: "project_file",
+        id: item.path,
+        path: item.path,
+      }));
+      const evidence = projectFileBundleApplyEvidence(
+        applied,
+        appliedDraftSummaries
+      );
+      return {
+        before: evidence.before,
+        after: evidence.after,
+        rollback: evidence.rollback,
+        affectedResources,
+        verificationMethod: "project_file_apply_bundle_write",
+      };
+    },
+    rollback(input) {
+      const rollback = asJsonObject(input.rollback, "rollback");
+      const projectFileBundle = asJsonObject(
+        rollback.projectFileBundle,
+        "rollback.projectFileBundle"
+      );
+      if (!Array.isArray(projectFileBundle.items)) {
+        throw new Error("rollback.projectFileBundle.items must be an array");
+      }
+      const items = projectFileBundle.items.map((itemValue) =>
+        normalizeProjectFileBundleRollbackItem(itemValue)
+      );
+      for (const item of items) {
+        projectFileApply.assertRollbackSafe(item.beforeFile);
+      }
+      for (const item of items.slice().reverse()) {
+        projectFileApply.rollback(item.beforeFile);
+        projectFileDrafts.markActiveAfterApplyRollback(item.draftId);
+      }
+      return { verificationMethod: "project_file_apply_bundle_rollback" };
+    },
+  };
+}
+
 function authorizingPolicy(
   policy: AssignmentSelfEvolutionPolicy,
   actor?: string,
@@ -1045,6 +1216,89 @@ function highestRiskClass(
   right: SelfEvolutionRiskClass
 ): SelfEvolutionRiskClass {
   return riskRank(left) >= riskRank(right) ? left : right;
+}
+
+function requireProjectFileBundleDraftIds(value: JsonValue): string[] {
+  if (!Array.isArray(value)) {
+    throw new Error("projectFileBundle.draftIds must be an array");
+  }
+  if (value.length < 1 || value.length > MAX_PROJECT_FILE_BUNDLE_DRAFTS) {
+    throw new Error(
+      `projectFileBundle.draftIds must contain 1 to ${MAX_PROJECT_FILE_BUNDLE_DRAFTS} draft ids`
+    );
+  }
+  const ids = value.map((item, index) =>
+    requiredString(item, `projectFileBundle.draftIds[${index}]`)
+  );
+  if (new Set(ids).size !== ids.length) {
+    throw new Error("projectFileBundle.draftIds must be unique");
+  }
+  return ids;
+}
+
+function projectFileBundleApplyEvidence(
+  applied: ProjectFileBundleApplyItem[],
+  appliedDraftSummaries: Map<string, ReturnType<typeof projectFileDraftSummary>>
+): Required<AutonomousMutationApplyFailureEvidence> {
+  return {
+    before: {
+      files: applied.map((item) => ({
+        draftId: item.draftId,
+        path: item.path,
+        beforeFile: item.beforeFile,
+      })),
+    } as unknown as JsonValue,
+    after: {
+      files: applied.map((item) => ({
+        draft: appliedDraftSummaries.get(item.draftId),
+        file: item.afterFile,
+      })),
+    } as unknown as JsonValue,
+    rollback: {
+      projectFileBundle: {
+        items: applied,
+      },
+    } as unknown as JsonValue,
+  };
+}
+
+function normalizeProjectFileBundleRollbackItem(
+  value: JsonValue
+): ProjectFileBundleApplyItem {
+  const item = asJsonObject(value, "rollback.projectFileBundle.items[]");
+  const draftId = requiredString(
+    item.draftId,
+    "rollback.projectFileBundle.item.draftId"
+  );
+  const path = requiredString(
+    item.path,
+    "rollback.projectFileBundle.item.path"
+  );
+  const afterFile = asJsonObject(
+    item.afterFile,
+    "rollback.projectFileBundle.item.afterFile"
+  );
+  if (typeof afterFile.sizeBytes !== "number") {
+    throw new Error(
+      "rollback.projectFileBundle.item.afterFile.sizeBytes must be a number"
+    );
+  }
+  return {
+    draftId,
+    path,
+    beforeFile: normalizeProjectFileApplyBeforeSnapshot(item.beforeFile),
+    afterFile: {
+      path: requiredString(
+        afterFile.path,
+        "rollback.projectFileBundle.item.afterFile.path"
+      ),
+      sizeBytes: afterFile.sizeBytes,
+      sha256: requiredString(
+        afterFile.sha256,
+        "rollback.projectFileBundle.item.afterFile.sha256"
+      ),
+    },
+  };
 }
 
 function normalizeProjectFileApplyBeforeSnapshot(

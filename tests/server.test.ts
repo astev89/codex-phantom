@@ -2157,6 +2157,7 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
                 "configuration.operator_settings",
                 "project_file.draft",
                 "project_file.apply_draft",
+                "project_file.apply_bundle",
               ],
             },
           },
@@ -2330,6 +2331,94 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       projectFileDrafts.get(projectFileDraft?.id ?? "")?.status,
       "rolled_back"
     );
+
+    const bundleFirstPath = join(
+      process.cwd(),
+      "docs/http-project-file-bundle-a.md"
+    );
+    const bundleSecondPath = join(
+      process.cwd(),
+      "docs/http-project-file-bundle-b.md"
+    );
+    for (const path of [bundleFirstPath, bundleSecondPath]) {
+      if (existsSync(path)) {
+        unlinkSync(path);
+      }
+    }
+    const bundleFirstDraft = projectFileDrafts.create({
+      assignmentId: projectFileAssignmentJson.assignment.id,
+      path: "docs/http-project-file-bundle-a.md",
+      content: "# HTTP Bundle A\n",
+      contentType: "text/markdown",
+    });
+    const bundleSecondDraft = projectFileDrafts.create({
+      assignmentId: projectFileAssignmentJson.assignment.id,
+      path: "docs/http-project-file-bundle-b.md",
+      content: "# HTTP Bundle B\n",
+      contentType: "text/markdown",
+    });
+
+    const projectFileApplyBundle = await fetch(
+      `${baseUrl}/admin/assignments/${projectFileAssignmentJson.assignment.id}/mutations/apply`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          target: "project_file",
+          mutationType: "apply_bundle",
+          riskClass: "high",
+          rationale: "Apply reviewed project file draft bundle.",
+          proposedChange: {
+            projectFileBundle: {
+              draftIds: [bundleFirstDraft.id, bundleSecondDraft.id],
+            },
+          },
+        }),
+      }
+    );
+    assert.equal(projectFileApplyBundle.status, 200);
+    const projectFileApplyBundleJson =
+      (await projectFileApplyBundle.json()) as {
+        mutation: {
+          id: string;
+          target: string;
+          mutationType: string;
+          status: string;
+        };
+      };
+    assert.equal(projectFileApplyBundleJson.mutation.status, "applied");
+    assert.equal(projectFileApplyBundleJson.mutation.target, "project_file");
+    assert.equal(
+      projectFileApplyBundleJson.mutation.mutationType,
+      "apply_bundle"
+    );
+    assert.equal(readFileSync(bundleFirstPath, "utf8"), "# HTTP Bundle A\n");
+    assert.equal(readFileSync(bundleSecondPath, "utf8"), "# HTTP Bundle B\n");
+    assert.equal(projectFileDrafts.get(bundleFirstDraft.id)?.status, "applied");
+    assert.equal(
+      projectFileDrafts.get(bundleSecondDraft.id)?.status,
+      "applied"
+    );
+
+    const projectFileBundleRollback = await fetch(
+      `${baseUrl}/admin/assignments/${projectFileAssignmentJson.assignment.id}/mutations/${projectFileApplyBundleJson.mutation.id}/rollback`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({ actor: "operator" }),
+      }
+    );
+    assert.equal(projectFileBundleRollback.status, 200);
+    assert.equal(existsSync(bundleFirstPath), false);
+    assert.equal(existsSync(bundleSecondPath), false);
+    assert.equal(projectFileDrafts.get(bundleFirstDraft.id)?.status, "active");
+    assert.equal(projectFileDrafts.get(bundleSecondDraft.id)?.status, "active");
 
     const policyAssignmentCreate = await fetch(`${baseUrl}/admin/assignments`, {
       method: "POST",
