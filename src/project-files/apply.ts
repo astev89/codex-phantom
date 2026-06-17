@@ -73,6 +73,12 @@ export class ProjectFileApplyService {
     writeFileSync(absolutePath, snapshotBytes(snapshot));
   }
 
+  assertRollbackSafe(snapshot: ProjectFileApplyBeforeSnapshot): void {
+    const path = normalizeProjectFilePath(snapshot.path);
+    this.resolveProjectPath(path);
+    this.assertNoSymlinkSegments(path);
+  }
+
   private snapshot(
     path: string,
     absolutePath: string

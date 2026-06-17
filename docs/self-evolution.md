@@ -2,7 +2,7 @@
 
 Governed self-evolution lets Codex Phantom change its own behavior under explicit policy, audit, rollback, and operator-interruption controls. [ADR-0003](adr/0003-delegate-autonomous-assignments-and-self-evolution.md) extends the target model beyond proposal-only HITL: autonomous assignments may use delegated autonomous self-evolution when assignment policy grants `evolve` or higher authority.
 
-The current implementation is still narrower than that target. Today, Codex Phantom can create auditable proposals, apply approved proposal-based operator-settings mutations through operator-authenticated APIs, and apply assignment-authorized autonomous operator-settings, assignment-policy, runtime config-limits overlay, approved read-only tool-bundle enable, prompt runtime-guidance overlay, memory policy runtime-bounds overlay, role permission-policy overlay, project-file draft-record mutations, and high-risk single-draft project-file apply mutations for `evolve` assignments. Broader filesystem mutation, broader prompt rewriting, broader memory mutation, and broader configuration beyond runtime limits remain future work.
+The current implementation is still narrower than that target. Today, Codex Phantom can create auditable proposals, apply approved proposal-based operator-settings mutations through operator-authenticated APIs, and apply assignment-authorized autonomous operator-settings, assignment-policy, runtime config-limits overlay, approved read-only tool-bundle enable, prompt runtime-guidance overlay, memory policy runtime-bounds overlay, role permission-policy overlay, project-file draft-record mutations, high-risk single-draft project-file apply mutations, and high-risk draft-bundle project-file apply mutations for `evolve` assignments. Broader filesystem mutation, broader prompt rewriting, broader memory mutation, and broader configuration beyond runtime limits remain future work.
 
 ## Proposal Scope
 
@@ -283,6 +283,27 @@ curl -X POST http://localhost:3210/admin/assignments/asgn_123/mutations/apply \
 
 `project_file.apply_draft` is not in the default assignment self-evolution allow-list. Operators must explicitly include it in `assignment.policy.selfEvolution.allowedMutationClasses`, and the executor classifies it as at least high risk even if the caller omits or understates `riskClass`. The adapter applies only an existing active project-file draft owned by the same assignment. It writes exactly that draft's already-validated safe text content to the draft's normalized relative path under the repository root, rejects symlinked path components, records before/after/rollback evidence in the autonomous mutation ledger, marks the draft `applied`, and blocks stale rollback when a newer project-file apply mutation exists. Rollback restores the exact previous file bytes when the file already existed or deletes the file when apply created it, then marks the draft active again. This does not apply arbitrary inline content, apply patches, mutate multiple files, stage files, commit changes, push branches, install packages, edit protected/generated locations, follow symlinks, or create MCP write capability.
 
+Apply an explicitly allowed project-file draft bundle to the repository filesystem:
+
+```bash
+curl -X POST http://localhost:3210/admin/assignments/asgn_123/mutations/apply \
+  -H "Authorization: Bearer $OPERATOR_BEARER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "target": "project_file",
+    "mutationType": "apply_bundle",
+    "riskClass": "high",
+    "rationale": "Apply coordinated reviewed documentation drafts.",
+    "proposedChange": {
+      "projectFileBundle": {
+        "draftIds": ["pfd_123", "pfd_456"]
+      }
+    }
+  }'
+```
+
+`project_file.apply_bundle` is not in the default assignment self-evolution allow-list. Operators must explicitly include it in `assignment.policy.selfEvolution.allowedMutationClasses`, and the executor classifies it as at least high risk even if the caller omits or understates `riskClass`. The adapter applies only 1 to 10 existing active project-file drafts owned by the same assignment. It validates every draft id and rejects duplicate paths before writing, applies each draft through the same real-root and symlink-safe filesystem applier as `project_file.apply_draft`, records per-file before/after/rollback byte evidence in the autonomous mutation ledger, marks all bundle drafts `applied`, and rolls back any earlier writes if a later write fails. Rollback restores exact previous file bytes or deletes files created by the bundle, then marks every bundle draft active again. This does not apply arbitrary inline content, parse patches, stage files, commit changes, push branches, install packages, edit protected/generated locations, follow symlinks, or create MCP write capability.
+
 Roll back an applied autonomous mutation:
 
 ```bash
@@ -302,7 +323,7 @@ Mutation-authorized assignment wakeups may request one bounded autonomous mutati
 ASSIGNMENT_MUTATION: {"target":"configuration","mutationType":"runtime_limits","riskClass":"medium","rationale":"Allow a longer next run.","proposedChange":{"runtimeLimits":{"defaultRunTimeoutMs":45000}}}
 ```
 
-Planner-driven mutation still uses the assignment-authorized autonomous executor. The marker is bound to the current assignment and coordinator run id, uses `actor: "planner"`, and must pass the same `evolve` authority, self-evolution allow-list, risk, validation, ledger, and rollback evidence checks as the admin/internal apply route. This includes explicitly allow-listed `configuration.runtime_limits`, `prompt.runtime_guidance`, `memory_policy.runtime_bounds`, `role.permission_policy`, `project_file.draft`, and `project_file.apply_draft` markers. Failed executor attempts do not fail the wakeup; the autonomous mutation ledger owns the failure evidence.
+Planner-driven mutation still uses the assignment-authorized autonomous executor. The marker is bound to the current assignment and coordinator run id, uses `actor: "planner"`, and must pass the same `evolve` authority, self-evolution allow-list, risk, validation, ledger, and rollback evidence checks as the admin/internal apply route. This includes explicitly allow-listed `configuration.runtime_limits`, `prompt.runtime_guidance`, `memory_policy.runtime_bounds`, `role.permission_policy`, `project_file.draft`, `project_file.apply_draft`, and `project_file.apply_bundle` markers. Failed executor attempts do not fail the wakeup; the autonomous mutation ledger owns the failure evidence.
 
 This is not MCP write capability. MCP assignment mutation tooling remains read-only, and planner markers only cover mutation classes that already have built-in adapters and explicit assignment policy.
 
