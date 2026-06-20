@@ -2851,9 +2851,9 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       }
     );
     assert.equal(assignmentControlTrailingSlash.status, 200);
-    const assignmentWakeupJobsJson = await eventually(
-      async () => {
-        const response = await fetch(`${baseUrl}/scheduler/jobs`, {
+	    const assignmentWakeupJobsJson = await eventually(
+	      async () => {
+	        const response = await fetch(`${baseUrl}/scheduler/jobs`, {
           headers: {
             Authorization: `Bearer ${config.operatorBearerToken}`,
           },
@@ -2872,12 +2872,62 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
         value.jobs.some(
           (job) =>
             job.name === ASSIGNMENT_WAKEUP_JOB_NAME &&
-            job.status === "scheduled"
-        )
-    );
-    const disableFailureNotifications = await fetch(
-      `${baseUrl}/admin/assignments/${assignmentCreateJson.assignment.id}/control`,
-      {
+	            job.status === "scheduled"
+	        )
+	    );
+
+    const operatorDependencyParent = assignments.create({
+      objective: "Coordinate operator dependency control",
+      policy: {
+        maxWakeups: 5,
+        childAssignments: { maxDepth: 1, maxActiveChildren: 1 },
+      },
+    });
+    const operatorDependencyChild = assignments.promoteChild({
+      parentAssignmentId: operatorDependencyParent.assignment.id,
+      objective: "Waited child cancelled through HTTP",
+      rationale: "Operator cancellation should release the parent promptly.",
+      waitForChild: true,
+      policy: { maxWakeups: 1 },
+    });
+    await scheduler.stop();
+    try {
+      const parkedParentJob = await assignmentWakeups.scheduleNext({
+        assignmentId: operatorDependencyParent.assignment.id,
+        reason: "Waiting for child assignment",
+        delayMinutes: 120,
+      });
+      const cancelWaitedChild = await fetch(
+        `${baseUrl}/admin/assignments/${operatorDependencyChild.child.assignment.id}/control`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${config.operatorBearerToken}`,
+          },
+          body: JSON.stringify({
+            action: "cancel",
+            reason: "Operator cancelled waited child",
+          }),
+        }
+      );
+      assert.equal(cancelWaitedChild.status, 200);
+      const rescheduledParentJob = (await scheduler.list()).find(
+        (job) => job.id === parkedParentJob.id
+      );
+      assert.ok(rescheduledParentJob);
+      assert.equal(rescheduledParentJob.status, "scheduled");
+      assert.deepEqual(JSON.parse(rescheduledParentJob.message), {
+        assignmentId: operatorDependencyParent.assignment.id,
+        reason: "Waited child assignments satisfied",
+      });
+      assert.ok(Date.parse(rescheduledParentJob.scheduledAt) <= Date.now() + 1000);
+    } finally {
+      await scheduler.start();
+    }
+	    const disableFailureNotifications = await fetch(
+	      `${baseUrl}/admin/assignments/${assignmentCreateJson.assignment.id}/control`,
+	      {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

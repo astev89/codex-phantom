@@ -151,6 +151,34 @@ export class SchedulerService {
       .map((row) => toJobRecord(row));
   }
 
+  async reschedule(
+    jobId: string,
+    options: {
+      message?: string;
+      delayMs?: number;
+      scheduledAt?: string;
+    }
+  ): Promise<JobRecord> {
+    const job = await this.get(jobId);
+    if (!job || job.status !== "scheduled") {
+      throw new Error(`Cannot reschedule non-scheduled job ${jobId}`);
+    }
+    const now = new Date();
+    const scheduledAt = options.scheduledAt
+      ? new Date(options.scheduledAt).toISOString()
+      : new Date(now.getTime() + (options.delayMs ?? 0)).toISOString();
+    const updated: JobRecord = {
+      ...job,
+      message: options.message ?? job.message,
+      scheduledAt,
+    };
+    await this.update(updated);
+    if (this.running) {
+      this.arm(updated);
+    }
+    return updated;
+  }
+
   private async recoverStaleRunningJobs(): Promise<void> {
     const jobs = await this.list();
     const recoveredAt = new Date().toISOString();

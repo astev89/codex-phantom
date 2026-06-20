@@ -132,6 +132,959 @@ test("AutonomousAssignmentService promotes bounded child assignments with inheri
   });
 });
 
+test("AutonomousAssignmentService parks child assignments until dependencies are satisfied", () => {
+  withAssignments((assignments) => {
+    const parent = assignments.create({
+      objective: "Coordinate dependent work",
+      policy: {
+        maxWakeups: 10,
+        childAssignments: { maxDepth: 1, maxActiveChildren: 3 },
+      },
+    });
+    const prerequisite = assignments.promoteChild({
+      parentAssignmentId: parent.assignment.id,
+      objective: "Finish prerequisite",
+      rationale: "The dependent task needs this evidence first.",
+      waitForChild: true,
+      policy: { maxWakeups: 2 },
+    });
+
+    const dependent = assignments.promoteChild({
+      parentAssignmentId: parent.assignment.id,
+      objective: "Run dependent verification",
+      rationale: "This should not start before the prerequisite finishes.",
+      dependsOnChildIds: [prerequisite.child.assignment.id],
+      waitForChildren: "all",
+      waitForChild: true,
+      policy: { maxWakeups: 2 },
+    });
+
+    assert.equal(dependent.child.assignment.lifecycleState, "waiting");
+    assert.deepEqual(dependent.child.assignment.metadata, {
+      parentAssignmentId: parent.assignment.id,
+      parentWaitsForChild: true,
+      childDependencyConfigValidated: true,
+      dependsOnChildIds: [prerequisite.child.assignment.id],
+      waitForChildren: "all",
+    });
+    assert.throws(
+      () =>
+        assignments.startWakeup({
+          assignmentId: dependent.child.assignment.id,
+          reason: "should still be parked",
+        }),
+      /Assignment is waiting for child assignment dependencies/
+    );
+
+    const childEvent = assignments
+      .timeline(parent.assignment.id)
+      .events.find(
+        (event) =>
+          event.type === "child_assignment_created" &&
+          typeof event.payload === "object" &&
+          event.payload !== null &&
+          !Array.isArray(event.payload) &&
+          event.payload.childAssignmentId === dependent.child.assignment.id
+      );
+    assert.deepEqual(childEvent?.payload, {
+      actor: "planner",
+      childAssignmentId: dependent.child.assignment.id,
+      objective: "Run dependent verification",
+      rationale: "This should not start before the prerequisite finishes.",
+      waitForChild: true,
+      dependsOnChildIds: [prerequisite.child.assignment.id],
+      waitForChildren: "all",
+    });
+  });
+});
+
+test("AutonomousAssignmentService rejects cross-parent child dependencies", () => {
+  withAssignments((assignments) => {
+    const firstParent = assignments.create({
+      objective: "First root",
+      policy: { childAssignments: { maxDepth: 1, maxActiveChildren: 2 } },
+    });
+    const secondParent = assignments.create({
+      objective: "Second root",
+      policy: { childAssignments: { maxDepth: 1, maxActiveChildren: 2 } },
+    });
+    const foreignChild = assignments.promoteChild({
+      parentAssignmentId: firstParent.assignment.id,
+      objective: "Foreign child",
+      rationale: "Belongs to a different parent.",
+    });
+
+    assert.throws(
+      () =>
+        assignments.promoteChild({
+          parentAssignmentId: secondParent.assignment.id,
+          objective: "Invalid dependent",
+          rationale: "Should not cross parent scope.",
+          dependsOnChildIds: [foreignChild.child.assignment.id],
+        }),
+      /Child assignment dependencies must belong to the same parent assignment/
+    );
+  });
+});
+
+test("AutonomousAssignmentService blocks dependents when required dependencies are already failed", () => {
+  withAssignments((assignments) => {
+    const parent = assignments.create({
+      objective: "Coordinate failed dependency work",
+      policy: {
+        maxWakeups: 10,
+        childAssignments: { maxDepth: 1, maxActiveChildren: 3 },
+      },
+    });
+    const prerequisite = assignments.promoteChild({
+      parentAssignmentId: parent.assignment.id,
+      objective: "Prerequisite that fails",
+      rationale: "This dependency will fail before dependent promotion.",
+      waitForChild: true,
+      policy: { maxWakeups: 2 },
+    });
+    assignments.applyWakeupDecision({
+      assignmentId: prerequisite.child.assignment.id,
+      decision: "failed",
+      reason: "Prerequisite failed",
+    });
+
+    const dependent = assignments.promoteChild({
+      parentAssignmentId: parent.assignment.id,
+      objective: "Dependent should block immediately",
+      rationale: "Its required dependency has already failed.",
+      dependsOnChildIds: [prerequisite.child.assignment.id],
+      waitForChildren: "all",
+      waitForChild: true,
+      policy: { maxWakeups: 2 },
+    });
+
+    assert.equal(dependent.child.assignment.lifecycleState, "blocked");
+    assert.ok(
+      assignments
+        .timeline(dependent.child.assignment.id)
+        .events.some(
+          (event) =>
+            event.type === "blocked" &&
+            typeof event.payload === "object" &&
+            event.payload !== null &&
+            !Array.isArray(event.payload) &&
+            event.payload.reason ===
+              "Required child assignment dependency failed"
+        )
+    );
+  });
+});
+
+test("AutonomousAssignmentService resolves dependencies after operator lifecycle controls", () => {
+  withAssignments((assignments) => {
+    const parent = assignments.create({
+      objective: "Coordinate operator-cancelled dependency work",
+      policy: {
+        maxWakeups: 10,
+        childAssignments: { maxDepth: 1, maxActiveChildren: 3 },
+      },
+    });
+    const prerequisite = assignments.promoteChild({
+      parentAssignmentId: parent.assignment.id,
+      objective: "Prerequisite that may be cancelled",
+      rationale: "Operator may cancel this dependency.",
+      waitForChild: true,
+      policy: { maxWakeups: 2 },
+    });
+    const dependent = assignments.promoteChild({
+      parentAssignmentId: parent.assignment.id,
+      objective: "Dependent should block on cancellation",
+      rationale: "Its required dependency may be cancelled.",
+      dependsOnChildIds: [prerequisite.child.assignment.id],
+      waitForChildren: "all",
+      waitForChild: true,
+      policy: { maxWakeups: 2 },
+    });
+
+    assignments.control(prerequisite.child.assignment.id, {
+      action: "cancel",
+      reason: "Operator cancelled prerequisite",
+    });
+
+    const blocked = assignments.getRequired(dependent.child.assignment.id);
+    assert.equal(blocked.assignment.lifecycleState, "blocked");
+    const blockedEvent = assignments
+      .timeline(dependent.child.assignment.id)
+      .events.find((event) => event.type === "blocked");
+    assert.deepEqual(blockedEvent?.payload, {
+      decision: "blocked",
+      reason: "Required child assignment dependency failed",
+      blockingDependencies: [
+        {
+          childAssignmentId: prerequisite.child.assignment.id,
+          lifecycleState: "cancelled",
+        },
+      ],
+      nextWakeupAt: null,
+    });
+  });
+});
+
+test("AutonomousAssignmentService reactivates dependency-blocked children after prerequisites recover", () => {
+  withAssignments((assignments) => {
+    const parent = assignments.create({
+      objective: "Coordinate recoverable dependency work",
+      policy: {
+        maxWakeups: 10,
+        childAssignments: { maxDepth: 1, maxActiveChildren: 3 },
+      },
+    });
+    const prerequisite = assignments.promoteChild({
+      parentAssignmentId: parent.assignment.id,
+      objective: "Prerequisite that may recover",
+      rationale: "The prerequisite can be reopened after a failure.",
+      waitForChild: true,
+      policy: { maxWakeups: 2 },
+    });
+    const dependent = assignments.promoteChild({
+      parentAssignmentId: parent.assignment.id,
+      objective: "Dependent should recover",
+      rationale: "Its dependency may recover after failing.",
+      dependsOnChildIds: [prerequisite.child.assignment.id],
+      waitForChildren: "all",
+      waitForChild: true,
+      policy: { maxWakeups: 2 },
+    });
+
+    assignments.applyWakeupDecision({
+      assignmentId: prerequisite.child.assignment.id,
+      decision: "failed",
+      reason: "Prerequisite failed transiently",
+    });
+    assert.equal(
+      assignments.getRequired(dependent.child.assignment.id).assignment
+        .lifecycleState,
+      "blocked"
+    );
+
+    assignments.control(prerequisite.child.assignment.id, {
+      action: "reopen",
+      reason: "Retry prerequisite",
+    });
+    assert.equal(
+      assignments.getRequired(dependent.child.assignment.id).assignment
+        .lifecycleState,
+      "waiting"
+    );
+
+    assignments.applyWakeupDecision({
+      assignmentId: prerequisite.child.assignment.id,
+      decision: "completed",
+      reason: "Prerequisite recovered",
+    });
+
+    assert.equal(
+      assignments.getRequired(dependent.child.assignment.id).assignment
+        .lifecycleState,
+      "active"
+    );
+  });
+});
+
+test("AutonomousAssignmentService keeps recovered dependents parked when parent child slots are full", () => {
+  withAssignments((assignments) => {
+    const parent = assignments.create({
+      objective: "Coordinate constrained dependency recovery",
+      policy: {
+        maxWakeups: 10,
+        childAssignments: { maxDepth: 1, maxActiveChildren: 1 },
+      },
+    });
+    const prerequisite = assignments.promoteChild({
+      parentAssignmentId: parent.assignment.id,
+      objective: "Recoverable prerequisite",
+      rationale: "The prerequisite can finish, reopen, and recover.",
+      waitForChild: true,
+      policy: { maxWakeups: 2 },
+    });
+    assignments.applyWakeupDecision({
+      assignmentId: prerequisite.child.assignment.id,
+      decision: "completed",
+      reason: "Initial prerequisite completion",
+    });
+    const dependent = assignments.promoteChild({
+      parentAssignmentId: parent.assignment.id,
+      objective: "Recovered dependent",
+      rationale: "Should not bypass the parent active child envelope.",
+      waitForChild: true,
+      dependsOnChildIds: [prerequisite.child.assignment.id],
+      waitForChildren: "all",
+      policy: { maxWakeups: 2 },
+    });
+
+    assignments.control(prerequisite.child.assignment.id, {
+      action: "reopen",
+      reason: "Prerequisite needs rework",
+    });
+    assignments.applyWakeupDecision({
+      assignmentId: prerequisite.child.assignment.id,
+      decision: "failed",
+      reason: "Prerequisite failed during rework",
+    });
+    assert.equal(
+      assignments.getRequired(dependent.child.assignment.id).assignment
+        .lifecycleState,
+      "blocked"
+    );
+
+    const replacement = assignments.promoteChild({
+      parentAssignmentId: parent.assignment.id,
+      objective: "Replacement work",
+      rationale: "Uses the only active child slot.",
+      waitForChild: true,
+      policy: { maxWakeups: 2 },
+    });
+    assignments.control(prerequisite.child.assignment.id, {
+      action: "reopen",
+      reason: "Retry prerequisite",
+    });
+    assignments.applyWakeupDecision({
+      assignmentId: prerequisite.child.assignment.id,
+      decision: "completed",
+      reason: "Prerequisite recovered",
+    });
+
+    assert.equal(
+      assignments.getRequired(replacement.child.assignment.id).assignment
+        .lifecycleState,
+      "active"
+    );
+    assert.equal(
+      assignments.getRequired(dependent.child.assignment.id).assignment
+        .lifecycleState,
+      "waiting"
+    );
+
+    assert.throws(
+      () =>
+        assignments.control(dependent.child.assignment.id, {
+          action: "resume",
+          reason: "Operator retries recovered dependent",
+        }),
+      /Assignment parent has no child capacity/
+    );
+    assert.equal(
+      assignments.getRequired(dependent.child.assignment.id).assignment
+        .lifecycleState,
+      "waiting"
+    );
+
+    assignments.applyWakeupDecision({
+      assignmentId: replacement.child.assignment.id,
+      decision: "completed",
+      reason: "Replacement completed",
+    });
+    assert.equal(
+      assignments.getRequired(dependent.child.assignment.id).assignment
+        .lifecycleState,
+      "active"
+    );
+  });
+});
+
+test("AutonomousAssignmentService softens recovered dependency chains back to waiting", () => {
+  withAssignments((assignments) => {
+    const parent = assignments.create({
+      objective: "Coordinate chained dependency work",
+      policy: {
+        maxWakeups: 10,
+        childAssignments: { maxDepth: 1, maxActiveChildren: 4 },
+      },
+    });
+    const prerequisite = assignments.promoteChild({
+      parentAssignmentId: parent.assignment.id,
+      objective: "Root prerequisite",
+      rationale: "The chain starts here.",
+      waitForChild: true,
+      policy: { maxWakeups: 2 },
+    });
+    const middle = assignments.promoteChild({
+      parentAssignmentId: parent.assignment.id,
+      objective: "Middle dependent",
+      rationale: "Runs after the root prerequisite.",
+      waitForChild: true,
+      dependsOnChildIds: [prerequisite.child.assignment.id],
+      waitForChildren: "all",
+      policy: { maxWakeups: 2 },
+    });
+    const tail = assignments.promoteChild({
+      parentAssignmentId: parent.assignment.id,
+      objective: "Tail dependent",
+      rationale: "Runs after the middle dependent.",
+      waitForChild: true,
+      dependsOnChildIds: [middle.child.assignment.id],
+      waitForChildren: "all",
+      policy: { maxWakeups: 2 },
+    });
+
+    assignments.applyWakeupDecision({
+      assignmentId: prerequisite.child.assignment.id,
+      decision: "failed",
+      reason: "Root failed",
+    });
+    assert.equal(
+      assignments.getRequired(tail.child.assignment.id).assignment
+        .lifecycleState,
+      "blocked"
+    );
+
+    assignments.control(prerequisite.child.assignment.id, {
+      action: "reopen",
+      reason: "Retry root",
+    });
+    assignments.applyWakeupDecision({
+      assignmentId: prerequisite.child.assignment.id,
+      decision: "completed",
+      reason: "Root recovered",
+    });
+
+    assert.equal(
+      assignments.getRequired(middle.child.assignment.id).assignment
+        .lifecycleState,
+      "active"
+    );
+    assert.equal(
+      assignments.getRequired(tail.child.assignment.id).assignment
+        .lifecycleState,
+      "waiting"
+    );
+    assert.throws(
+      () =>
+        assignments.startWakeup({
+          assignmentId: parent.assignment.id,
+          reason: "tail should still wait",
+        }),
+      /waiting for active child assignment/
+    );
+  });
+});
+
+test("AutonomousAssignmentService returns post-resolution child state", () => {
+  withAssignments((assignments) => {
+    const parent = assignments.create({
+      objective: "Coordinate stale return prevention",
+      policy: {
+        maxWakeups: 10,
+        childAssignments: { maxDepth: 1, maxActiveChildren: 3 },
+      },
+    });
+    const prerequisite = assignments.promoteChild({
+      parentAssignmentId: parent.assignment.id,
+      objective: "Prerequisite that remains active",
+      rationale: "Dependent should not start yet.",
+      waitForChild: true,
+      policy: { maxWakeups: 2 },
+    });
+    const dependent = assignments.promoteChild({
+      parentAssignmentId: parent.assignment.id,
+      objective: "Dependent should stay waiting",
+      rationale: "Its dependency remains active.",
+      dependsOnChildIds: [prerequisite.child.assignment.id],
+      waitForChildren: "all",
+      waitForChild: true,
+      policy: { maxWakeups: 2 },
+    });
+
+    const resumed = assignments.control(dependent.child.assignment.id, {
+      action: "resume",
+      reason: "Operator tries early resume",
+    });
+    assert.equal(resumed.assignment.lifecycleState, "waiting");
+    assert.equal(
+      assignments.getRequired(dependent.child.assignment.id).assignment
+        .lifecycleState,
+      "waiting"
+    );
+
+    const waiting = assignments.applyWakeupDecision({
+      assignmentId: dependent.child.assignment.id,
+      decision: "waiting",
+      reason: "Planner tries early wake",
+    });
+    assert.equal(waiting.assignment.lifecycleState, "waiting");
+    assert.equal(
+      assignments.getRequired(dependent.child.assignment.id).assignment
+        .lifecycleState,
+      "waiting"
+    );
+  });
+});
+
+test("AutonomousAssignmentService preserves non-dependency waits on dependency children", () => {
+  withAssignments((assignments) => {
+    const parent = assignments.create({
+      objective: "Coordinate paused dependency child",
+      policy: {
+        maxWakeups: 10,
+        childAssignments: { maxDepth: 1, maxActiveChildren: 3 },
+      },
+    });
+    const prerequisite = assignments.promoteChild({
+      parentAssignmentId: parent.assignment.id,
+      objective: "Completed prerequisite",
+      rationale: "The dependent dependency is satisfied.",
+      waitForChild: true,
+      policy: { maxWakeups: 2 },
+    });
+    assignments.applyWakeupDecision({
+      assignmentId: prerequisite.child.assignment.id,
+      decision: "completed",
+      reason: "Prerequisite done",
+    });
+    const dependent = assignments.promoteChild({
+      parentAssignmentId: parent.assignment.id,
+      objective: "Dependent should remain controllable",
+      rationale: "Satisfied dependencies should not undo pauses or retries.",
+      dependsOnChildIds: [prerequisite.child.assignment.id],
+      waitForChildren: "all",
+      waitForChild: true,
+      policy: { maxWakeups: 2 },
+    });
+
+    const paused = assignments.control(dependent.child.assignment.id, {
+      action: "pause",
+      reason: "Operator pause",
+    });
+    assert.equal(paused.assignment.lifecycleState, "waiting");
+    assert.equal(
+      assignments.getRequired(dependent.child.assignment.id).assignment
+        .lifecycleState,
+      "waiting"
+    );
+
+    const retryWait = assignments.applyWakeupDecision({
+      assignmentId: dependent.child.assignment.id,
+      decision: "waiting",
+      reason: "Retry later",
+    });
+    assert.equal(retryWait.assignment.lifecycleState, "waiting");
+    assert.equal(
+      assignments.getRequired(dependent.child.assignment.id).assignment
+        .lifecycleState,
+      "waiting"
+    );
+  });
+});
+
+test("AutonomousAssignmentService reactivates dependency waits across repeated dependency cycles", () => {
+  withAssignments((assignments) => {
+    const parent = assignments.create({
+      objective: "Coordinate repeated dependency cycles",
+      policy: {
+        maxWakeups: 10,
+        childAssignments: { maxDepth: 1, maxActiveChildren: 3 },
+      },
+    });
+    const prerequisite = assignments.promoteChild({
+      parentAssignmentId: parent.assignment.id,
+      objective: "Cycling prerequisite",
+      rationale: "The prerequisite can complete, reopen, and complete again.",
+      waitForChild: true,
+      policy: { maxWakeups: 2 },
+    });
+    assignments.applyWakeupDecision({
+      assignmentId: prerequisite.child.assignment.id,
+      decision: "completed",
+      reason: "First completion",
+    });
+    const dependent = assignments.promoteChild({
+      parentAssignmentId: parent.assignment.id,
+      objective: "Dependent should reactivate twice",
+      rationale: "Dependency wait provenance should stay current.",
+      dependsOnChildIds: [prerequisite.child.assignment.id],
+      waitForChildren: "all",
+      waitForChild: true,
+      policy: { maxWakeups: 2 },
+    });
+
+    assignments.control(prerequisite.child.assignment.id, {
+      action: "reopen",
+      reason: "Rework prerequisite",
+    });
+    assert.equal(
+      assignments.getRequired(dependent.child.assignment.id).assignment
+        .lifecycleState,
+      "waiting"
+    );
+
+    assignments.applyWakeupDecision({
+      assignmentId: prerequisite.child.assignment.id,
+      decision: "completed",
+      reason: "Second completion",
+    });
+    assert.equal(
+      assignments.getRequired(dependent.child.assignment.id).assignment
+        .lifecycleState,
+      "active"
+    );
+  });
+});
+
+test("AutonomousAssignmentService preserves pauses after dependency wait cycles", () => {
+  withAssignments((assignments) => {
+    const parent = assignments.create({
+      objective: "Coordinate pause after dependency wait",
+      policy: {
+        maxWakeups: 10,
+        childAssignments: { maxDepth: 1, maxActiveChildren: 3 },
+      },
+    });
+    const prerequisite = assignments.promoteChild({
+      parentAssignmentId: parent.assignment.id,
+      objective: "Prerequisite for paused child",
+      rationale: "Starts active so dependent is initially dependency-waiting.",
+      waitForChild: true,
+      policy: { maxWakeups: 2 },
+    });
+    const dependent = assignments.promoteChild({
+      parentAssignmentId: parent.assignment.id,
+      objective: "Dependent paused after activation",
+      rationale: "Pause should not be mistaken for old dependency wait.",
+      dependsOnChildIds: [prerequisite.child.assignment.id],
+      waitForChildren: "all",
+      waitForChild: true,
+      policy: { maxWakeups: 2 },
+    });
+
+    assignments.applyWakeupDecision({
+      assignmentId: prerequisite.child.assignment.id,
+      decision: "completed",
+      reason: "Prerequisite completed",
+    });
+    assert.equal(
+      assignments.getRequired(dependent.child.assignment.id).assignment
+        .lifecycleState,
+      "active"
+    );
+
+    const paused = assignments.control(dependent.child.assignment.id, {
+      action: "pause",
+      reason: "Operator pause after dependency wait",
+    });
+    assert.equal(paused.assignment.lifecycleState, "waiting");
+    assert.equal(
+      assignments.getRequired(dependent.child.assignment.id).assignment
+        .lifecycleState,
+      "waiting"
+    );
+  });
+});
+
+test("AutonomousAssignmentService preserves operator pauses across dependency failure recovery", () => {
+  withAssignments((assignments) => {
+    const parent = assignments.create({
+      objective: "Coordinate paused child recovery",
+      policy: {
+        maxWakeups: 10,
+        childAssignments: { maxDepth: 1, maxActiveChildren: 3 },
+      },
+    });
+    const prerequisite = assignments.promoteChild({
+      parentAssignmentId: parent.assignment.id,
+      objective: "Recoverable prerequisite",
+      rationale: "The prerequisite may fail after a dependent is paused.",
+      waitForChild: true,
+      policy: { maxWakeups: 2 },
+    });
+    assignments.applyWakeupDecision({
+      assignmentId: prerequisite.child.assignment.id,
+      decision: "completed",
+      reason: "Initial prerequisite complete",
+    });
+    const dependent = assignments.promoteChild({
+      parentAssignmentId: parent.assignment.id,
+      objective: "Paused dependent",
+      rationale: "Operator pause should survive dependency churn.",
+      dependsOnChildIds: [prerequisite.child.assignment.id],
+      waitForChildren: "all",
+      waitForChild: true,
+      policy: { maxWakeups: 2 },
+    });
+    assignments.control(dependent.child.assignment.id, {
+      action: "pause",
+      reason: "Operator pause",
+    });
+
+    assignments.control(prerequisite.child.assignment.id, {
+      action: "reopen",
+      reason: "Retry prerequisite",
+    });
+    assignments.applyWakeupDecision({
+      assignmentId: prerequisite.child.assignment.id,
+      decision: "failed",
+      reason: "Prerequisite failed again",
+    });
+    assignments.control(prerequisite.child.assignment.id, {
+      action: "reopen",
+      reason: "Retry prerequisite again",
+    });
+    assignments.applyWakeupDecision({
+      assignmentId: prerequisite.child.assignment.id,
+      decision: "completed",
+      reason: "Prerequisite recovered again",
+    });
+
+    assert.equal(
+      assignments.getRequired(dependent.child.assignment.id).assignment
+        .lifecycleState,
+      "waiting"
+    );
+  });
+});
+
+test("AutonomousAssignmentService supports any dependency wait mode", () => {
+  withAssignments((assignments) => {
+    const parent = assignments.create({
+      objective: "Coordinate any dependency work",
+      policy: {
+        maxWakeups: 10,
+        childAssignments: { maxDepth: 1, maxActiveChildren: 4 },
+      },
+    });
+    const completedDependency = assignments.promoteChild({
+      parentAssignmentId: parent.assignment.id,
+      objective: "Completed dependency",
+      rationale: "One successful dependency is enough.",
+      policy: { maxWakeups: 2 },
+    });
+    const pendingDependency = assignments.promoteChild({
+      parentAssignmentId: parent.assignment.id,
+      objective: "Pending dependency",
+      rationale: "This dependency can remain pending.",
+      policy: { maxWakeups: 2 },
+    });
+    assignments.applyWakeupDecision({
+      assignmentId: completedDependency.child.assignment.id,
+      decision: "completed",
+      reason: "Dependency completed",
+    });
+
+    const dependent = assignments.promoteChild({
+      parentAssignmentId: parent.assignment.id,
+      objective: "Any-mode dependent",
+      rationale: "One completed dependency should release this child.",
+      dependsOnChildIds: [
+        completedDependency.child.assignment.id,
+        pendingDependency.child.assignment.id,
+      ],
+      waitForChildren: "any",
+      policy: { maxWakeups: 2 },
+    });
+
+    assert.equal(dependent.child.assignment.lifecycleState, "active");
+    assert.deepEqual(dependent.child.assignment.metadata, {
+      parentAssignmentId: parent.assignment.id,
+      parentWaitsForChild: false,
+      childDependencyConfigValidated: true,
+      dependsOnChildIds: [
+        completedDependency.child.assignment.id,
+        pendingDependency.child.assignment.id,
+      ],
+      waitForChildren: "any",
+    });
+  });
+});
+
+test("AutonomousAssignmentService resolves dependencies outside the newest sibling page", () => {
+  withAssignments((assignments) => {
+    const parent = assignments.create({
+      objective: "Coordinate long-lived child history",
+      policy: {
+        maxWakeups: 10,
+        childAssignments: { maxDepth: 1, maxActiveChildren: 1 },
+      },
+    });
+    const oldPrerequisite = assignments.promoteChild({
+      parentAssignmentId: parent.assignment.id,
+      objective: "Old completed prerequisite",
+      rationale: "This child should remain dependency-addressable by id.",
+      policy: { maxWakeups: 1 },
+    });
+    assignments.applyWakeupDecision({
+      assignmentId: oldPrerequisite.child.assignment.id,
+      decision: "completed",
+      reason: "Old prerequisite completed",
+    });
+
+    for (let index = 0; index < 500; index += 1) {
+      const laterChild = assignments.promoteChild({
+        parentAssignmentId: parent.assignment.id,
+        objective: `Later completed child ${index}`,
+        rationale: "Push the old prerequisite outside a bounded sibling page.",
+        policy: { maxWakeups: 1 },
+      });
+      assignments.applyWakeupDecision({
+        assignmentId: laterChild.child.assignment.id,
+        decision: "completed",
+        reason: "Later child completed",
+      });
+    }
+
+    const dependent = assignments.promoteChild({
+      parentAssignmentId: parent.assignment.id,
+      objective: "Dependent on old prerequisite",
+      rationale: "Dependency lookup should not depend on sibling page recency.",
+      waitForChild: true,
+      dependsOnChildIds: [oldPrerequisite.child.assignment.id],
+      waitForChildren: "all",
+      policy: { maxWakeups: 1 },
+    });
+
+    assert.equal(dependent.child.assignment.lifecycleState, "active");
+  });
+});
+
+test("AutonomousAssignmentService releases blocked child wakeup budget", () => {
+  withAssignments((assignments) => {
+    const parent = assignments.create({
+      objective: "Parent with tight child budget",
+      policy: { maxWakeups: 1 },
+    });
+    const child = assignments.promoteChild({
+      parentAssignmentId: parent.assignment.id,
+      objective: "Waited child that blocks",
+      rationale: "The parent should be able to wake after it blocks.",
+      waitForChild: true,
+      policy: { maxWakeups: 1 },
+    });
+
+    assert.throws(
+      () =>
+        assignments.startWakeup({
+          assignmentId: parent.assignment.id,
+          reason: "child still reserves budget",
+        }),
+      /waiting for active child assignment/
+    );
+
+    assignments.applyWakeupDecision({
+      assignmentId: child.child.assignment.id,
+      decision: "blocked",
+      reason: "Child is blocked",
+    });
+
+    const started = assignments.startWakeup({
+      assignmentId: parent.assignment.id,
+      reason: "blocked child released budget",
+    });
+    assert.equal(started.assignment.wakeupCount, 1);
+  });
+});
+
+test("AutonomousAssignmentService releases blocked child active slots", () => {
+  withAssignments((assignments) => {
+    const parent = assignments.create({
+      objective: "Parent with tight child slots",
+      policy: {
+        maxWakeups: 3,
+        childAssignments: { maxDepth: 1, maxActiveChildren: 1 },
+      },
+    });
+    const child = assignments.promoteChild({
+      parentAssignmentId: parent.assignment.id,
+      objective: "Child that blocks",
+      rationale: "Blocked child should not occupy the only child slot.",
+      waitForChild: true,
+      policy: { maxWakeups: 1 },
+    });
+    assignments.applyWakeupDecision({
+      assignmentId: child.child.assignment.id,
+      decision: "blocked",
+      reason: "Child is blocked",
+    });
+
+    const replacement = assignments.promoteChild({
+      parentAssignmentId: parent.assignment.id,
+      objective: "Replacement child",
+      rationale: "Blocked child released the active child slot.",
+      waitForChild: true,
+      policy: { maxWakeups: 1 },
+    });
+
+    assert.equal(replacement.child.assignment.lifecycleState, "active");
+  });
+});
+
+test("AutonomousAssignmentService prevents blocked child resume from bypassing parent child slots", () => {
+  withAssignments((assignments) => {
+    const parent = assignments.create({
+      objective: "Parent with one child slot",
+      policy: {
+        maxWakeups: 3,
+        childAssignments: { maxDepth: 1, maxActiveChildren: 1 },
+      },
+    });
+    const blocked = assignments.promoteChild({
+      parentAssignmentId: parent.assignment.id,
+      objective: "Blocked child",
+      rationale: "This child releases its slot while blocked.",
+      waitForChild: true,
+      policy: { maxWakeups: 1 },
+    });
+    assignments.applyWakeupDecision({
+      assignmentId: blocked.child.assignment.id,
+      decision: "blocked",
+      reason: "Blocked on external evidence",
+    });
+    assignments.promoteChild({
+      parentAssignmentId: parent.assignment.id,
+      objective: "Replacement child",
+      rationale: "This child claims the only slot.",
+      waitForChild: true,
+      policy: { maxWakeups: 1 },
+    });
+
+    assert.throws(
+      () =>
+        assignments.control(blocked.child.assignment.id, {
+          action: "resume",
+          reason: "Operator retries blocked child",
+        }),
+      /Assignment parent has no child capacity/
+    );
+    assert.equal(
+      assignments.getRequired(blocked.child.assignment.id).assignment
+        .lifecycleState,
+      "blocked"
+    );
+  });
+});
+
+test("AutonomousAssignmentService ignores dependency-shaped opaque child metadata", () => {
+  withAssignments((assignments) => {
+    const parent = assignments.create({
+      objective: "Coordinate child metadata",
+      policy: {
+        maxWakeups: 3,
+        childAssignments: { maxDepth: 1, maxActiveChildren: 2 },
+      },
+    });
+    const child = assignments.promoteChild({
+      parentAssignmentId: parent.assignment.id,
+      objective: "Child with opaque metadata",
+      rationale: "Legacy metadata keys should not become dependencies.",
+      metadata: {
+        dependsOnChildIds: ["not-a-sibling"],
+        waitForChildren: "all",
+      },
+      policy: { maxWakeups: 1 },
+    });
+
+    const started = assignments.startWakeup({
+      assignmentId: child.child.assignment.id,
+      reason: "opaque metadata is not orchestration policy",
+    });
+
+    assert.equal(started.assignment.wakeupCount, 1);
+  });
+});
+
 test("AutonomousAssignmentService caps child policy at the parent authority envelope", () => {
   withAssignments((assignments) => {
     const parent = assignments.create({

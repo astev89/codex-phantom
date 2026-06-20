@@ -953,14 +953,20 @@ export class HttpServer {
         let wakeupScheduleWarning:
           | { message: string; error: string }
           | undefined;
-        if (body.action === "force_wakeup" && this.assignmentWakeups) {
+        if (this.assignmentWakeups) {
           try {
-            await this.assignmentWakeups.scheduleNext({
-              assignmentId,
-              reason: body.reason ?? "Operator forced wakeup",
-              delayMinutes: 0,
-              force: true,
-            });
+            if (body.action === "force_wakeup") {
+              await this.assignmentWakeups.scheduleNext({
+                assignmentId,
+                reason: body.reason ?? "Operator forced wakeup",
+                delayMinutes: 0,
+                force: true,
+              });
+            } else {
+              await this.assignmentWakeups.scheduleDependencyContinuationsForAssignment(
+                assignment.assignment.id
+              );
+            }
           } catch (error) {
             const errorMessage =
               error instanceof Error
