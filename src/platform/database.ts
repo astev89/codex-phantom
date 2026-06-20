@@ -447,6 +447,15 @@ export class AppDatabase {
         updated_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS prompt_managed_fragments (
+        id TEXT PRIMARY KEY,
+        fragment_text TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1,
+        updated_by TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS memory_policy_settings (
         id TEXT PRIMARY KEY,
         memory_top_k INTEGER NOT NULL,
@@ -565,6 +574,7 @@ export class AppDatabase {
       CREATE INDEX IF NOT EXISTS idx_inbound_channel_feedback_channel ON inbound_channel_feedback(channel_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_operator_settings_updated_at ON operator_settings(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_prompt_runtime_guidance_updated_at ON prompt_runtime_guidance(updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_prompt_managed_fragments_active ON prompt_managed_fragments(active, id);
       CREATE INDEX IF NOT EXISTS idx_memory_policy_settings_updated_at ON memory_policy_settings(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_runtime_config_limits_updated_at ON runtime_config_limits(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_role_policy_overrides_updated_at ON role_policy_overrides(updated_at DESC);

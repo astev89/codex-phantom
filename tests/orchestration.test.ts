@@ -9,7 +9,10 @@ import type { AgentAdapter, AgentRunRequest } from "../src/agent/types.ts";
 import { SessionStore } from "../src/chat/session-store.ts";
 import { MemoryStore } from "../src/memory/store.ts";
 import { AppDatabase } from "../src/platform/database.ts";
-import { PromptRuntimeGuidanceStore } from "../src/prompts/runtime-guidance.ts";
+import {
+  PromptManagedFragmentStore,
+  PromptRuntimeGuidanceStore,
+} from "../src/prompts/runtime-guidance.ts";
 import { RunGraphStore } from "../src/orchestration/run-graph-store.ts";
 import { loadRolePolicyConfig } from "../src/orchestration/role-config.ts";
 import { RolePolicyRuntimeStore } from "../src/orchestration/role-policy-runtime.ts";
@@ -359,6 +362,92 @@ test("runtime includes persisted prompt runtime guidance in system prompts", asy
     requests[0]?.systemPrompt ?? "",
     /# Runtime Guidance Overlay\nPrefer concise verification summaries\./
   );
+  database.close();
+});
+
+test("runtime assembles managed prompt fragments in deterministic order", async () => {
+  const database = new AppDatabase(":memory:");
+  const config = makeConfig();
+  const promptGuidance = new PromptRuntimeGuidanceStore(database);
+  const promptFragments = new PromptManagedFragmentStore(database);
+  promptGuidance.update("Prefer concise verification summaries.", "operator");
+  promptFragments.upsert("zeta", "Second fragment.", "operator");
+  promptFragments.upsert("alpha", "First fragment.", "operator");
+  promptFragments.upsert("cleared", "Do not include me.", "operator");
+  promptFragments.clear("cleared", "operator");
+  const requests: AgentRunRequest[] = [];
+  const adapter: AgentAdapter = {
+    name: "capturing",
+    capabilities: {
+      supportsResume: true,
+      supportsStreaming: true,
+      supportsToolStreaming: true,
+      supportsStructuredOutput: true,
+      supportsParallelToolCalls: false,
+      supportsReasoningEffort: true,
+    },
+    async run(request) {
+      requests.push(request);
+      return {
+        runId: request.runId,
+        outputText: "fragments observed",
+        providerSessionId: "provider_fragments",
+        previousResponseId: "provider_fragments",
+        transcript: [
+          { role: "user", content: request.messages.at(-1)?.content ?? "" },
+          { role: "assistant", content: "fragments observed" },
+        ],
+        toolCalls: [],
+      };
+    },
+  };
+  const runtime = new AgentRuntime(
+    config,
+    adapter,
+    new SessionStore(database),
+    new MemoryStore(
+      database,
+      config,
+      makeDisabledEmbeddings(),
+      makeFakeVectorStore({
+        backend: "qdrant",
+        available: false,
+        configured: false,
+      }),
+      makeFakeVectorStore({ backend: "sqlite_fallback", available: true })
+    ),
+    new ToolRegistry(),
+    promptGuidance,
+    promptFragments
+  );
+
+  await runtime.run(
+    {
+      channelId: "web",
+      conversationId: "conv",
+      role: "coordinator",
+      messages: [{ role: "user", content: "check prompt fragments" }],
+      permissionPolicy: {
+        mode: "read_only",
+        fileGlobs: [],
+        allowedToolIds: [],
+        allowedMcpServers: [],
+      },
+      toolCapabilities: [],
+    },
+    async () => {}
+  );
+
+  const systemPrompt = requests[0]?.systemPrompt ?? "";
+  assert.match(
+    systemPrompt,
+    /# Runtime Guidance Overlay\nPrefer concise verification summaries\./
+  );
+  assert.match(
+    systemPrompt,
+    /# Managed Prompt Fragments\n## alpha\nFirst fragment\.\n\n## zeta\nSecond fragment\./
+  );
+  assert.doesNotMatch(systemPrompt, /Do not include me/);
   database.close();
 });
 

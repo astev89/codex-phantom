@@ -28,7 +28,10 @@ import {
   rolePolicyRuntimeSnapshot,
 } from "../src/orchestration/role-policy-runtime.ts";
 import { ProjectFileDraftStore } from "../src/project-files/drafts.ts";
-import { PromptRuntimeGuidanceStore } from "../src/prompts/runtime-guidance.ts";
+import {
+  PromptManagedFragmentStore,
+  PromptRuntimeGuidanceStore,
+} from "../src/prompts/runtime-guidance.ts";
 import { ToolRegistry } from "../src/tools/registry.ts";
 import { DynamicToolRegistry } from "../src/tools/dynamic-registry.ts";
 import { ToolGovernanceService } from "../src/tools/governance.ts";
@@ -827,6 +830,7 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     loadRolePolicyConfig(config.roleConfigPath)
   );
   const projectFileDrafts = new ProjectFileDraftStore(database);
+  const promptFragments = new PromptManagedFragmentStore(database);
 
   const runtime = new AgentRuntime(
     config,
@@ -834,7 +838,8 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     sessions,
     memory,
     tools,
-    promptGuidance
+    promptGuidance,
+    promptFragments
   );
   const runs = new RunGraphStore(database);
   const orchestration = new OrchestrationService(runtime, tools, runs);
@@ -909,6 +914,7 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     undefined,
     assignmentMutations,
     promptGuidance,
+    promptFragments,
     memoryPolicy,
     runtimeConfigLimits,
     rolePolicy,
@@ -1759,6 +1765,128 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       }
     );
     assert.equal(promptGuidance.get().text, "Prefer neutral summaries.");
+
+    const fragmentAssignmentCreate = await fetch(
+      `${baseUrl}/admin/assignments`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          objective: "Autonomously tune a managed prompt fragment",
+          autonomyLevel: "evolve",
+          policy: {
+            selfEvolution: {
+              allowedMutationClasses: [
+                "configuration.operator_settings",
+                "prompt.managed_fragment",
+              ],
+              maxRiskClass: "high",
+            },
+          },
+        }),
+      }
+    );
+    assert.equal(fragmentAssignmentCreate.status, 201);
+    const fragmentAssignmentJson =
+      (await fragmentAssignmentCreate.json()) as {
+        assignment: { id: string };
+      };
+
+    const fragmentApply = await fetch(
+      `${baseUrl}/admin/assignments/${fragmentAssignmentJson.assignment.id}/mutations/apply`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          target: "prompt",
+          mutationType: "managed_fragment",
+          rationale: "Add a bounded runtime fragment.",
+          runId: "coord_http_prompt_fragment",
+          actor: "operator",
+          riskClass: "high",
+          proposedChange: {
+            promptFragment: {
+              id: "tone",
+              mode: "upsert",
+              text: "Prefer concise operator summaries.",
+            },
+          },
+        }),
+      }
+    );
+    assert.equal(fragmentApply.status, 200);
+    const fragmentApplyJson = (await fragmentApply.json()) as {
+      mutation: {
+        id: string;
+        status: string;
+        target: string;
+        mutationType: string;
+        before: { id: string; exists: boolean };
+        after: { id: string; text: string; active: boolean; exists: boolean };
+        rollback: unknown;
+      };
+    };
+    assert.deepEqual(
+      {
+        status: fragmentApplyJson.mutation.status,
+        target: fragmentApplyJson.mutation.target,
+        mutationType: fragmentApplyJson.mutation.mutationType,
+        before: fragmentApplyJson.mutation.before,
+        after: fragmentApplyJson.mutation.after,
+      },
+      {
+        status: "applied",
+        target: "prompt",
+        mutationType: "managed_fragment",
+        before: { id: "tone", text: "", active: false, exists: false },
+        after: {
+          id: "tone",
+          text: "Prefer concise operator summaries.",
+          active: true,
+          exists: true,
+        },
+      }
+    );
+    assert.deepEqual(fragmentApplyJson.mutation.rollback, {
+      promptFragment: { id: "tone", mode: "delete" },
+    });
+    assert.equal(
+      promptFragments.get("tone")?.text,
+      "Prefer concise operator summaries."
+    );
+
+    const fragmentRollback = await fetch(
+      `${baseUrl}/admin/assignments/${fragmentAssignmentJson.assignment.id}/mutations/${fragmentApplyJson.mutation.id}/rollback`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({ actor: "operator" }),
+      }
+    );
+    assert.equal(fragmentRollback.status, 200);
+    const fragmentRollbackJson = (await fragmentRollback.json()) as {
+      mutation: { id: string; status: string };
+    };
+    assert.deepEqual(
+      {
+        id: fragmentRollbackJson.mutation.id,
+        status: fragmentRollbackJson.mutation.status,
+      },
+      {
+        id: fragmentApplyJson.mutation.id,
+        status: "rolled_back",
+      }
+    );
+    assert.equal(promptFragments.get("tone"), null);
 
     const memoryPolicyBefore = {
       memoryTopK: memoryPolicy.get().memoryTopK,

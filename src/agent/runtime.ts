@@ -3,7 +3,10 @@ import { SessionStore } from "../chat/session-store.ts";
 import { MemoryStore } from "../memory/store.ts";
 import type { MemoryInsightSet, MemoryTurnRecord } from "../memory/types.ts";
 import { assemblePrompt } from "../prompts/assembler.ts";
-import type { PromptRuntimeGuidanceStore } from "../prompts/runtime-guidance.ts";
+import type {
+  PromptManagedFragmentStore,
+  PromptRuntimeGuidanceStore,
+} from "../prompts/runtime-guidance.ts";
 import { toJsonValue } from "../platform/database.ts";
 import { createId } from "../shared/ids.ts";
 import type {
@@ -27,6 +30,7 @@ export class AgentRuntime {
   private readonly memory: MemoryStore;
   private readonly tools: ToolRegistry;
   private readonly promptGuidance?: PromptRuntimeGuidanceStore;
+  private readonly promptFragments?: PromptManagedFragmentStore;
 
   constructor(
     config: AppConfig,
@@ -34,7 +38,8 @@ export class AgentRuntime {
     sessions: SessionStore,
     memory: MemoryStore,
     tools: ToolRegistry,
-    promptGuidance?: PromptRuntimeGuidanceStore
+    promptGuidance?: PromptRuntimeGuidanceStore,
+    promptFragments?: PromptManagedFragmentStore
   ) {
     this.config = config;
     this.adapter = adapter;
@@ -42,6 +47,7 @@ export class AgentRuntime {
     this.memory = memory;
     this.tools = tools;
     this.promptGuidance = promptGuidance;
+    this.promptFragments = promptFragments;
   }
 
   async run(
@@ -106,7 +112,8 @@ export class AgentRuntime {
           systemPrompt: assemblePrompt(
             this.config,
             memory,
-            this.promptGuidance?.get().text ?? ""
+            this.promptGuidance?.get().text ?? "",
+            this.promptFragments?.listActive() ?? []
           ),
           messages: requestMessages,
           memory,

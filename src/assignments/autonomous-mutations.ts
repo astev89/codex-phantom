@@ -2,7 +2,10 @@ import type { JsonValue } from "../shared/types.ts";
 import type { MemoryPolicyStore } from "../memory/policy.ts";
 import type { RuntimeConfigLimitsStore } from "../config/runtime-limits.ts";
 import type { OperatorSettingsMutationPort } from "../self-evolution/mutations.ts";
-import type { PromptRuntimeGuidanceStore } from "../prompts/runtime-guidance.ts";
+import type {
+  PromptManagedFragmentStore,
+  PromptRuntimeGuidanceStore,
+} from "../prompts/runtime-guidance.ts";
 import type { RolePolicyRuntimeStore } from "../orchestration/role-policy-runtime.ts";
 import type { ProjectFileDraftStore } from "../project-files/drafts.ts";
 import type { ProjectFileApplyService } from "../project-files/apply.ts";
@@ -68,6 +71,7 @@ export type AutonomousMutationExecutorOptions = {
   memoryPolicy?: MemoryPolicyStore;
   runtimeConfigLimits?: RuntimeConfigLimitsStore;
   promptGuidance?: PromptRuntimeGuidanceStore;
+  promptFragments?: PromptManagedFragmentStore;
   rolePolicy?: RolePolicyRuntimeStore;
   projectFileDrafts?: ProjectFileDraftStore;
   projectFileApply?: ProjectFileApplyService;
@@ -76,7 +80,7 @@ export type AutonomousMutationExecutorOptions = {
 };
 
 const UNSUPPORTED_MUTATION_ERROR =
-  "Only configuration.operator_settings, configuration.assignment_policy, configuration.runtime_limits, tool.bundle_enable, prompt.runtime_guidance, memory_policy.runtime_bounds, role.permission_policy, project_file.draft, project_file.apply_draft, and project_file.apply_bundle autonomous mutations are supported in this slice";
+  "Only configuration.operator_settings, configuration.assignment_policy, configuration.runtime_limits, tool.bundle_enable, prompt.runtime_guidance, prompt.managed_fragment, memory_policy.runtime_bounds, role.permission_policy, project_file.draft, project_file.apply_draft, and project_file.apply_bundle autonomous mutations are supported in this slice";
 const RISK_ORDER: SelfEvolutionRiskClass[] = [
   "low",
   "medium",

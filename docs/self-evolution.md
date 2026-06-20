@@ -193,6 +193,8 @@ curl -X POST http://localhost:3210/admin/assignments/asgn_123/mutations/apply \
 
 `prompt.runtime_guidance` is not in the default assignment self-evolution allow-list. Operators must explicitly include it in `assignment.policy.selfEvolution.allowedMutationClasses`. The adapter writes a single bounded runtime guidance overlay that is appended to assembled system prompts, records before/after/rollback evidence in the autonomous mutation ledger, and rolls back to the previous overlay text. It does not rewrite bundled role prompts, edit prompt source files, or create write-capable MCP tooling.
 
+`prompt.managed_fragment` is also explicit opt-in and is treated as high risk. It upserts or clears a named runtime prompt fragment through `proposedChange.promptFragment: { id, mode: "upsert" | "clear", text? }`, assembles active fragments in deterministic id order after runtime guidance, and records exact active, inactive, or absent rollback evidence. It does not rewrite prompt source files or grant MCP write capability.
+
 Apply an explicitly allowed memory policy runtime-bounds overlay mutation:
 
 ```bash
@@ -323,7 +325,7 @@ Mutation-authorized assignment wakeups may request one bounded autonomous mutati
 ASSIGNMENT_MUTATION: {"target":"configuration","mutationType":"runtime_limits","riskClass":"medium","rationale":"Allow a longer next run.","proposedChange":{"runtimeLimits":{"defaultRunTimeoutMs":45000}}}
 ```
 
-Planner-driven mutation still uses the assignment-authorized autonomous executor. The marker is bound to the current assignment and coordinator run id, uses `actor: "planner"`, and must pass the same `evolve` authority, self-evolution allow-list, risk, validation, ledger, and rollback evidence checks as the admin/internal apply route. This includes explicitly allow-listed `configuration.runtime_limits`, `prompt.runtime_guidance`, `memory_policy.runtime_bounds`, `role.permission_policy`, `project_file.draft`, `project_file.apply_draft`, and `project_file.apply_bundle` markers. Failed executor attempts do not fail the wakeup; the autonomous mutation ledger owns the failure evidence.
+Planner-driven mutation still uses the assignment-authorized autonomous executor. The marker is bound to the current assignment and coordinator run id, uses `actor: "planner"`, and must pass the same `evolve` authority, self-evolution allow-list, risk, validation, ledger, and rollback evidence checks as the admin/internal apply route. This includes explicitly allow-listed `configuration.runtime_limits`, `prompt.runtime_guidance`, `prompt.managed_fragment`, `memory_policy.runtime_bounds`, `role.permission_policy`, `project_file.draft`, `project_file.apply_draft`, and `project_file.apply_bundle` markers. Failed executor attempts do not fail the wakeup; the autonomous mutation ledger owns the failure evidence.
 
 This is not MCP write capability. MCP assignment mutation tooling remains read-only, and planner markers only cover mutation classes that already have built-in adapters and explicit assignment policy.
 

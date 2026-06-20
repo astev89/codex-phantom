@@ -1,10 +1,12 @@
 import type { AppConfig } from "../config.ts";
+import type { PromptManagedFragmentRecord } from "./runtime-guidance.ts";
 import type { MemoryContextEnvelope } from "../shared/types.ts";
 
 export function assemblePrompt(
   config: AppConfig,
   memory: MemoryContextEnvelope,
-  runtimeGuidanceText = ""
+  runtimeGuidanceText = "",
+  managedFragments: PromptManagedFragmentRecord[] = []
 ): string {
   const sections = [
     buildIdentitySection(config),
@@ -12,6 +14,7 @@ export function assemblePrompt(
     buildRoleSection(),
     buildLearnedBehaviorSection(),
     buildRuntimeGuidanceSection(runtimeGuidanceText),
+    buildManagedFragmentsSection(managedFragments),
     buildSafetySection(),
     buildToolingSection(),
     buildMemorySection(memory),
@@ -57,6 +60,23 @@ function buildRuntimeGuidanceSection(
 ): string | null {
   const text = runtimeGuidanceText.trim();
   return text ? ["# Runtime Guidance Overlay", text].join("\n") : null;
+}
+
+function buildManagedFragmentsSection(
+  fragments: PromptManagedFragmentRecord[]
+): string | null {
+  const activeFragments = fragments
+    .filter((fragment) => fragment.active && fragment.text.trim())
+    .sort((left, right) => left.id.localeCompare(right.id));
+  if (activeFragments.length === 0) {
+    return null;
+  }
+  return [
+    "# Managed Prompt Fragments",
+    activeFragments
+      .map((fragment) => `## ${fragment.id}\n${fragment.text.trim()}`)
+      .join("\n\n"),
+  ].join("\n");
 }
 
 function buildSafetySection(): string {

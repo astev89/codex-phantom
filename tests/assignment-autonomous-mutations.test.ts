@@ -31,7 +31,10 @@ import {
 import { AppDatabase } from "../src/platform/database.ts";
 import { ProjectFileApplyService } from "../src/project-files/apply.ts";
 import { ProjectFileDraftStore } from "../src/project-files/drafts.ts";
-import { PromptRuntimeGuidanceStore } from "../src/prompts/runtime-guidance.ts";
+import {
+  PromptManagedFragmentStore,
+  PromptRuntimeGuidanceStore,
+} from "../src/prompts/runtime-guidance.ts";
 import { OperatorSettingsStore } from "../src/server/settings.ts";
 import { ToolBundleImportStore } from "../src/tools/bundles.ts";
 import { ToolBundleLifecycleService } from "../src/tools/bundle-lifecycle.ts";
@@ -89,13 +92,23 @@ function createPromptGuidanceHarness() {
   const ledger = new AutonomousMutationLedger(database, assignments);
   const settings = new OperatorSettingsStore(database);
   const promptGuidance = new PromptRuntimeGuidanceStore(database);
+  const promptFragments = new PromptManagedFragmentStore(database);
   const executor = new AutonomousMutationExecutor({
     assignments,
     ledger,
     settings,
     promptGuidance,
+    promptFragments,
   });
-  return { assignments, database, executor, ledger, promptGuidance, settings };
+  return {
+    assignments,
+    database,
+    executor,
+    ledger,
+    promptFragments,
+    promptGuidance,
+    settings,
+  };
 }
 
 function createMemoryPolicyHarness() {
@@ -1606,6 +1619,348 @@ test("AutonomousMutationExecutor rolls back first prompt runtime guidance mutati
   });
 
   assert.equal(promptGuidance.get().text, "");
+  database.close();
+});
+
+test("AutonomousMutationExecutor applies managed prompt fragment mutations", () => {
+  const { assignments, database, executor, promptFragments } =
+    createPromptGuidanceHarness();
+  promptFragments.upsert("tone", "Prefer concise summaries.", "operator");
+  const assignment = assignments.create({
+    objective: "Tune managed runtime prompt fragments",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "prompt.managed_fragment",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+
+  const applied = executor.apply({
+    assignmentId: assignment.assignment.id,
+    runId: "coord_prompt_fragment",
+    target: "prompt",
+    mutationType: "managed_fragment",
+    rationale: "Prefer evidence-first summaries.",
+    actor: "alice",
+    riskClass: "high",
+    proposedChange: {
+      promptFragment: {
+        id: "tone",
+        mode: "upsert",
+        text: "Prefer evidence-first summaries.",
+      },
+    },
+  });
+
+  assert.equal(promptFragments.get("tone")?.text, "Prefer evidence-first summaries.");
+  assert.equal(applied.mutation.status, "applied");
+  assert.equal(applied.mutation.target, "prompt");
+  assert.equal(applied.mutation.mutationType, "managed_fragment");
+  assert.deepEqual(applied.mutation.authorizingPolicy, {
+    rule: "assignment.policy.selfEvolution",
+    maxRiskClass: "high",
+    allowedMutationClasses: [
+      "configuration.operator_settings",
+      "prompt.managed_fragment",
+    ],
+    mutationClass: "prompt.managed_fragment",
+    actor: "alice",
+  });
+  assert.deepEqual(applied.mutation.before, {
+    id: "tone",
+    text: "Prefer concise summaries.",
+    active: true,
+    exists: true,
+  });
+  assert.deepEqual(applied.mutation.after, {
+    id: "tone",
+    text: "Prefer evidence-first summaries.",
+    active: true,
+    exists: true,
+  });
+  assert.deepEqual(applied.mutation.rollback, {
+    promptFragment: {
+      id: "tone",
+      mode: "upsert",
+      text: "Prefer concise summaries.",
+    },
+  });
+  assert.deepEqual(applied.mutation.affectedResources, [
+    { type: "prompt", id: "fragment:tone" },
+  ]);
+  assert.deepEqual(applied.mutation.verification, {
+    attempted: true,
+    result: "passed",
+    method: "prompt_managed_fragment_update",
+  });
+
+  const rolledBack = executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: applied.mutation.id,
+    actor: "bob",
+  });
+
+  assert.equal(promptFragments.get("tone")?.text, "Prefer concise summaries.");
+  assert.equal(rolledBack.mutation.status, "rolled_back");
+  assert.deepEqual(rolledBack.mutation.verification, {
+    attempted: true,
+    result: "passed",
+    method: "prompt_managed_fragment_rollback",
+  });
+  database.close();
+});
+
+test("AutonomousMutationExecutor clears managed prompt fragments with rollback", () => {
+  const { assignments, database, executor, promptFragments } =
+    createPromptGuidanceHarness();
+  promptFragments.upsert("handoff", "Always mention blocker evidence.", "operator");
+  const assignment = assignments.create({
+    objective: "Clear managed runtime prompt fragments",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "prompt.managed_fragment",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+
+  const applied = executor.apply({
+    assignmentId: assignment.assignment.id,
+    target: "prompt",
+    mutationType: "managed_fragment",
+    rationale: "Remove stale fragment.",
+    riskClass: "high",
+    proposedChange: {
+      promptFragment: {
+        id: "handoff",
+        mode: "clear",
+      },
+    },
+  });
+
+  assert.equal(promptFragments.get("handoff")?.active, false);
+  assert.deepEqual(applied.mutation.rollback, {
+    promptFragment: {
+      id: "handoff",
+      mode: "upsert",
+      text: "Always mention blocker evidence.",
+    },
+  });
+
+  executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: applied.mutation.id,
+  });
+
+  assert.deepEqual(promptFragments.get("handoff"), {
+    id: "handoff",
+    text: "Always mention blocker evidence.",
+    active: true,
+  });
+  database.close();
+});
+
+test("AutonomousMutationExecutor restores inactive and absent managed prompt fragment baselines", () => {
+  const { assignments, database, executor, promptFragments } =
+    createPromptGuidanceHarness();
+  promptFragments.upsert("tone", "Dormant tone.", "operator");
+  promptFragments.clear("tone", "operator");
+  const assignment = assignments.create({
+    objective: "Restore inactive and absent prompt fragments",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "prompt.managed_fragment",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+
+  const inactiveApply = executor.apply({
+    assignmentId: assignment.assignment.id,
+    target: "prompt",
+    mutationType: "managed_fragment",
+    rationale: "Temporarily revive inactive fragment.",
+    riskClass: "high",
+    proposedChange: {
+      promptFragment: {
+        id: "tone",
+        mode: "upsert",
+        text: "Active tone.",
+      },
+    },
+  });
+  const absentClear = executor.apply({
+    assignmentId: assignment.assignment.id,
+    target: "prompt",
+    mutationType: "managed_fragment",
+    rationale: "Clear an absent fragment.",
+    riskClass: "high",
+    proposedChange: {
+      promptFragment: {
+        id: "absent",
+        mode: "clear",
+      },
+    },
+  });
+
+  executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: absentClear.mutation.id,
+  });
+  assert.equal(promptFragments.get("absent"), null);
+
+  executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: inactiveApply.mutation.id,
+  });
+  assert.deepEqual(promptFragments.get("tone"), {
+    id: "tone",
+    text: "Dormant tone.",
+    active: false,
+  });
+  database.close();
+});
+
+test("AutonomousMutationExecutor rolls back over inactive managed prompt tombstones", () => {
+  const { assignments, database, executor, promptFragments } =
+    createPromptGuidanceHarness();
+  const assignment = assignments.create({
+    objective: "Restore prompt fragment tombstones",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "prompt.managed_fragment",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+
+  const absentClear = executor.apply({
+    assignmentId: assignment.assignment.id,
+    target: "prompt",
+    mutationType: "managed_fragment",
+    rationale: "Clear an absent fragment.",
+    riskClass: "high",
+    proposedChange: {
+      promptFragment: {
+        id: "drafting",
+        mode: "clear",
+      },
+    },
+  });
+  assert.deepEqual(absentClear.mutation.before, {
+    id: "drafting",
+    text: "",
+    active: false,
+    exists: false,
+  });
+  assert.deepEqual(absentClear.mutation.after, {
+    id: "drafting",
+    text: "",
+    active: false,
+    exists: true,
+  });
+
+  const upsert = executor.apply({
+    assignmentId: assignment.assignment.id,
+    target: "prompt",
+    mutationType: "managed_fragment",
+    rationale: "Temporarily activate a tombstoned fragment.",
+    riskClass: "high",
+    proposedChange: {
+      promptFragment: {
+        id: "drafting",
+        mode: "upsert",
+        text: "Favor terse drafts.",
+      },
+    },
+  });
+  assert.deepEqual(upsert.mutation.before, {
+    id: "drafting",
+    text: "",
+    active: false,
+    exists: true,
+  });
+  assert.deepEqual(upsert.mutation.rollback, {
+    promptFragment: {
+      id: "drafting",
+      mode: "restore_inactive",
+      text: "",
+    },
+  });
+
+  executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: upsert.mutation.id,
+  });
+
+  assert.deepEqual(promptFragments.get("drafting"), {
+    id: "drafting",
+    text: "",
+    active: false,
+  });
+  database.close();
+});
+
+test("AutonomousMutationExecutor treats managed prompt fragments as high risk", () => {
+  const { assignments, database, executor, promptFragments } =
+    createPromptGuidanceHarness();
+  const assignment = assignments.create({
+    objective: "Block understated managed prompt fragment risk",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "prompt.managed_fragment",
+        ],
+        maxRiskClass: "low",
+      },
+    },
+  });
+
+  assert.throws(
+    () =>
+      executor.apply({
+        assignmentId: assignment.assignment.id,
+        target: "prompt",
+        mutationType: "managed_fragment",
+        rationale: "Understate managed fragment risk.",
+        proposedChange: {
+          promptFragment: {
+            id: "tone",
+            mode: "upsert",
+            text: "Prefer shorter replies.",
+          },
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 403);
+      assert.equal(error.mutation?.status, "failed");
+      assert.equal(error.mutation?.riskClass, "high");
+      assert.match(error.message, /risk exceeds/);
+      return true;
+    }
+  );
+
+  assert.equal(promptFragments.get("tone"), null);
   database.close();
 });
 
@@ -4192,6 +4547,43 @@ test("AutonomousMutationExecutor keeps prompt runtime guidance mutations opt-in"
   database.close();
 });
 
+test("AutonomousMutationExecutor keeps managed prompt fragments opt-in", () => {
+  const { assignments, database, executor, promptFragments } =
+    createPromptGuidanceHarness();
+  const assignment = assignments.create({
+    objective: "Default policy should not mutate managed prompt fragments",
+    autonomyLevel: "evolve",
+  });
+
+  assert.throws(
+    () =>
+      executor.apply({
+        assignmentId: assignment.assignment.id,
+        target: "prompt",
+        mutationType: "managed_fragment",
+        rationale: "Try managed prompt fragment mutation without opt-in.",
+        riskClass: "high",
+        proposedChange: {
+          promptFragment: {
+            id: "tone",
+            mode: "upsert",
+            text: "Prefer shorter replies.",
+          },
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 403);
+      assert.equal(error.mutation?.status, "failed");
+      assert.match(error.message, /does not allow prompt\.managed_fragment/);
+      return true;
+    }
+  );
+
+  assert.deepEqual(promptFragments.listActive(), []);
+  database.close();
+});
+
 test("AutonomousMutationExecutor rejects malformed prompt runtime guidance mutations", () => {
   const { assignments, database, executor, ledger, promptGuidance } =
     createPromptGuidanceHarness();
@@ -4269,6 +4661,92 @@ test("AutonomousMutationExecutor rejects malformed prompt runtime guidance mutat
     ]
   );
 
+  database.close();
+});
+
+test("AutonomousMutationExecutor rejects malformed managed prompt fragments", () => {
+  const { assignments, database, executor, ledger, promptFragments } =
+    createPromptGuidanceHarness();
+  promptFragments.upsert("tone", "Keep initial tone.", "operator");
+  const assignment = assignments.create({
+    objective: "Reject unsafe managed prompt fragment changes",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "prompt.managed_fragment",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+
+  const malformedChanges: JsonValue[] = [
+    { promptFragment: { id: "   ", mode: "upsert", text: "Valid text." } },
+    {
+      promptFragment: {
+        id: "x".repeat(81),
+        mode: "upsert",
+        text: "Valid text.",
+      },
+    },
+    { promptFragment: { id: "tone", mode: "upsert", text: "   " } },
+    {
+      promptFragment: {
+        id: "tone",
+        mode: "upsert",
+        text: "x".repeat(2001),
+      },
+    },
+    { promptFragment: { id: "tone", mode: "replace", text: "Nope." } },
+    { promptFragment: { id: "tone", mode: "delete" } },
+    {
+      promptFragment: {
+        id: "tone",
+        mode: "restore_inactive",
+        text: "Rollback-only mode.",
+      },
+    },
+    { promptFragment: { id: "tone", mode: "clear", text: "No text here." } },
+  ];
+  for (const proposedChange of malformedChanges) {
+    assert.throws(
+      () =>
+        executor.apply({
+          assignmentId: assignment.assignment.id,
+          target: "prompt",
+          mutationType: "managed_fragment",
+          rationale: "Try malformed managed prompt fragment.",
+          riskClass: "high",
+          proposedChange,
+        }),
+      (error) => {
+        assert.ok(error instanceof AutonomousMutationExecutionError);
+        assert.equal(error.status, 400);
+        assert.equal(error.mutation?.status, "failed");
+        return true;
+      }
+    );
+  }
+
+  assert.equal(promptFragments.get("tone")?.text, "Keep initial tone.");
+  assert.equal(promptFragments.get("tone")?.active, true);
+  assert.deepEqual(
+    ledger
+      .list({ assignmentId: assignment.assignment.id })
+      .map((mutation) => mutation.mutationType),
+    [
+      "managed_fragment",
+      "managed_fragment",
+      "managed_fragment",
+      "managed_fragment",
+      "managed_fragment",
+      "managed_fragment",
+      "managed_fragment",
+      "managed_fragment",
+    ]
+  );
   database.close();
 });
 
@@ -4842,7 +5320,7 @@ test("AutonomousMutationExecutor audits unsupported and malformed autonomous mut
         mutationType: "tool_bundle_enable",
         status: "failed",
         errorMessage:
-          "Only configuration.operator_settings, configuration.assignment_policy, configuration.runtime_limits, tool.bundle_enable, prompt.runtime_guidance, memory_policy.runtime_bounds, role.permission_policy, project_file.draft, project_file.apply_draft, and project_file.apply_bundle autonomous mutations are supported in this slice",
+          "Only configuration.operator_settings, configuration.assignment_policy, configuration.runtime_limits, tool.bundle_enable, prompt.runtime_guidance, prompt.managed_fragment, memory_policy.runtime_bounds, role.permission_policy, project_file.draft, project_file.apply_draft, and project_file.apply_bundle autonomous mutations are supported in this slice",
       },
     ]
   );

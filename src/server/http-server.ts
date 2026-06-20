@@ -72,7 +72,10 @@ import {
   ToolBundleLifecycleService,
 } from "../tools/bundle-lifecycle.ts";
 import { SelfEvolutionProposalStore } from "../self-evolution/proposals.ts";
-import { PromptRuntimeGuidanceStore } from "../prompts/runtime-guidance.ts";
+import {
+  PromptManagedFragmentStore,
+  PromptRuntimeGuidanceStore,
+} from "../prompts/runtime-guidance.ts";
 import {
   SelfEvolutionMutationError,
   SelfEvolutionMutationService,
@@ -175,6 +178,7 @@ export class HttpServer {
   private readonly memoryPolicy: MemoryPolicyStore;
   private readonly runtimeConfigLimits: RuntimeConfigLimitsStore;
   private readonly promptGuidance: PromptRuntimeGuidanceStore;
+  private readonly promptFragments: PromptManagedFragmentStore;
   private readonly rolePolicy: RolePolicyRuntimeStore;
   private readonly projectFileDrafts: ProjectFileDraftStore;
   private readonly projectFileApply: ProjectFileApplyService;
@@ -210,6 +214,7 @@ export class HttpServer {
     assignmentIntake?: AssignmentIntakeService,
     assignmentMutations?: AutonomousMutationLedger,
     promptGuidance?: PromptRuntimeGuidanceStore,
+    promptFragments?: PromptManagedFragmentStore,
     memoryPolicy?: MemoryPolicyStore,
     runtimeConfigLimits?: RuntimeConfigLimitsStore,
     rolePolicy?: RolePolicyRuntimeStore,
@@ -260,6 +265,8 @@ export class HttpServer {
       runtimeConfigLimits ?? new RuntimeConfigLimitsStore(database, config);
     this.promptGuidance =
       promptGuidance ?? new PromptRuntimeGuidanceStore(database);
+    this.promptFragments =
+      promptFragments ?? new PromptManagedFragmentStore(database);
     this.rolePolicy =
       rolePolicy ??
       new RolePolicyRuntimeStore(
@@ -301,6 +308,7 @@ export class HttpServer {
       memoryPolicy: this.memoryPolicy,
       runtimeConfigLimits: this.runtimeConfigLimits,
       promptGuidance: this.promptGuidance,
+      promptFragments: this.promptFragments,
       rolePolicy: this.rolePolicy,
       projectFileDrafts: this.projectFileDrafts,
       projectFileApply: this.projectFileApply,

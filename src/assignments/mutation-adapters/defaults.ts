@@ -3,7 +3,10 @@ import type { MemoryPolicyStore } from "../../memory/policy.ts";
 import type { RolePolicyRuntimeStore } from "../../orchestration/role-policy-runtime.ts";
 import type { ProjectFileApplyService } from "../../project-files/apply.ts";
 import type { ProjectFileDraftStore } from "../../project-files/drafts.ts";
-import type { PromptRuntimeGuidanceStore } from "../../prompts/runtime-guidance.ts";
+import type {
+  PromptManagedFragmentStore,
+  PromptRuntimeGuidanceStore,
+} from "../../prompts/runtime-guidance.ts";
 import type { OperatorSettingsMutationPort } from "../../self-evolution/mutations.ts";
 import type { ToolBundleLifecycleService } from "../../tools/bundle-lifecycle.ts";
 import { AutonomousAssignmentService } from "../service.ts";
@@ -13,7 +16,10 @@ import {
   createRuntimeConfigLimitsAutonomousMutationAdapter,
 } from "./configuration.ts";
 import { createMemoryPolicyRuntimeBoundsAutonomousMutationAdapter } from "./memory-policy.ts";
-import { createPromptRuntimeGuidanceAutonomousMutationAdapter } from "./prompt.ts";
+import {
+  createPromptManagedFragmentAutonomousMutationAdapter,
+  createPromptRuntimeGuidanceAutonomousMutationAdapter,
+} from "./prompt.ts";
 import {
   createProjectFileApplyBundleAutonomousMutationAdapter,
   createProjectFileApplyDraftAutonomousMutationAdapter,
@@ -29,6 +35,7 @@ export type DefaultAutonomousMutationAdapterOptions = {
   memoryPolicy?: MemoryPolicyStore;
   runtimeConfigLimits?: RuntimeConfigLimitsStore;
   promptGuidance?: PromptRuntimeGuidanceStore;
+  promptFragments?: PromptManagedFragmentStore;
   rolePolicy?: RolePolicyRuntimeStore;
   projectFileDrafts?: ProjectFileDraftStore;
   projectFileApply?: ProjectFileApplyService;
@@ -45,6 +52,13 @@ export function buildDefaultAutonomousMutationAdapters(
       ? [
           createPromptRuntimeGuidanceAutonomousMutationAdapter(
             options.promptGuidance
+          ),
+        ]
+      : []),
+    ...(options.promptFragments
+      ? [
+          createPromptManagedFragmentAutonomousMutationAdapter(
+            options.promptFragments
           ),
         ]
       : []),
