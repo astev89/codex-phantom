@@ -1,4 +1,8 @@
 import type { RuntimeConfigLimitsStore } from "../../config/runtime-limits.ts";
+import type {
+  RuntimeChannelCapabilities,
+} from "../../channels/capabilities.ts";
+import type { ChannelRegistry } from "../../channels/registry.ts";
 import type { AppDatabase } from "../../platform/database.ts";
 import type { MemoryPolicyStore } from "../../memory/policy.ts";
 import type { RolePolicyRuntimeStore } from "../../orchestration/role-policy-runtime.ts";
@@ -29,10 +33,13 @@ import {
 import { createRolePermissionPolicyAutonomousMutationAdapter } from "./role.ts";
 import { createToolBundleEnableAutonomousMutationAdapter } from "./tool.ts";
 import type { AutonomousMutationAdapter } from "./types.ts";
+import { createChannelStateAutonomousMutationAdapter } from "./channel-state.ts";
 import { createMemoryEntryLifecycleAutonomousMutationAdapter } from "./memory-entry.ts";
 
 export type DefaultAutonomousMutationAdapterOptions = {
   assignments: AutonomousAssignmentService;
+  channels?: ChannelRegistry;
+  runtimeChannels?: RuntimeChannelCapabilities;
   database?: AppDatabase;
   settings: OperatorSettingsMutationPort;
   memoryPolicy?: MemoryPolicyStore;
@@ -79,6 +86,14 @@ export function buildDefaultAutonomousMutationAdapters(
       ? [
           createRuntimeConfigLimitsAutonomousMutationAdapter(
             options.runtimeConfigLimits
+          ),
+        ]
+      : []),
+    ...(options.channels
+      ? [
+          createChannelStateAutonomousMutationAdapter(
+            options.channels,
+            options.runtimeChannels
           ),
         ]
       : []),

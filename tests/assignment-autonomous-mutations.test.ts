@@ -18,10 +18,12 @@ import {
 } from "../src/assignments/autonomous-mutations.ts";
 import { AutonomousMutationLedger } from "../src/assignments/mutation-ledger.ts";
 import { AutonomousAssignmentService } from "../src/assignments/service.ts";
+import { RuntimeChannelCapabilities } from "../src/channels/capabilities.ts";
 import {
   RuntimeConfigLimitsStore,
   runtimeConfigLimitValues,
 } from "../src/config/runtime-limits.ts";
+import { ChannelRegistry } from "../src/channels/registry.ts";
 import { MemoryPolicyStore, memoryPolicyValues } from "../src/memory/policy.ts";
 import { MemoryStore } from "../src/memory/store.ts";
 import { loadRolePolicyConfig } from "../src/orchestration/role-config.ts";
@@ -243,6 +245,50 @@ function createRuntimeConfigLimitsHarness() {
   };
 }
 
+function createChannelStateHarness() {
+  const database = new AppDatabase(":memory:");
+  const config = makeConfig();
+  const assignments = new AutonomousAssignmentService(database);
+  const ledger = new AutonomousMutationLedger(database, assignments);
+  const settings = new OperatorSettingsStore(database);
+  const channels = new ChannelRegistry(database, config);
+  const lifecycleCalls = { starts: 0, stops: 0 };
+  const lifecycleFailure = { fail: false };
+  const runtimeChannels = new RuntimeChannelCapabilities();
+  runtimeChannels.registerLifecycle("webhook", {
+    async start() {
+      lifecycleCalls.starts += 1;
+      if (lifecycleFailure.fail) {
+        throw new Error("runtime channel transition failed");
+      }
+    },
+    async stop() {
+      lifecycleCalls.stops += 1;
+      if (lifecycleFailure.fail) {
+        throw new Error("runtime channel transition failed");
+      }
+    },
+  });
+  const executor = new AutonomousMutationExecutor({
+    assignments,
+    ledger,
+    settings,
+    channels,
+    runtimeChannels,
+  });
+  return {
+    assignments,
+    channels,
+    config,
+    database,
+    executor,
+    ledger,
+    lifecycleCalls,
+    lifecycleFailure,
+    settings,
+  };
+}
+
 function previewApprovedReadOnlyBundle(toolBundles: ToolBundleImportStore) {
   const preview = toolBundles.preview({
     importedBy: "operator",
@@ -458,6 +504,350 @@ test("AutonomousMutationExecutor applies explicit runtime config limit mutations
     [{ id: result.mutation.id, status: "applied" }]
   );
 
+  database.close();
+});
+
+test("AutonomousMutationExecutor applies explicit channel state mutations", async () => {
+  const { assignments, channels, database, executor, lifecycleCalls } =
+    createChannelStateHarness();
+  const assignment = assignments.create({
+    objective: "Disable webhook channel temporarily",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        enabled: true,
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "configuration.channel_state",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+
+  assert.equal(channels.get("webhook")?.enabled, true);
+  assert.equal(channels.summary().enabled, 3);
+  const result = await executor.applyAsync({
+    assignmentId: assignment.assignment.id,
+    runId: "coord_channel_state",
+    target: "configuration",
+    mutationType: "channel_state",
+    rationale: "Pause webhook intake while external integration is noisy.",
+    riskClass: "high",
+    proposedChange: {
+      channelState: {
+        channelId: "webhook",
+        enabled: false,
+      },
+    },
+  });
+
+  assert.equal(channels.get("webhook")?.enabled, false);
+  assert.equal(channels.summary().enabled, 2);
+  assert.deepEqual(lifecycleCalls, { starts: 0, stops: 1 });
+  assert.equal(result.mutation.status, "applied");
+  assert.equal(result.mutation.riskClass, "high");
+  assert.deepEqual(result.mutation.before, {
+    channel: {
+      id: "webhook",
+      enabled: true,
+      secretPresent: true,
+    },
+  });
+  assert.deepEqual(result.mutation.after, {
+    channel: {
+      id: "webhook",
+      enabled: false,
+      secretPresent: true,
+    },
+  });
+  assert.deepEqual(result.mutation.rollback, {
+    channelState: {
+      channelId: "webhook",
+      enabled: true,
+    },
+  });
+
+  const rollback = await executor.rollbackAsync({
+    assignmentId: assignment.assignment.id,
+    mutationId: result.mutation.id,
+  });
+  assert.equal(rollback.mutation.status, "rolled_back");
+  assert.equal(channels.get("webhook")?.enabled, true);
+  assert.equal(channels.summary().enabled, 3);
+  assert.deepEqual(lifecycleCalls, { starts: 1, stops: 1 });
+  database.close();
+});
+
+test("AutonomousMutationExecutor audits failed channel lifecycle transitions without changing channel state", async () => {
+  const {
+    assignments,
+    channels,
+    database,
+    executor,
+    ledger,
+    lifecycleFailure,
+  } = createChannelStateHarness();
+  const assignment = assignments.create({
+    objective: "Protect channel lifecycle consistency",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        enabled: true,
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "configuration.channel_state",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+
+  lifecycleFailure.fail = true;
+  await assert.rejects(
+    async () =>
+      executor.applyAsync({
+        assignmentId: assignment.assignment.id,
+        target: "configuration",
+        mutationType: "channel_state",
+        rationale: "Pause webhook intake.",
+        riskClass: "high",
+        proposedChange: {
+          channelState: {
+            channelId: "webhook",
+            enabled: false,
+          },
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 400);
+      assert.match(error.message, /runtime channel transition failed/);
+      assert.equal(error.mutation?.status, "failed");
+      return true;
+    }
+  );
+  assert.equal(channels.get("webhook")?.enabled, true);
+  const failedChannelMutations = ledger
+    .list({ assignmentId: assignment.assignment.id, status: "failed" })
+    .filter((mutation) => mutation.mutationType === "channel_state");
+  assert.equal(failedChannelMutations.length, 1);
+  assert.deepEqual(failedChannelMutations[0]?.before, {
+    channel: {
+      id: "webhook",
+      enabled: true,
+      secretPresent: true,
+    },
+  });
+  assert.deepEqual(failedChannelMutations[0]?.after, {
+    channel: {
+      id: "webhook",
+      enabled: true,
+      secretPresent: true,
+    },
+    attempted: {
+      enabled: false,
+    },
+  });
+  assert.deepEqual(failedChannelMutations[0]?.rollback, {
+    channelState: {
+      channelId: "webhook",
+      enabled: true,
+    },
+  });
+  assert.deepEqual(
+    failedChannelMutations[0]?.affectedResources,
+    [{ type: "channel", id: "webhook" }]
+  );
+
+  lifecycleFailure.fail = false;
+  const applied = await executor.applyAsync({
+    assignmentId: assignment.assignment.id,
+    target: "configuration",
+    mutationType: "channel_state",
+    rationale: "Pause webhook intake after recovery.",
+    riskClass: "high",
+    proposedChange: {
+      channelState: {
+        channelId: "webhook",
+        enabled: false,
+      },
+    },
+  });
+  assert.equal(channels.get("webhook")?.enabled, false);
+
+  lifecycleFailure.fail = true;
+  await assert.rejects(
+    async () =>
+      executor.rollbackAsync({
+        assignmentId: assignment.assignment.id,
+        mutationId: applied.mutation.id,
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 400);
+      assert.match(error.message, /runtime channel transition failed/);
+      return true;
+    }
+  );
+  assert.equal(channels.get("webhook")?.enabled, false);
+  assert.equal(ledger.get(applied.mutation.id)?.status, "applied");
+  database.close();
+});
+
+test("AutonomousMutationExecutor fails closed for sync channel state execution", () => {
+  const { assignments, channels, database, executor, ledger } =
+    createChannelStateHarness();
+  const assignment = assignments.create({
+    objective: "Reject sync channel state execution",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        enabled: true,
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "configuration.channel_state",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+
+  assert.throws(
+    () =>
+      executor.apply({
+        assignmentId: assignment.assignment.id,
+        target: "configuration",
+        mutationType: "channel_state",
+        rationale: "Sync path must not run async channel lifecycle hooks.",
+        riskClass: "high",
+        proposedChange: {
+          channelState: {
+            channelId: "webhook",
+            enabled: false,
+          },
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 400);
+      assert.match(
+        error.message,
+        /configuration\.channel_state requires async autonomous mutation execution/
+      );
+      assert.equal(error.mutation?.status, "failed");
+      return true;
+    }
+  );
+  assert.equal(channels.get("webhook")?.enabled, true);
+  assert.equal(
+    ledger
+      .list({ assignmentId: assignment.assignment.id, status: "failed" })
+      .filter((mutation) => mutation.mutationType === "channel_state").length,
+    1
+  );
+  database.close();
+});
+
+test("AutonomousMutationExecutor rejects unsafe channel state mutations", async () => {
+  const { assignments, channels, database, executor, ledger } =
+    createChannelStateHarness();
+  const defaultAssignment = assignments.create({
+    objective: "Attempt default channel mutation",
+    autonomyLevel: "evolve",
+  });
+  await assert.rejects(
+    async () =>
+      executor.applyAsync({
+        assignmentId: defaultAssignment.assignment.id,
+        target: "configuration",
+        mutationType: "channel_state",
+        rationale: "Default policy should not mutate channels.",
+        riskClass: "high",
+        proposedChange: {
+          channelState: {
+            channelId: "webhook",
+            enabled: false,
+          },
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 403);
+      return true;
+    }
+  );
+  assert.equal(channels.get("webhook")?.enabled, true);
+
+  const assignment = assignments.create({
+    objective: "Reject unsafe channel state changes",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        enabled: true,
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "configuration.channel_state",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+  const unsafeChannelChanges: JsonValue[] = [
+    {
+      channelState: {
+        channelId: "slack",
+        enabled: true,
+      },
+    },
+    {
+      channelState: {
+        channelId: "telegram",
+        enabled: true,
+      },
+    },
+    {
+      channelState: {
+        channelId: "webhook",
+        enabled: false,
+        secretEnvVar: "NOT_ALLOWED",
+      },
+    },
+    {
+      channelState: {
+        channelId: "webhook",
+        enabled: false,
+        config: { transport: "other" },
+      },
+    },
+  ];
+  for (const proposedChange of unsafeChannelChanges) {
+    await assert.rejects(
+      async () =>
+        executor.applyAsync({
+          assignmentId: assignment.assignment.id,
+          target: "configuration",
+          mutationType: "channel_state",
+          rationale: "Unsafe channel state change should fail.",
+          riskClass: "high",
+          proposedChange,
+        }),
+      (error) => {
+        assert.ok(error instanceof AutonomousMutationExecutionError);
+        assert.equal(error.status, 400);
+        return true;
+      }
+    );
+  }
+
+  assert.equal(channels.get("webhook")?.enabled, true);
+  assert.equal(channels.get("slack")?.enabled, false);
+  assert.equal(
+    ledger
+      .list({ assignmentId: assignment.assignment.id, status: "failed" })
+      .filter((mutation) => mutation.mutationType === "channel_state").length,
+    4
+  );
   database.close();
 });
 
@@ -6058,7 +6448,7 @@ test("AutonomousMutationExecutor audits unsupported and malformed autonomous mut
         mutationType: "tool_bundle_enable",
         status: "failed",
         errorMessage:
-          "Only configuration.operator_settings, configuration.assignment_policy, configuration.runtime_limits, tool.bundle_enable, prompt.runtime_guidance, prompt.managed_fragment, memory.entry_lifecycle, memory_policy.runtime_bounds, role.permission_policy, project_file.draft, project_file.apply_draft, and project_file.apply_bundle autonomous mutations are supported in this slice",
+          "Only configuration.operator_settings, configuration.assignment_policy, configuration.runtime_limits, configuration.channel_state, tool.bundle_enable, prompt.runtime_guidance, prompt.managed_fragment, memory.entry_lifecycle, memory_policy.runtime_bounds, role.permission_policy, project_file.draft, project_file.apply_draft, and project_file.apply_bundle autonomous mutations are supported in this slice",
       },
     ]
   );

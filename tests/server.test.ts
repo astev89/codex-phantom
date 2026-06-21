@@ -1590,6 +1590,97 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       runtimeLimitsBefore.defaultMaxToolCalls
     );
 
+    const channelAssignmentCreate = await fetch(`${baseUrl}/admin/assignments`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.operatorBearerToken}`,
+      },
+      body: JSON.stringify({
+        objective: "Autonomously tune channel state",
+        autonomyLevel: "evolve",
+        policy: {
+          selfEvolution: {
+            allowedMutationClasses: [
+              "configuration.operator_settings",
+              "configuration.channel_state",
+            ],
+            maxRiskClass: "high",
+          },
+        },
+      }),
+    });
+    assert.equal(channelAssignmentCreate.status, 201);
+    const channelAssignmentJson = (await channelAssignmentCreate.json()) as {
+      assignment: { id: string };
+    };
+
+    const channelApply = await fetch(
+      `${baseUrl}/admin/assignments/${channelAssignmentJson.assignment.id}/mutations/apply`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          target: "configuration",
+          mutationType: "channel_state",
+          riskClass: "high",
+          rationale: "Pause webhook intake from the admin surface.",
+          runId: "coord_http_channel_state",
+          actor: "operator",
+          proposedChange: {
+            channelState: {
+              channelId: "webhook",
+              enabled: false,
+            },
+          },
+        }),
+      }
+    );
+    assert.equal(channelApply.status, 200);
+    const channelApplyJson = (await channelApply.json()) as {
+      mutation: {
+        id: string;
+        status: string;
+        mutationType: string;
+        affectedResources: unknown;
+      };
+    };
+    assert.equal(channelApplyJson.mutation.status, "applied");
+    assert.equal(channelApplyJson.mutation.mutationType, "channel_state");
+    assert.deepEqual(channelApplyJson.mutation.affectedResources, [
+      { type: "channel", id: "webhook" },
+    ]);
+
+    const channelSummary = await fetch(`${baseUrl}/admin/summary`, {
+      headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+    });
+    assert.equal(channelSummary.status, 200);
+    const channelSummaryJson = (await channelSummary.json()) as {
+      channels: Array<{ id: string; enabled: boolean }>;
+    };
+    assert.ok(
+      channelSummaryJson.channels.some(
+        (channel) => channel.id === "webhook" && channel.enabled === false
+      )
+    );
+
+    const channelRollback = await fetch(
+      `${baseUrl}/admin/assignments/${channelAssignmentJson.assignment.id}/mutations/${channelApplyJson.mutation.id}/rollback`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({ actor: "operator" }),
+      }
+    );
+    assert.equal(channelRollback.status, 200);
+    assert.equal(channels.get("webhook")?.enabled, true);
+
     promptGuidance.update("Prefer neutral summaries.", "operator");
     const promptAssignmentCreate = await fetch(`${baseUrl}/admin/assignments`, {
       method: "POST",
@@ -4229,6 +4320,43 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       assignmentWebhookJson.nextJob.name,
       ASSIGNMENT_WAKEUP_JOB_NAME
     );
+
+    channels.upsert({ id: "webhook", enabled: false });
+    const disabledAssignmentWebhookBody = JSON.stringify({
+      conversationId: "disabled-hook-assignment",
+      message: "This disabled webhook assignment must not be created.",
+      assignment: { create: true },
+    });
+    const disabledAssignmentWebhookResponse = await fetch(
+      `http://127.0.0.1:${port}/channels/webhook`,
+      {
+        method: "POST",
+        headers: signedWebhookHeaders(
+          config.externalChannelSecret,
+          disabledAssignmentWebhookBody
+        ),
+        body: disabledAssignmentWebhookBody,
+      }
+    );
+    assert.equal(disabledAssignmentWebhookResponse.status, 409);
+    const disabledAssignmentWebhookJson =
+      (await disabledAssignmentWebhookResponse.json()) as {
+        error: string;
+      };
+    assert.equal(
+      disabledAssignmentWebhookJson.error,
+      "webhook channel is not enabled"
+    );
+    assert.equal(
+      assignments
+        .list({ sourceChannelId: "webhook" })
+        .some(
+          (record) =>
+            record.source.conversationId === "disabled-hook-assignment"
+        ),
+      false
+    );
+    channels.upsert({ id: "webhook", enabled: true });
 
     const sessionBackedAssignmentResponse = await fetch(
       `http://127.0.0.1:${port}/chat/message`,

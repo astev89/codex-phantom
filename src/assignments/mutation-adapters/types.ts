@@ -6,12 +6,25 @@ import type {
 import type { AssignmentRecord } from "../types.ts";
 import type { ApplyAutonomousMutationInput } from "../autonomous-mutations.ts";
 
+export type AutonomousMutationApplyResult = {
+  before: JsonValue;
+  after: JsonValue;
+  rollback: JsonValue;
+  affectedResources?: JsonValue;
+  verificationMethod?: string;
+};
+
+export type AutonomousMutationRollbackResult =
+  | { verificationMethod?: string }
+  | void;
+
 export type AutonomousMutationAdapter = {
   readonly target: AutonomousMutationTarget;
   readonly mutationType: string;
   readonly mutationClass: string;
   readonly affectedResources: JsonValue;
   readonly minimumRiskClass?: "low" | "medium" | "high" | "critical";
+  readonly requiresAsync?: boolean;
   readonly rollbackConflictScope?:
     | "assignment"
     | "global"
@@ -21,17 +34,11 @@ export type AutonomousMutationAdapter = {
     mutationId: string;
     request: ApplyAutonomousMutationInput;
     proposedChange: JsonValue;
-  }): {
-    before: JsonValue;
-    after: JsonValue;
-    rollback: JsonValue;
-    affectedResources?: JsonValue;
-    verificationMethod?: string;
-  };
+  }): AutonomousMutationApplyResult | Promise<AutonomousMutationApplyResult>;
   rollback(input: {
     assignment: AssignmentRecord;
     mutation: AutonomousMutationRecord;
     rollback: JsonValue;
     actor?: string;
-  }): { verificationMethod?: string } | void;
+  }): AutonomousMutationRollbackResult | Promise<AutonomousMutationRollbackResult>;
 };

@@ -306,6 +306,8 @@ export class HttpServer {
       database,
       ledger: this.assignmentMutations,
       settings: this.settings,
+      channels: this.channels,
+      runtimeChannels,
       memoryPolicy: this.memoryPolicy,
       runtimeConfigLimits: this.runtimeConfigLimits,
       promptGuidance: this.promptGuidance,
@@ -826,7 +828,7 @@ export class HttpServer {
         const body = validateAutonomousMutationApplyBody(
           parseJsonBody(await readTextBody(req))
         );
-        const result = this.assignmentMutationExecutor.apply({
+        const result = await this.assignmentMutationExecutor.applyAsync({
           assignmentId,
           ...body,
           actor: body.actor ?? "operator",
@@ -847,7 +849,7 @@ export class HttpServer {
         const body = validateAutonomousMutationRollbackBody(
           parseJsonBody(await readTextBody(req))
         );
-        const result = this.assignmentMutationExecutor.rollback({
+        const result = await this.assignmentMutationExecutor.rollbackAsync({
           assignmentId,
           mutationId,
           actor: body.actor ?? "operator",
@@ -1554,6 +1556,10 @@ export class HttpServer {
           req.headers["idempotency-key"],
           requestId
         );
+        const webhookRuntimeChannel = this.channels.get("webhook");
+        if (!webhookRuntimeChannel || !webhookRuntimeChannel.enabled) {
+          throw new HttpError(409, "webhook channel is not enabled");
+        }
         const intake = await this.assignmentIntake.handle({
           channelId: "webhook",
           providerEventId: webhookProviderEventId,

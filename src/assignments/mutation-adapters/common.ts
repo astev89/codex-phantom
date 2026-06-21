@@ -4,6 +4,7 @@ export type AutonomousMutationApplyFailureEvidence = {
   before?: JsonValue;
   after?: JsonValue;
   rollback?: JsonValue;
+  affectedResources?: JsonValue;
 };
 
 export class AutonomousMutationApplyFailure extends Error {

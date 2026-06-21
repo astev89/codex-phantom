@@ -155,6 +155,28 @@ curl -X POST http://localhost:3210/admin/assignments/asgn_123/mutations/apply \
 
 `configuration.runtime_limits` is not in the default assignment self-evolution allow-list. Operators must explicitly include it in `assignment.policy.selfEvolution.allowedMutationClasses`. The adapter is classified as at least medium risk by the executor even if a caller omits or understates `riskClass`, so assignments with `maxRiskClass: "low"` cannot apply it. It updates only a durable sparse numeric runtime config overlay for fields that existing runtime components read from the shared config object during normal execution: `defaultRunTimeoutMs` (`1000..300000`), `defaultMaxToolCalls` (`1..50`), `openAiRequestTimeoutMs` (`1000..300000`), `emailPollIntervalMs` (`1000..3600000`), `emailPollBatchSize` (`1..100`), and `emailMaxMessageBytes` (`1024..10485760`). Unchanged fields continue to resolve from startup/env config rather than being persisted as sibling overlay values. It records before/after/rollback evidence in the autonomous mutation ledger, restores the prior overlay state on rollback including deleting the overlay row when there was no prior overlay, preserves env-derived startup values until an overlay is explicitly applied, and blocks stale rollback across assignments because the overlay is shared runtime configuration. It does not edit secrets, auth tokens, model names, base URLs, file paths, channel enablement, prompts, memory entries, tools, roles, project files, source files, install state, MCP write capability, or runtime fields captured by already-created transports/services such as embedding timeout, Qdrant timeout, SMTP send timeout, or IMAP attachment size.
 
+Apply an explicitly allowed channel-state mutation:
+
+```bash
+curl -X POST http://localhost:3210/admin/assignments/asgn_123/mutations/apply \
+  -H "Authorization: Bearer $OPERATOR_BEARER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "target": "configuration",
+    "mutationType": "channel_state",
+    "riskClass": "high",
+    "rationale": "Pause noisy webhook intake while the provider is degraded.",
+    "proposedChange": {
+      "channelState": {
+        "channelId": "webhook",
+        "enabled": false
+      }
+    }
+  }'
+```
+
+`configuration.channel_state` is explicit opt-in and is treated as high risk. It can only enable or disable a known runtime channel through `proposedChange.channelState: { channelId, enabled }`, rejects unknown channel ids, rejects enabling a channel whose required provider config or secrets are absent, rejects secret/config edits, and records before/after/rollback evidence for the channel enabled state. It updates the durable channel registry and invokes the existing runtime channel lifecycle hook so live channel workers such as email polling are started or stopped consistently with normal admin channel updates. Admin summary and readiness surfaces reflect the changed registry state. Rollback restores the prior enabled state, and stale rollback is scoped to later mutations touching the same channel.
+
 Apply an explicitly allowed tool-bundle enable mutation:
 
 ```bash
@@ -317,17 +339,17 @@ curl -X POST http://localhost:3210/admin/assignments/asgn_123/mutations/asgnmut_
   -d '{"actor":"operator"}'
 ```
 
-The default assignment self-evolution policy allows only low- or medium-risk `configuration.operator_settings` mutations, and only assignments at `evolve` authority may use it. Unsupported classes, disallowed classes, malformed settings, malformed assignment-policy patches, malformed runtime config-limits attempts, unsafe tool-bundle enable attempts, malformed prompt runtime-guidance attempts, malformed memory policy runtime-bounds attempts, malformed memory entry lifecycle attempts, malformed or widening role permission-policy attempts, unsafe project-file draft attempts, and unsafe project-file apply attempts are rejected without changing state and are audited as failed autonomous mutation evidence when policy permits the attempt to reach the mutation executor.
+The default assignment self-evolution policy allows only low- or medium-risk `configuration.operator_settings` mutations, and only assignments at `evolve` authority may use it. Unsupported classes, disallowed classes, malformed settings, malformed assignment-policy patches, malformed runtime config-limits attempts, unsafe channel-state attempts, unsafe tool-bundle enable attempts, malformed prompt runtime-guidance attempts, malformed memory policy runtime-bounds attempts, malformed memory entry lifecycle attempts, malformed or widening role permission-policy attempts, unsafe project-file draft attempts, and unsafe project-file apply attempts are rejected without changing state and are audited as failed autonomous mutation evidence when policy permits the attempt to reach the mutation executor.
 
 ## Planner-Driven Mutation Markers
 
 Mutation-authorized assignment wakeups may request one bounded autonomous mutation by returning a single-line marker. The wakeup planner only advertises this marker to assignments with `autonomyLevel: "evolve"`, enabled self-evolution policy, and at least one allowed mutation class.
 
 ```text
-ASSIGNMENT_MUTATION: {"target":"configuration","mutationType":"runtime_limits","riskClass":"medium","rationale":"Allow a longer next run.","proposedChange":{"runtimeLimits":{"defaultRunTimeoutMs":45000}}}
+ASSIGNMENT_MUTATION: {"target":"configuration","mutationType":"channel_state","riskClass":"high","rationale":"Pause noisy webhook intake.","proposedChange":{"channelState":{"channelId":"webhook","enabled":false}}}
 ```
 
-Planner-driven mutation still uses the assignment-authorized autonomous executor. The marker is bound to the current assignment and coordinator run id, uses `actor: "planner"`, and must pass the same `evolve` authority, self-evolution allow-list, risk, validation, ledger, and rollback evidence checks as the admin/internal apply route. This includes explicitly allow-listed `configuration.runtime_limits`, `prompt.runtime_guidance`, `prompt.managed_fragment`, `memory.entry_lifecycle`, `memory_policy.runtime_bounds`, `role.permission_policy`, `project_file.draft`, `project_file.apply_draft`, and `project_file.apply_bundle` markers. Failed executor attempts do not fail the wakeup; the autonomous mutation ledger owns the failure evidence.
+Planner-driven mutation still uses the assignment-authorized autonomous executor. The marker is bound to the current assignment and coordinator run id, uses `actor: "planner"`, and must pass the same `evolve` authority, self-evolution allow-list, risk, validation, ledger, and rollback evidence checks as the admin/internal apply route. This includes explicitly allow-listed `configuration.runtime_limits`, `configuration.channel_state`, `prompt.runtime_guidance`, `prompt.managed_fragment`, `memory.entry_lifecycle`, `memory_policy.runtime_bounds`, `role.permission_policy`, `project_file.draft`, `project_file.apply_draft`, and `project_file.apply_bundle` markers. Failed executor attempts do not fail the wakeup; the autonomous mutation ledger owns the failure evidence.
 
 This is not MCP write capability. MCP assignment mutation tooling remains read-only, and planner markers only cover mutation classes that already have built-in adapters and explicit assignment policy.
 

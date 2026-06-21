@@ -34,7 +34,10 @@ type AssignmentWakeupScheduler = Pick<
   SchedulerService,
   "list" | "schedule" | "reschedule"
 >;
-type AssignmentMutationExecutor = Pick<AutonomousMutationExecutor, "apply">;
+type AssignmentMutationExecutor = Pick<
+  AutonomousMutationExecutor,
+  "applyAsync"
+>;
 type PlannerMutationRequest = Pick<
   ApplyAutonomousMutationInput,
   "target" | "mutationType" | "rationale" | "riskClass" | "proposedChange"
@@ -200,7 +203,7 @@ export class AssignmentWakeupPlanner {
           allowMutations: shouldAllowPlannerMutationMarkers(completed),
           allowChildren: shouldAllowPlannerChildMarkers(completed),
         });
-        const afterMutation = this.applyPlannerMutation({
+        const afterMutation = await this.applyPlannerMutation({
           assignmentId: input.assignmentId,
           runId: result.runId,
           mutation: marker.mutation,
@@ -394,16 +397,16 @@ export class AssignmentWakeupPlanner {
     return result.runId ? { runId: result.runId } : {};
   }
 
-  private applyPlannerMutation(input: {
+  private async applyPlannerMutation(input: {
     assignmentId: string;
     runId: string;
     mutation?: PlannerMutationRequest;
-  }): AssignmentDetail {
+  }): Promise<AssignmentDetail> {
     if (!this.mutations || !input.mutation) {
       return this.assignments.getRequired(input.assignmentId);
     }
     try {
-      this.mutations.apply({
+      await this.mutations.applyAsync({
         assignmentId: input.assignmentId,
         runId: input.runId,
         target: input.mutation.target,
@@ -577,7 +580,7 @@ function buildWakeupPrompt(
   ];
   if (shouldAllowPlannerMutationMarkers(detail)) {
     lines.push(
-      'Optionally include one autonomous mutation marker on a single line, for example ASSIGNMENT_MUTATION: {"target":"configuration","mutationType":"operator_settings","rationale":"...","proposedChange":{"operatorSettings":{...}}}, ASSIGNMENT_MUTATION: {"target":"configuration","mutationType":"runtime_limits","riskClass":"medium","rationale":"...","proposedChange":{"runtimeLimits":{"defaultRunTimeoutMs":45000}}}, ASSIGNMENT_MUTATION: {"target":"prompt","mutationType":"managed_fragment","riskClass":"high","rationale":"...","proposedChange":{"promptFragment":{"id":"tone","mode":"upsert","text":"..."}}}, ASSIGNMENT_MUTATION: {"target":"memory","mutationType":"entry_lifecycle","riskClass":"high","rationale":"...","proposedChange":{"memoryEntry":{"action":"create","category":"semantic","content":"..."}}}, ASSIGNMENT_MUTATION: {"target":"memory_policy","mutationType":"runtime_bounds","rationale":"...","proposedChange":{"memoryPolicy":{...}}}, ASSIGNMENT_MUTATION: {"target":"role","mutationType":"permission_policy","rationale":"...","proposedChange":{"rolePolicy":{"roles":{"explorer":{"allowedMcpServers":["docs"]}}}}}, ASSIGNMENT_MUTATION: {"target":"project_file","mutationType":"draft","rationale":"...","proposedChange":{"projectFileDraft":{"path":"docs/example.md","content":"...","contentType":"text/markdown"}}}, ASSIGNMENT_MUTATION: {"target":"project_file","mutationType":"apply_draft","riskClass":"high","rationale":"...","proposedChange":{"projectFileApply":{"draftId":"pfd_..."}}}, or ASSIGNMENT_MUTATION: {"target":"project_file","mutationType":"apply_bundle","riskClass":"high","rationale":"...","proposedChange":{"projectFileBundle":{"draftIds":["pfd_...","pfd_..."]}}}. Mutations only apply when the assignment is evolve-authorized and assignment policy allows the class.'
+      'Optionally include one autonomous mutation marker on a single line, for example ASSIGNMENT_MUTATION: {"target":"configuration","mutationType":"operator_settings","rationale":"...","proposedChange":{"operatorSettings":{...}}}, ASSIGNMENT_MUTATION: {"target":"configuration","mutationType":"runtime_limits","riskClass":"medium","rationale":"...","proposedChange":{"runtimeLimits":{"defaultRunTimeoutMs":45000}}}, ASSIGNMENT_MUTATION: {"target":"configuration","mutationType":"channel_state","riskClass":"high","rationale":"...","proposedChange":{"channelState":{"channelId":"webhook","enabled":false}}}, ASSIGNMENT_MUTATION: {"target":"prompt","mutationType":"managed_fragment","riskClass":"high","rationale":"...","proposedChange":{"promptFragment":{"id":"tone","mode":"upsert","text":"..."}}}, ASSIGNMENT_MUTATION: {"target":"memory","mutationType":"entry_lifecycle","riskClass":"high","rationale":"...","proposedChange":{"memoryEntry":{"action":"create","category":"semantic","content":"..."}}}, ASSIGNMENT_MUTATION: {"target":"memory_policy","mutationType":"runtime_bounds","rationale":"...","proposedChange":{"memoryPolicy":{...}}}, ASSIGNMENT_MUTATION: {"target":"role","mutationType":"permission_policy","rationale":"...","proposedChange":{"rolePolicy":{"roles":{"explorer":{"allowedMcpServers":["docs"]}}}}}, ASSIGNMENT_MUTATION: {"target":"project_file","mutationType":"draft","rationale":"...","proposedChange":{"projectFileDraft":{"path":"docs/example.md","content":"...","contentType":"text/markdown"}}}, ASSIGNMENT_MUTATION: {"target":"project_file","mutationType":"apply_draft","riskClass":"high","rationale":"...","proposedChange":{"projectFileApply":{"draftId":"pfd_..."}}}, or ASSIGNMENT_MUTATION: {"target":"project_file","mutationType":"apply_bundle","riskClass":"high","rationale":"...","proposedChange":{"projectFileBundle":{"draftIds":["pfd_...","pfd_..."]}}}. Mutations only apply when the assignment is evolve-authorized and assignment policy allows the class.'
     );
   }
   if (shouldAllowPlannerChildMarkers(detail)) {

@@ -108,6 +108,7 @@ export type RecordFailedAutonomousMutationOutcomeInput = {
   before?: JsonValue;
   after?: JsonValue;
   rollback?: JsonValue;
+  affectedResources?: JsonValue;
   verification?: JsonValue;
 };
 
@@ -327,6 +328,7 @@ export class AutonomousMutationLedger {
               before_json = ?,
               after_json = ?,
               rollback_json = ?,
+              affected_resources_json = ?,
               verification_json = ?,
               error_message = ?,
               updated_at = ?,
@@ -336,6 +338,9 @@ export class AutonomousMutationLedger {
         encodeJson(toJsonOrNull(input.before)),
         encodeJson(toJsonOrNull(input.after)),
         encodeJson(toJsonOrNull(input.rollback)),
+        encodeJson(
+          toJsonOrExisting(input.affectedResources, current.affectedResources)
+        ),
         encodeJson(toJsonOrNull(input.verification)),
         errorMessage,
         now,

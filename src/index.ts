@@ -68,6 +68,7 @@ const database = new AppDatabase(config.datastorePath);
 const runtimeConfigLimits = new RuntimeConfigLimitsStore(database, config);
 const sessions = new SessionStore(database);
 const channels = new ChannelRegistry(database, config);
+const runtimeChannels = new RuntimeChannelCapabilities();
 const channelDeliveries = new ChannelDeliveryStore(database);
 const channelInbound = new InboundChannelEventStore(database);
 const embeddings = new OpenAiEmbeddingService(config);
@@ -103,6 +104,8 @@ const projectFileApply = new ProjectFileApplyService({
 });
 const assignmentMutationExecutor = new AutonomousMutationExecutor({
   assignments,
+  channels,
+  runtimeChannels,
   database,
   ledger: assignmentMutations,
   settings: operatorSettings,
@@ -242,7 +245,6 @@ const email = new EmailChannelService({
   logger,
   assignmentIntake,
 });
-const runtimeChannels = new RuntimeChannelCapabilities();
 runtimeChannels.registerLifecycle("email", email);
 const server = new HttpServer(
   config,

@@ -364,6 +364,11 @@ function projectFileBundleApplyEvidence(
         items: applied,
       },
     } as unknown as JsonValue,
+    affectedResources: applied.map((item) => ({
+      type: "project_file",
+      id: item.path,
+      path: item.path,
+    })) as JsonValue,
   };
 }
 
