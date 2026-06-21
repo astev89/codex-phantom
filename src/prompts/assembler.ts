@@ -74,9 +74,17 @@ function buildManagedFragmentsSection(
   return [
     "# Managed Prompt Fragments",
     activeFragments
-      .map((fragment) => `## ${fragment.id}\n${fragment.text.trim()}`)
+      .map(
+        (fragment) =>
+          `## ${formatManagedFragmentHeadingId(fragment.id)}\n${fragment.text.trim()}`
+      )
       .join("\n\n"),
   ].join("\n");
+}
+
+function formatManagedFragmentHeadingId(id: string): string {
+  const safe = id.trim().replace(/[^A-Za-z0-9._-]+/g, "_");
+  return safe || "legacy-fragment";
 }
 
 function buildSafetySection(): string {

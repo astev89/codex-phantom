@@ -74,7 +74,7 @@ export function createPromptManagedFragmentAutonomousMutationAdapter(
     mutationClass: PROMPT_MANAGED_FRAGMENT_MUTATION_CLASS,
     affectedResources: [],
     minimumRiskClass: "high",
-    rollbackConflictScope: "global",
+    rollbackConflictScope: "affected_resources",
     apply(input) {
       const proposedChange = asJsonObject(
         input.proposedChange,
@@ -122,13 +122,16 @@ export function createPromptManagedFragmentAutonomousMutationAdapter(
         rollback.promptFragment,
         "rollback.promptFragment"
       );
-      const id = normalizePromptFragmentId(promptFragment.id);
+      const id = normalizePromptFragmentId(promptFragment.id, {
+        allowLegacyUnsafe: true,
+      });
       const mode = normalizePromptFragmentRollbackMode(promptFragment.mode);
       if (mode === "upsert") {
         promptFragments.upsert(
           id,
           normalizePromptFragmentText(promptFragment.text),
-          input.actor ?? "autonomous_mutation_rollback"
+          input.actor ?? "autonomous_mutation_rollback",
+          { allowLegacyUnsafe: true }
         );
       } else if (mode === "restore_inactive") {
         promptFragments.restoreInactive(
@@ -136,18 +139,21 @@ export function createPromptManagedFragmentAutonomousMutationAdapter(
           normalizePromptFragmentText(promptFragment.text, {
             allowEmpty: true,
           }),
-          input.actor ?? "autonomous_mutation_rollback"
+          input.actor ?? "autonomous_mutation_rollback",
+          { allowLegacyUnsafe: true }
         );
       } else if (mode === "delete") {
         if (promptFragment.text !== undefined) {
           throw new Error("promptFragment.text is not supported for delete mode");
         }
-        promptFragments.delete(id);
+        promptFragments.delete(id, { allowLegacyUnsafe: true });
       } else {
         if (promptFragment.text !== undefined) {
           throw new Error("promptFragment.text is not supported for clear mode");
         }
-        promptFragments.clear(id, input.actor ?? "autonomous_mutation_rollback");
+        promptFragments.clear(id, input.actor ?? "autonomous_mutation_rollback", {
+          allowLegacyUnsafe: true,
+        });
       }
       return { verificationMethod: "prompt_managed_fragment_rollback" };
     },

@@ -35,6 +35,7 @@ const ROW_ID = "runtime";
 const MAX_RUNTIME_GUIDANCE_CHARS = 2000;
 const MAX_FRAGMENT_ID_CHARS = 80;
 const MAX_FRAGMENT_TEXT_CHARS = 2000;
+type PromptFragmentIdOptions = { allowLegacyUnsafe?: boolean };
 
 export class PromptRuntimeGuidanceStore {
   private readonly database: AppDatabase;
@@ -101,8 +102,11 @@ export class PromptManagedFragmentStore {
     this.database = database;
   }
 
-  get(id: string): PromptManagedFragmentRecord | null {
-    const normalizedId = normalizePromptFragmentId(id);
+  get(
+    id: string,
+    options: PromptFragmentIdOptions = {}
+  ): PromptManagedFragmentRecord | null {
+    const normalizedId = normalizePromptFragmentId(id, options);
     const row = this.database.get<PromptManagedFragmentRow>(
       "SELECT id, fragment_text, active, updated_by, created_at, updated_at FROM prompt_managed_fragments WHERE id = ?",
       normalizedId
@@ -124,9 +128,10 @@ export class PromptManagedFragmentStore {
   upsert(
     id: string,
     text: string,
-    actor?: string
+    actor?: string,
+    options: PromptFragmentIdOptions = {}
   ): PromptManagedFragmentRecord {
-    const normalizedId = normalizePromptFragmentId(id);
+    const normalizedId = normalizePromptFragmentId(id, options);
     const normalizedText = normalizePromptFragmentText(text);
     const now = new Date().toISOString();
     this.database.run(
@@ -145,16 +150,20 @@ export class PromptManagedFragmentStore {
       now,
       now
     );
-    return this.get(normalizedId) ?? {
+    return this.get(normalizedId, options) ?? {
       id: normalizedId,
       text: normalizedText,
       active: true,
     };
   }
 
-  clear(id: string, actor?: string): PromptManagedFragmentRecord {
-    const normalizedId = normalizePromptFragmentId(id);
-    const before = this.get(normalizedId);
+  clear(
+    id: string,
+    actor?: string,
+    options: PromptFragmentIdOptions = {}
+  ): PromptManagedFragmentRecord {
+    const normalizedId = normalizePromptFragmentId(id, options);
+    const before = this.get(normalizedId, options);
     const now = new Date().toISOString();
     this.database.run(
       `
@@ -170,7 +179,7 @@ export class PromptManagedFragmentStore {
       now,
       now
     );
-    return this.get(normalizedId) ?? {
+    return this.get(normalizedId, options) ?? {
       id: normalizedId,
       text: before?.text ?? "",
       active: false,
@@ -180,9 +189,10 @@ export class PromptManagedFragmentStore {
   restoreInactive(
     id: string,
     text: string,
-    actor?: string
+    actor?: string,
+    options: PromptFragmentIdOptions = {}
   ): PromptManagedFragmentRecord {
-    const normalizedId = normalizePromptFragmentId(id);
+    const normalizedId = normalizePromptFragmentId(id, options);
     const normalizedText = normalizePromptFragmentText(text, {
       allowEmpty: true,
     });
@@ -203,17 +213,17 @@ export class PromptManagedFragmentStore {
       now,
       now
     );
-    return this.get(normalizedId) ?? {
+    return this.get(normalizedId, options) ?? {
       id: normalizedId,
       text: normalizedText,
       active: false,
     };
   }
 
-  delete(id: string): void {
+  delete(id: string, options: PromptFragmentIdOptions = {}): void {
     this.database.run(
       "DELETE FROM prompt_managed_fragments WHERE id = ?",
-      normalizePromptFragmentId(id)
+      normalizePromptFragmentId(id, options)
     );
   }
 }
@@ -235,7 +245,10 @@ export function normalizeRuntimeGuidanceText(
   return text;
 }
 
-export function normalizePromptFragmentId(value: unknown): string {
+export function normalizePromptFragmentId(
+  value: unknown,
+  options: PromptFragmentIdOptions = {}
+): string {
   if (typeof value !== "string") {
     throw new Error("promptFragment.id must be a string");
   }
@@ -245,6 +258,11 @@ export function normalizePromptFragmentId(value: unknown): string {
   }
   if (id.length > MAX_FRAGMENT_ID_CHARS) {
     throw new Error("promptFragment.id must be 80 characters or less");
+  }
+  if (options.allowLegacyUnsafe !== true && !/^[A-Za-z0-9._-]+$/.test(id)) {
+    throw new Error(
+      "promptFragment.id may only contain letters, numbers, dots, underscores, and hyphens"
+    );
   }
   return id;
 }

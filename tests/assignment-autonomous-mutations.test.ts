@@ -2418,6 +2418,188 @@ test("AutonomousMutationExecutor treats managed prompt fragments as high risk", 
   database.close();
 });
 
+test("AutonomousMutationExecutor scopes managed prompt fragment rollback conflicts by fragment", () => {
+  const { assignments, database, executor, promptFragments } =
+    createPromptGuidanceHarness();
+  promptFragments.upsert("tone", "Initial tone.", "operator");
+  const assignment = assignments.create({
+    objective: "Scope managed fragment rollback conflicts",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "prompt.managed_fragment",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+
+  const tone = executor.apply({
+    assignmentId: assignment.assignment.id,
+    target: "prompt",
+    mutationType: "managed_fragment",
+    rationale: "Tune tone fragment.",
+    riskClass: "high",
+    proposedChange: {
+      promptFragment: {
+        id: "tone",
+        mode: "upsert",
+        text: "Temporary tone.",
+      },
+    },
+  });
+  executor.apply({
+    assignmentId: assignment.assignment.id,
+    target: "prompt",
+    mutationType: "managed_fragment",
+    rationale: "Tune independent handoff fragment.",
+    riskClass: "high",
+    proposedChange: {
+      promptFragment: {
+        id: "handoff",
+        mode: "upsert",
+        text: "Independent handoff.",
+      },
+    },
+  });
+
+  executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: tone.mutation.id,
+  });
+  assert.equal(promptFragments.get("tone")?.text, "Initial tone.");
+  assert.equal(promptFragments.get("handoff")?.text, "Independent handoff.");
+
+  const secondTone = executor.apply({
+    assignmentId: assignment.assignment.id,
+    target: "prompt",
+    mutationType: "managed_fragment",
+    rationale: "Retune tone fragment.",
+    riskClass: "high",
+    proposedChange: {
+      promptFragment: {
+        id: "tone",
+        mode: "upsert",
+        text: "Second tone.",
+      },
+    },
+  });
+  executor.apply({
+    assignmentId: assignment.assignment.id,
+    target: "prompt",
+    mutationType: "managed_fragment",
+    rationale: "Create a newer tone mutation.",
+    riskClass: "high",
+    proposedChange: {
+      promptFragment: {
+        id: "tone",
+        mode: "upsert",
+        text: "Third tone.",
+      },
+    },
+  });
+
+  assert.throws(
+    () =>
+      executor.rollback({
+        assignmentId: assignment.assignment.id,
+        mutationId: secondTone.mutation.id,
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 409);
+      assert.match(error.message, /newer applied prompt\.managed_fragment/);
+      return true;
+    }
+  );
+  assert.equal(promptFragments.get("tone")?.text, "Third tone.");
+  database.close();
+});
+
+test("AutonomousMutationExecutor rolls back legacy unsafe managed prompt fragment ids", () => {
+  const { assignments, database, executor, ledger } = createPromptGuidanceHarness();
+  const legacyId = "tone\n## injected";
+  const now = new Date().toISOString();
+  database.run(
+    `
+      INSERT INTO prompt_managed_fragments
+        (id, fragment_text, active, updated_by, created_at, updated_at)
+      VALUES (?, ?, 1, ?, ?, ?)
+    `,
+    legacyId,
+    "Unsafe current tone.",
+    "legacy",
+    now,
+    now
+  );
+  const assignment = assignments.create({
+    objective: "Rollback a legacy managed fragment",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "prompt.managed_fragment",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+  const planned = ledger.recordPlanned({
+    assignmentId: assignment.assignment.id,
+    target: "prompt",
+    mutationType: "managed_fragment",
+    autonomyLevel: "evolve",
+    authorizingPolicy: { rule: "legacy_import" },
+    rationale: "Legacy unsafe fragment id mutation.",
+    riskClass: "high",
+    affectedResources: [{ type: "prompt", id: `fragment:${legacyId}` }],
+  });
+  const applied = ledger.recordApplied(planned.id, {
+    before: {
+      id: legacyId,
+      text: "Legacy baseline tone.",
+      active: true,
+      exists: true,
+    },
+    after: {
+      id: legacyId,
+      text: "Unsafe current tone.",
+      active: true,
+      exists: true,
+    },
+    rollback: {
+      promptFragment: {
+        id: legacyId,
+        mode: "upsert",
+        text: "Legacy baseline tone.",
+      },
+    },
+    affectedResources: [{ type: "prompt", id: `fragment:${legacyId}` }],
+    verification: {
+      attempted: true,
+      result: "passed",
+      method: "prompt_managed_fragment_update",
+    },
+  });
+
+  const rolledBack = executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: applied.id,
+  });
+
+  const row = database.get<{ fragment_text: string; active: number }>(
+    "SELECT fragment_text, active FROM prompt_managed_fragments WHERE id = ?",
+    legacyId
+  );
+  assert.equal(row?.fragment_text, "Legacy baseline tone.");
+  assert.equal(row?.active, 1);
+  assert.equal(rolledBack.mutation.status, "rolled_back");
+  database.close();
+});
+
 test("AutonomousMutationExecutor applies explicit memory policy runtime bounds mutations", () => {
   const { assignments, database, executor, ledger, memoryPolicy } =
     createMemoryPolicyHarness();
@@ -6437,6 +6619,20 @@ test("AutonomousMutationExecutor rejects malformed managed prompt fragments", ()
     { promptFragment: { id: "   ", mode: "upsert", text: "Valid text." } },
     {
       promptFragment: {
+        id: "tone\n## injected",
+        mode: "upsert",
+        text: "Valid text.",
+      },
+    },
+    {
+      promptFragment: {
+        id: "tone\tinjected",
+        mode: "upsert",
+        text: "Valid text.",
+      },
+    },
+    {
+      promptFragment: {
         id: "x".repeat(81),
         mode: "upsert",
         text: "Valid text.",
@@ -6487,16 +6683,7 @@ test("AutonomousMutationExecutor rejects malformed managed prompt fragments", ()
     ledger
       .list({ assignmentId: assignment.assignment.id })
       .map((mutation) => mutation.mutationType),
-    [
-      "managed_fragment",
-      "managed_fragment",
-      "managed_fragment",
-      "managed_fragment",
-      "managed_fragment",
-      "managed_fragment",
-      "managed_fragment",
-      "managed_fragment",
-    ]
+    malformedChanges.map(() => "managed_fragment")
   );
   database.close();
 });

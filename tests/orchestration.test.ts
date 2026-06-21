@@ -375,6 +375,19 @@ test("runtime assembles managed prompt fragments in deterministic order", async 
   promptFragments.upsert("alpha", "First fragment.", "operator");
   promptFragments.upsert("cleared", "Do not include me.", "operator");
   promptFragments.clear("cleared", "operator");
+  const now = new Date().toISOString();
+  database.run(
+    `
+      INSERT INTO prompt_managed_fragments
+        (id, fragment_text, active, updated_by, created_at, updated_at)
+      VALUES (?, ?, 1, ?, ?, ?)
+    `,
+    "tone\n## injected",
+    "Legacy fragment.",
+    "legacy",
+    now,
+    now
+  );
   const requests: AgentRunRequest[] = [];
   const adapter: AgentAdapter = {
     name: "capturing",
@@ -443,10 +456,10 @@ test("runtime assembles managed prompt fragments in deterministic order", async 
     systemPrompt,
     /# Runtime Guidance Overlay\nPrefer concise verification summaries\./
   );
-  assert.match(
-    systemPrompt,
-    /# Managed Prompt Fragments\n## alpha\nFirst fragment\.\n\n## zeta\nSecond fragment\./
-  );
+  assert.match(systemPrompt, /# Managed Prompt Fragments\n## alpha\nFirst fragment\./);
+  assert.match(systemPrompt, /## tone_injected\nLegacy fragment\./);
+  assert.match(systemPrompt, /## zeta\nSecond fragment\./);
+  assert.doesNotMatch(systemPrompt, /\n## injected\n/);
   assert.doesNotMatch(systemPrompt, /Do not include me/);
   database.close();
 });
