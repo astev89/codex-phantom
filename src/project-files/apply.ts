@@ -209,7 +209,8 @@ function applyParsedFilePatch(
   content: string,
   filePatch: ProjectFileParsedFilePatch
 ): string {
-  const originalLines = content.length === 0 ? [] : content.split("\n");
+  const originalLines = splitPatchContentLines(content);
+  const originalEndsWithNewline = content.endsWith("\n");
   const output: string[] = [];
   let originalIndex = 0;
   for (const hunk of filePatch.hunks) {
@@ -240,14 +241,27 @@ function applyParsedFilePatch(
   output.push(...originalLines.slice(originalIndex));
   let result = output.join("\n");
   const finalHunk = filePatch.hunks.at(-1);
+  const finalHunkTouchesEnd =
+    finalHunk !== undefined &&
+    finalHunk.newStart + finalHunk.newCount - 1 >= output.length;
   if (
-    finalHunk &&
-    finalHunk.newStart + finalHunk.newCount - 1 >= output.length &&
     filePatch.newEndsWithNewline &&
     result !== "" &&
-    !result.endsWith("\n")
+    !result.endsWith("\n") &&
+    (originalEndsWithNewline || finalHunkTouchesEnd)
   ) {
     result += "\n";
   }
   return result;
+}
+
+function splitPatchContentLines(content: string): string[] {
+  if (content === "") {
+    return [];
+  }
+  if (!content.endsWith("\n")) {
+    return content.split("\n");
+  }
+  const withoutFinalNewline = content.slice(0, -1);
+  return withoutFinalNewline === "" ? [""] : withoutFinalNewline.split("\n");
 }
