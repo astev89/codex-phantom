@@ -196,4 +196,10 @@ Inbound Email is normalized through the same router and audit path as other chan
 
 Outbound Email replies use SMTP-native retry behavior. Transient `4xx` `responseCode` failures and retryable transport errors are retried up to three total attempts; permanent `5xx` failures stop immediately. Final delivery outcomes are audited under channel `email`, and a delivery failure does not turn a completed inbound run into a failed run.
 
-This first implementation does not require a real mailbox smoke test to land. Fake IMAP/SMTP transport coverage and repo verification are the release gate for the parity slice; live mailbox smoke can follow as operator polish when provider credentials are available.
+Fake IMAP/SMTP transport coverage remains the release gate for normal CI. A credential-gated live mailbox smoke is available for operator proof when provider credentials are present:
+
+```bash
+EMAIL_SMOKE_TO_ADDRESS=operator@example.com npm run smoke:mailbox:live
+```
+
+The live smoke reads the existing `EMAIL_IMAP_*`, `EMAIL_SMTP_*`, and sender configuration, logs in to IMAP, inspects mailbox status without consuming or marking messages, and sends a bounded SMTP probe only to an explicit `EMAIL_SMOKE_TO_ADDRESS` or `--to` recipient. Use a non-runtime mailbox for that sink so the proof message cannot become inbound agent work. Missing credentials or a missing smoke recipient produce a JSON `skipped` result and exit successfully so PR verification can record credential-blocked live proof without committing secrets.
