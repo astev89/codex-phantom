@@ -170,7 +170,9 @@ function normalizePromptFragmentRollbackMode(
     value !== "restore_inactive" &&
     value !== "delete"
   ) {
-    throw new Error("promptFragment.mode must be upsert or clear");
+    throw new Error(
+      "promptFragment.mode must be upsert, clear, restore_inactive, or delete"
+    );
   }
   return value;
 }

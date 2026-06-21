@@ -14,6 +14,8 @@ import { ASSIGNMENT_AUTONOMY_LEVELS } from "./types.ts";
 import type { AutonomousAssignmentService } from "./service.ts";
 import type { SelfEvolutionRiskClass } from "../self-evolution/proposals.ts";
 
+const NEWER_APPLIED_SCAN_LIMIT = 1_000;
+
 export type AutonomousMutationTarget =
   | "prompt"
   | "memory"
@@ -504,8 +506,10 @@ export class AutonomousMutationLedger {
             )
           )
         ORDER BY candidate.applied_at DESC, candidate.rowid DESC
+        LIMIT ?
       `,
-      ...values
+      ...values,
+      NEWER_APPLIED_SCAN_LIMIT + 1
     );
     if (scope !== "affected_resources") {
       return rows[0] ? toAutonomousMutationRecord(rows[0]) : null;
@@ -514,7 +518,8 @@ export class AutonomousMutationLedger {
     if (currentResources.size === 0) {
       return rows[0] ? toAutonomousMutationRecord(rows[0]) : null;
     }
-    for (const row of rows) {
+    const scannedRows = rows.slice(0, NEWER_APPLIED_SCAN_LIMIT);
+    for (const row of scannedRows) {
       const candidate = toAutonomousMutationRecord(row);
       if (
         hasSharedAffectedResource(
@@ -524,6 +529,11 @@ export class AutonomousMutationLedger {
       ) {
         return candidate;
       }
+    }
+    if (rows.length > NEWER_APPLIED_SCAN_LIMIT) {
+      return toAutonomousMutationRecord(
+        scannedRows[scannedRows.length - 1]
+      );
     }
     return null;
   }

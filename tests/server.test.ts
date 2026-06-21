@@ -3191,9 +3191,9 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       }
     );
     assert.equal(assignmentControlTrailingSlash.status, 200);
-	    const assignmentWakeupJobsJson = await eventually(
-	      async () => {
-	        const response = await fetch(`${baseUrl}/scheduler/jobs`, {
+    const assignmentWakeupJobsJson = await eventually(
+      async () => {
+        const response = await fetch(`${baseUrl}/scheduler/jobs`, {
           headers: {
             Authorization: `Bearer ${config.operatorBearerToken}`,
           },
@@ -3212,9 +3212,9 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
         value.jobs.some(
           (job) =>
             job.name === ASSIGNMENT_WAKEUP_JOB_NAME &&
-	            job.status === "scheduled"
-	        )
-	    );
+            job.status === "scheduled"
+        )
+    );
 
     const operatorDependencyParent = assignments.create({
       objective: "Coordinate operator dependency control",
@@ -3261,13 +3261,15 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
         assignmentId: operatorDependencyParent.assignment.id,
         reason: "Waited child assignments satisfied",
       });
-      assert.ok(Date.parse(rescheduledParentJob.scheduledAt) <= Date.now() + 1000);
+      assert.ok(
+        Date.parse(rescheduledParentJob.scheduledAt) <= Date.now() + 1000
+      );
     } finally {
       await scheduler.start();
     }
-	    const disableFailureNotifications = await fetch(
-	      `${baseUrl}/admin/assignments/${assignmentCreateJson.assignment.id}/control`,
-	      {
+    const disableFailureNotifications = await fetch(
+      `${baseUrl}/admin/assignments/${assignmentCreateJson.assignment.id}/control`,
+      {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

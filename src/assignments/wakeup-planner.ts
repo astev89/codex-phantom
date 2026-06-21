@@ -675,6 +675,9 @@ function parsePlannerChildMarker(
       : value.waitForChildren === undefined
         ? undefined
         : "invalid";
+  if (waitForChildren === "invalid") {
+    return undefined;
+  }
   return {
     objective: value.objective.trim(),
     title:
@@ -684,9 +687,8 @@ function parsePlannerChildMarker(
     rationale: value.rationale.trim(),
     autonomyLevel,
     waitForChild: value.waitForChild === true,
-    dependsOnChildIds:
-      waitForChildren === "invalid" ? [""] : dependsOnChildIds,
-    waitForChildren: waitForChildren === "invalid" ? undefined : waitForChildren,
+    dependsOnChildIds,
+    waitForChildren,
     metadata: value.metadata,
     context: Array.isArray(value.context) ? value.context : undefined,
   };
@@ -892,9 +894,8 @@ function isActiveChildReservationError(error: unknown): boolean {
   return (
     error instanceof AssignmentValidationError &&
     (error.message ===
-	      "Assignment wakeup budget is reserved for active child assignments" ||
-	      error.message === "Assignment is waiting for active child assignment" ||
-	      error.message ===
-	        "Assignment is waiting for child assignment dependencies")
-	  );
-	}
+      "Assignment wakeup budget is reserved for active child assignments" ||
+      error.message === "Assignment is waiting for active child assignment" ||
+      error.message === "Assignment is waiting for child assignment dependencies")
+  );
+}
