@@ -1364,6 +1364,82 @@ test("AssignmentWakeupPlanner applies explicitly allowed memory policy mutation 
   });
 });
 
+test("AssignmentWakeupPlanner applies explicitly allowed memory entry lifecycle mutation markers", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-06-16T12:42:00.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const database = new AppDatabase(":memory:");
+  t.after(() => database.close());
+  const assignments = new AutonomousAssignmentService(database);
+  const ledger = new AutonomousMutationLedger(database, assignments);
+  const settings = new OperatorSettingsStore(database);
+  const executor = new AutonomousMutationExecutor({
+    assignments,
+    database,
+    ledger,
+    settings,
+  });
+  const runs = new RunGraphStore(database);
+  const { scheduler } = makeScheduler(now);
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, [
+      [
+        "Captured durable operator memory.",
+        'ASSIGNMENT_MUTATION: {"target":"memory","mutationType":"entry_lifecycle","riskClass":"high","rationale":"Remember bounded operator preference.","proposedChange":{"memoryEntry":{"action":"create","category":"semantic","content":"Operator prefers compact wakeup summaries."}}}',
+        "ASSIGNMENT_STATUS: complete",
+      ].join("\n"),
+    ]),
+    mutations: executor,
+  });
+  const assignment = assignments.create({
+    objective: "Planner should create bounded memory",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "memory.entry_lifecycle",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+
+  const result = await planner.wakeNow({
+    assignmentId: assignment.assignment.id,
+    actor: "scheduler",
+    reason: "scheduled wakeup",
+  });
+
+  assert.equal(result.status, "completed");
+  const row = database.get<{ id: string; content: string }>(
+    "SELECT id, content FROM memory_entries WHERE content = ?",
+    "Operator prefers compact wakeup summaries."
+  );
+  assert.ok(row);
+  const mutations = ledger.list({ assignmentId: assignment.assignment.id });
+  assert.equal(mutations.length, 1);
+  assert.equal(mutations[0]?.status, "applied");
+  assert.equal(mutations[0]?.target, "memory");
+  assert.equal(mutations[0]?.mutationType, "entry_lifecycle");
+  assert.equal(mutations[0]?.runId, "coord_wakeup_1");
+  assert.deepEqual(mutations[0]?.affectedResources, [
+    { type: "memory", id: row.id },
+  ]);
+  assert.deepEqual(mutations[0]?.authorizingPolicy, {
+    rule: "assignment.policy.selfEvolution",
+    maxRiskClass: "high",
+    allowedMutationClasses: [
+      "configuration.operator_settings",
+      "memory.entry_lifecycle",
+    ],
+    mutationClass: "memory.entry_lifecycle",
+    actor: "planner",
+  });
+});
+
 test("AssignmentWakeupPlanner applies explicitly allowed role policy mutation markers", async (t) => {
   t.mock.timers.enable({ apis: ["Date"] });
   const now = "2026-06-16T12:42:00.000Z";

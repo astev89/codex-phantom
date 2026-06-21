@@ -1,4 +1,5 @@
 import type { RuntimeConfigLimitsStore } from "../../config/runtime-limits.ts";
+import type { AppDatabase } from "../../platform/database.ts";
 import type { MemoryPolicyStore } from "../../memory/policy.ts";
 import type { RolePolicyRuntimeStore } from "../../orchestration/role-policy-runtime.ts";
 import type { ProjectFileApplyService } from "../../project-files/apply.ts";
@@ -28,9 +29,11 @@ import {
 import { createRolePermissionPolicyAutonomousMutationAdapter } from "./role.ts";
 import { createToolBundleEnableAutonomousMutationAdapter } from "./tool.ts";
 import type { AutonomousMutationAdapter } from "./types.ts";
+import { createMemoryEntryLifecycleAutonomousMutationAdapter } from "./memory-entry.ts";
 
 export type DefaultAutonomousMutationAdapterOptions = {
   assignments: AutonomousAssignmentService;
+  database?: AppDatabase;
   settings: OperatorSettingsMutationPort;
   memoryPolicy?: MemoryPolicyStore;
   runtimeConfigLimits?: RuntimeConfigLimitsStore;
@@ -68,6 +71,9 @@ export function buildDefaultAutonomousMutationAdapters(
             options.memoryPolicy
           ),
         ]
+      : []),
+    ...(options.database
+      ? [createMemoryEntryLifecycleAutonomousMutationAdapter(options.database)]
       : []),
     ...(options.runtimeConfigLimits
       ? [

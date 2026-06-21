@@ -1,4 +1,5 @@
 import type { JsonValue } from "../shared/types.ts";
+import type { AppDatabase } from "../platform/database.ts";
 import type { MemoryPolicyStore } from "../memory/policy.ts";
 import type { RuntimeConfigLimitsStore } from "../config/runtime-limits.ts";
 import type { OperatorSettingsMutationPort } from "../self-evolution/mutations.ts";
@@ -66,6 +67,7 @@ export type AutonomousMutationExecutionResult = {
 
 export type AutonomousMutationExecutorOptions = {
   assignments: AutonomousAssignmentService;
+  database?: AppDatabase;
   ledger: AutonomousMutationLedger;
   settings: OperatorSettingsMutationPort;
   memoryPolicy?: MemoryPolicyStore;
@@ -80,7 +82,7 @@ export type AutonomousMutationExecutorOptions = {
 };
 
 const UNSUPPORTED_MUTATION_ERROR =
-  "Only configuration.operator_settings, configuration.assignment_policy, configuration.runtime_limits, tool.bundle_enable, prompt.runtime_guidance, prompt.managed_fragment, memory_policy.runtime_bounds, role.permission_policy, project_file.draft, project_file.apply_draft, and project_file.apply_bundle autonomous mutations are supported in this slice";
+  "Only configuration.operator_settings, configuration.assignment_policy, configuration.runtime_limits, tool.bundle_enable, prompt.runtime_guidance, prompt.managed_fragment, memory.entry_lifecycle, memory_policy.runtime_bounds, role.permission_policy, project_file.draft, project_file.apply_draft, and project_file.apply_bundle autonomous mutations are supported in this slice";
 const RISK_ORDER: SelfEvolutionRiskClass[] = [
   "low",
   "medium",
@@ -210,6 +212,7 @@ export class AutonomousMutationExecutor {
       appliedAt: mutation.appliedAt ?? mutation.updatedAt,
       id: mutation.id,
       scope: adapter.rollbackConflictScope ?? "assignment",
+      affectedResources: mutation.affectedResources,
     });
     if (newerMutation) {
       throw new AutonomousMutationExecutionError(

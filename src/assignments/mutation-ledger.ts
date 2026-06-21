@@ -16,6 +16,7 @@ import type { SelfEvolutionRiskClass } from "../self-evolution/proposals.ts";
 
 export type AutonomousMutationTarget =
   | "prompt"
+  | "memory"
   | "memory_policy"
   | "tool"
   | "role"
@@ -24,6 +25,7 @@ export type AutonomousMutationTarget =
 
 export const AUTONOMOUS_MUTATION_TARGETS = [
   "prompt",
+  "memory",
   "memory_policy",
   "tool",
   "role",
@@ -455,7 +457,8 @@ export class AutonomousMutationLedger {
     mutationType: string;
     appliedAt: string;
     id: string;
-    scope?: "assignment" | "global";
+    scope?: "assignment" | "global" | "affected_resources";
+    affectedResources?: JsonValue;
   }): AutonomousMutationRecord | null {
     assertTarget(input.target);
     const scope = input.scope ?? "assignment";
@@ -471,7 +474,7 @@ export class AutonomousMutationLedger {
       requireText(input.appliedAt, "appliedAt"),
       requireText(input.appliedAt, "appliedAt"),
     ];
-    const row = this.database.get<AutonomousMutationRow>(
+    const rows = this.database.all<AutonomousMutationRow>(
       `
         SELECT candidate.* FROM assignment_mutations AS candidate
         JOIN assignment_mutations AS current ON current.id = ?
@@ -488,11 +491,28 @@ export class AutonomousMutationLedger {
             )
           )
         ORDER BY candidate.applied_at DESC, candidate.rowid DESC
-        LIMIT 1
       `,
       ...values
     );
-    return row ? toAutonomousMutationRecord(row) : null;
+    if (scope !== "affected_resources") {
+      return rows[0] ? toAutonomousMutationRecord(rows[0]) : null;
+    }
+    const currentResources = affectedResourceKeys(input.affectedResources);
+    if (currentResources.size === 0) {
+      return rows[0] ? toAutonomousMutationRecord(rows[0]) : null;
+    }
+    for (const row of rows) {
+      const candidate = toAutonomousMutationRecord(row);
+      if (
+        hasSharedAffectedResource(
+          currentResources,
+          candidate.affectedResources
+        )
+      ) {
+        return candidate;
+      }
+    }
+    return null;
   }
 
   private getRequired(id: string): AutonomousMutationRecord {
@@ -566,7 +586,7 @@ function normalizeBaseInput(
 function assertTarget(target: AutonomousMutationTarget): void {
   if (!TARGETS.has(target)) {
     throw new Error(
-      "target must be prompt, memory_policy, tool, role, configuration, or project_file"
+      "target must be prompt, memory, memory_policy, tool, role, configuration, or project_file"
     );
   }
 }
@@ -675,4 +695,35 @@ function toAutonomousMutationRecord(
     rolledBackAt: row.rolled_back_at ?? undefined,
     notifiedAt: row.notified_at ?? undefined,
   };
+}
+
+function affectedResourceKeys(value: JsonValue | undefined): Set<string> {
+  if (!Array.isArray(value)) {
+    return new Set();
+  }
+  const keys = new Set<string>();
+  for (const item of value) {
+    if (
+      item &&
+      typeof item === "object" &&
+      !Array.isArray(item) &&
+      typeof item.type === "string" &&
+      typeof item.id === "string"
+    ) {
+      keys.add(`${item.type}:${item.id}`);
+    }
+  }
+  return keys;
+}
+
+function hasSharedAffectedResource(
+  currentResources: Set<string>,
+  candidateResources: JsonValue
+): boolean {
+  for (const key of affectedResourceKeys(candidateResources)) {
+    if (currentResources.has(key)) {
+      return true;
+    }
+  }
+  return false;
 }

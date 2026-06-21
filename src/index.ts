@@ -103,6 +103,7 @@ const projectFileApply = new ProjectFileApplyService({
 });
 const assignmentMutationExecutor = new AutonomousMutationExecutor({
   assignments,
+  database,
   ledger: assignmentMutations,
   settings: operatorSettings,
   memoryPolicy,

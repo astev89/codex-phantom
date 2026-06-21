@@ -23,6 +23,7 @@ import {
   runtimeConfigLimitValues,
 } from "../src/config/runtime-limits.ts";
 import { MemoryPolicyStore, memoryPolicyValues } from "../src/memory/policy.ts";
+import { MemoryStore } from "../src/memory/store.ts";
 import { loadRolePolicyConfig } from "../src/orchestration/role-config.ts";
 import {
   RolePolicyRuntimeStore,
@@ -41,7 +42,12 @@ import { ToolBundleLifecycleService } from "../src/tools/bundle-lifecycle.ts";
 import { DynamicToolRegistry } from "../src/tools/dynamic-registry.ts";
 import { ToolRegistry } from "../src/tools/registry.ts";
 import type { JsonValue } from "../src/shared/types.ts";
-import { makeConfig } from "./helpers.ts";
+import {
+  makeConfig,
+  makeDisabledEmbeddings,
+  makeFakeEmbeddings,
+  makeFakeVectorStore,
+} from "./helpers.ts";
 
 function createHarness() {
   const database = new AppDatabase(":memory:");
@@ -124,6 +130,37 @@ function createMemoryPolicyHarness() {
     memoryPolicy,
   });
   return { assignments, database, executor, ledger, memoryPolicy, settings };
+}
+
+function createMemoryEntryLifecycleHarness(
+  options: { semanticRetrievalEnabled?: boolean } = {}
+) {
+  const database = new AppDatabase(":memory:");
+  const assignments = new AutonomousAssignmentService(database);
+  const ledger = new AutonomousMutationLedger(database, assignments);
+  const settings = new OperatorSettingsStore(database);
+  const config = makeConfig();
+  const semanticRetrievalEnabled = options.semanticRetrievalEnabled === true;
+  const memory = new MemoryStore(
+    database,
+    config,
+    semanticRetrievalEnabled
+      ? makeFakeEmbeddings({})
+      : makeDisabledEmbeddings(),
+    makeFakeVectorStore({
+      backend: "qdrant",
+      available: semanticRetrievalEnabled,
+      configured: semanticRetrievalEnabled,
+    }),
+    makeFakeVectorStore({ backend: "sqlite_fallback", available: true })
+  );
+  const executor = new AutonomousMutationExecutor({
+    assignments,
+    database,
+    ledger,
+    settings,
+  });
+  return { assignments, database, executor, ledger, memory, settings };
 }
 
 function createRolePolicyHarness() {
@@ -2269,6 +2306,707 @@ test("AutonomousMutationExecutor blocks stale memory policy rollback across assi
   );
   assert.equal(memoryPolicy.get().memorySummaryLimit, 2);
 
+  database.close();
+});
+
+test("AutonomousMutationExecutor creates memory entries with rollback", async () => {
+  const { assignments, database, executor, memory } =
+    createMemoryEntryLifecycleHarness();
+  const assignment = assignments.create({
+    objective: "Create bounded memory evidence",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "memory.entry_lifecycle",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+
+  const applied = executor.apply({
+    assignmentId: assignment.assignment.id,
+    runId: "coord_memory_entry_create",
+    target: "memory",
+    mutationType: "entry_lifecycle",
+    rationale: "Remember the operator preference.",
+    actor: "alice",
+    riskClass: "high",
+    proposedChange: {
+      memoryEntry: {
+        action: "create",
+        category: "semantic",
+        content: "Operator prefers concise rollout summaries.",
+        importance: 0.74,
+      },
+    },
+  });
+  const createdId = (
+    applied.mutation.after as {
+      entry: { id: string };
+    }
+  ).entry.id;
+
+  assert.equal(applied.mutation.status, "applied");
+  assert.equal(applied.mutation.target, "memory");
+  assert.equal(applied.mutation.mutationType, "entry_lifecycle");
+  assert.deepEqual(applied.mutation.authorizingPolicy, {
+    rule: "assignment.policy.selfEvolution",
+    maxRiskClass: "high",
+    allowedMutationClasses: [
+      "configuration.operator_settings",
+      "memory.entry_lifecycle",
+    ],
+    mutationClass: "memory.entry_lifecycle",
+    actor: "alice",
+  });
+  assert.deepEqual(applied.mutation.affectedResources, [
+    { type: "memory", id: createdId },
+  ]);
+  assert.deepEqual(applied.mutation.verification, {
+    attempted: true,
+    result: "passed",
+    method: "memory_entry_lifecycle_update",
+  });
+  assert.equal(
+    (await memory.getEntry(createdId))?.content,
+    "Operator prefers concise rollout summaries."
+  );
+  assert.ok(
+    (await memory.query("concise summaries")).semantic.some(
+      (entry) => entry.id === createdId
+    )
+  );
+
+  const rolledBack = executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: applied.mutation.id,
+    actor: "bob",
+  });
+
+  assert.equal(rolledBack.mutation.status, "rolled_back");
+  assert.equal(await memory.getEntry(createdId), null);
+  assert.ok(
+    !(await memory.query("concise summaries")).semantic.some(
+      (entry) => entry.id === createdId
+    )
+  );
+  database.close();
+});
+
+test("AutonomousMutationExecutor retrieves lifecycle-created memories when semantic search is enabled", async () => {
+  const { assignments, database, executor, memory } =
+    createMemoryEntryLifecycleHarness({ semanticRetrievalEnabled: true });
+  await memory.storeEntry({
+    category: "semantic",
+    content: "Deploy reminders should mention staging first.",
+    sourceType: "semantic_fact",
+    importance: 0.8,
+    isFact: true,
+  });
+  const assignment = assignments.create({
+    objective: "Create retrievable memory evidence",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "memory.entry_lifecycle",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+
+  const applied = executor.apply({
+    assignmentId: assignment.assignment.id,
+    target: "memory",
+    mutationType: "entry_lifecycle",
+    rationale: "Remember the email rollout preference.",
+    riskClass: "high",
+    proposedChange: {
+      memoryEntry: {
+        action: "create",
+        category: "semantic",
+        content: "Email rollout notes should mention mailbox smoke status.",
+        importance: 0.78,
+      },
+    },
+  });
+  const createdId = (
+    applied.mutation.after as {
+      entry: { id: string };
+    }
+  ).entry.id;
+
+  assert.ok(
+    (await memory.query("mailbox smoke status")).semantic.some(
+      (entry) => entry.id === createdId
+    )
+  );
+  database.close();
+});
+
+test("AutonomousMutationExecutor deactivates and supersedes memory entries with rollback", async () => {
+  const { assignments, database, executor, memory } =
+    createMemoryEntryLifecycleHarness();
+  const original = await memory.storeEntry({
+    category: "semantic",
+    content: "Release train leaves on Friday.",
+    sourceType: "semantic_fact",
+    importance: 0.8,
+    isFact: true,
+  });
+  const assignment = assignments.create({
+    objective: "Mutate memory lifecycle state",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "memory.entry_lifecycle",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+
+  const deactivated = executor.apply({
+    assignmentId: assignment.assignment.id,
+    target: "memory",
+    mutationType: "entry_lifecycle",
+    rationale: "Retire stale release memory.",
+    riskClass: "high",
+    proposedChange: {
+      memoryEntry: {
+        action: "deactivate",
+        memoryId: original.id,
+        reason: "No longer reliable.",
+      },
+    },
+  });
+  assert.equal((await memory.getEntry(original.id))?.lifecycleState, "deactivated");
+  assert.ok(
+    !(await memory.query("release train")).semantic.some(
+      (entry) => entry.id === original.id
+    )
+  );
+
+  executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: deactivated.mutation.id,
+  });
+  assert.equal((await memory.getEntry(original.id))?.lifecycleState, "active");
+  assert.ok(
+    (await memory.query("release train")).semantic.some(
+      (entry) => entry.id === original.id
+    )
+  );
+
+  const superseded = executor.apply({
+    assignmentId: assignment.assignment.id,
+    target: "memory",
+    mutationType: "entry_lifecycle",
+    rationale: "Replace stale release memory.",
+    riskClass: "high",
+    proposedChange: {
+      memoryEntry: {
+        action: "supersede",
+        memoryId: original.id,
+        category: "semantic",
+        content: "Release train leaves on Monday.",
+        importance: 0.82,
+        reason: "Operator corrected release timing.",
+      },
+    },
+  });
+  const replacementId = (
+    superseded.mutation.after as {
+      entry: { id: string };
+    }
+  ).entry.id;
+  assert.equal((await memory.getEntry(original.id))?.lifecycleState, "superseded");
+  assert.equal(
+    (await memory.getEntry(original.id))?.supersededByMemoryId,
+    replacementId
+  );
+  assert.ok(
+    !(await memory.query("release train")).semantic.some(
+      (entry) => entry.id === original.id
+    )
+  );
+  assert.ok(
+    (await memory.query("release train")).semantic.some(
+      (entry) => entry.id === replacementId
+    )
+  );
+
+  executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: superseded.mutation.id,
+  });
+  assert.equal(await memory.getEntry(replacementId), null);
+  assert.equal((await memory.getEntry(original.id))?.lifecycleState, "active");
+  assert.ok(
+    (await memory.query("release train")).semantic.some(
+      (entry) => entry.id === original.id
+    )
+  );
+  database.close();
+});
+
+test("AutonomousMutationExecutor rolls back memory entries after unrelated lifecycle mutations", async () => {
+  const { assignments, database, executor, memory } =
+    createMemoryEntryLifecycleHarness();
+  const policy = {
+    selfEvolution: {
+      allowedMutationClasses: [
+        "configuration.operator_settings",
+        "memory.entry_lifecycle",
+      ],
+      maxRiskClass: "high" as const,
+    },
+  };
+  const firstAssignment = assignments.create({
+    objective: "Create first memory entry",
+    autonomyLevel: "evolve",
+    policy,
+  });
+  const secondAssignment = assignments.create({
+    objective: "Create unrelated memory entry",
+    autonomyLevel: "evolve",
+    policy,
+  });
+
+  const first = executor.apply({
+    assignmentId: firstAssignment.assignment.id,
+    target: "memory",
+    mutationType: "entry_lifecycle",
+    rationale: "Remember the release handoff.",
+    riskClass: "high",
+    proposedChange: {
+      memoryEntry: {
+        action: "create",
+        category: "semantic",
+        content: "Release handoff notes belong in the operator report.",
+      },
+    },
+  });
+  const firstMemoryId = (
+    first.mutation.after as {
+      entry: { id: string };
+    }
+  ).entry.id;
+  const second = executor.apply({
+    assignmentId: secondAssignment.assignment.id,
+    target: "memory",
+    mutationType: "entry_lifecycle",
+    rationale: "Remember the mailbox handoff.",
+    riskClass: "high",
+    proposedChange: {
+      memoryEntry: {
+        action: "create",
+        category: "semantic",
+        content: "Mailbox handoff notes belong in the channel report.",
+      },
+    },
+  });
+  const secondMemoryId = (
+    second.mutation.after as {
+      entry: { id: string };
+    }
+  ).entry.id;
+
+  executor.rollback({
+    assignmentId: firstAssignment.assignment.id,
+    mutationId: first.mutation.id,
+  });
+
+  assert.equal(await memory.getEntry(firstMemoryId), null);
+  assert.equal((await memory.getEntry(secondMemoryId))?.lifecycleState, "active");
+  database.close();
+});
+
+test("AutonomousMutationExecutor blocks memory create rollback after later same-resource lifecycle mutation", async () => {
+  const { assignments, database, executor, memory } =
+    createMemoryEntryLifecycleHarness();
+  const policy = {
+    selfEvolution: {
+      allowedMutationClasses: [
+        "configuration.operator_settings",
+        "memory.entry_lifecycle",
+      ],
+      maxRiskClass: "high" as const,
+    },
+  };
+  const createAssignment = assignments.create({
+    objective: "Create memory entry",
+    autonomyLevel: "evolve",
+    policy,
+  });
+  const updateAssignment = assignments.create({
+    objective: "Deactivate created memory entry",
+    autonomyLevel: "evolve",
+    policy,
+  });
+
+  const created = executor.apply({
+    assignmentId: createAssignment.assignment.id,
+    target: "memory",
+    mutationType: "entry_lifecycle",
+    rationale: "Remember transient release notes.",
+    riskClass: "high",
+    proposedChange: {
+      memoryEntry: {
+        action: "create",
+        category: "semantic",
+        content: "Transient release notes should be pruned later.",
+      },
+    },
+  });
+  const memoryId = (
+    created.mutation.after as {
+      entry: { id: string };
+    }
+  ).entry.id;
+  executor.apply({
+    assignmentId: updateAssignment.assignment.id,
+    target: "memory",
+    mutationType: "entry_lifecycle",
+    rationale: "Retire transient release notes.",
+    riskClass: "high",
+    proposedChange: {
+      memoryEntry: {
+        action: "deactivate",
+        memoryId,
+      },
+    },
+  });
+
+  assert.throws(
+    () =>
+      executor.rollback({
+        assignmentId: createAssignment.assignment.id,
+        mutationId: created.mutation.id,
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 409);
+      assert.match(error.message, /newer applied memory.entry_lifecycle/);
+      return true;
+    }
+  );
+  assert.equal((await memory.getEntry(memoryId))?.lifecycleState, "deactivated");
+  database.close();
+});
+
+test("AutonomousMutationExecutor blocks memory supersede rollback after later lifecycle links", async () => {
+  const { assignments, database, executor, memory } =
+    createMemoryEntryLifecycleHarness();
+  const original = await memory.storeEntry({
+    category: "semantic",
+    content: "Release train leaves on Friday.",
+    sourceType: "semantic_fact",
+    importance: 0.8,
+    isFact: true,
+  });
+  const assignment = assignments.create({
+    objective: "Protect later memory lifecycle history",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "memory.entry_lifecycle",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+  const superseded = executor.apply({
+    assignmentId: assignment.assignment.id,
+    target: "memory",
+    mutationType: "entry_lifecycle",
+    rationale: "Replace stale release memory.",
+    riskClass: "high",
+    proposedChange: {
+      memoryEntry: {
+        action: "supersede",
+        memoryId: original.id,
+        category: "semantic",
+        content: "Release train leaves on Monday.",
+      },
+    },
+  });
+  const replacementId = (
+    superseded.mutation.after as {
+      entry: { id: string };
+    }
+  ).entry.id;
+
+  const newer = await memory.storeEntry({
+    category: "semantic",
+    content: "Release train leaves after mailbox smoke completes.",
+    sourceType: "semantic_fact",
+    importance: 0.85,
+    isFact: true,
+    supersedesMemoryIds: [replacementId],
+    lifecycleReason: "Later operator correction.",
+  });
+
+  assert.throws(
+    () =>
+      executor.rollback({
+        assignmentId: assignment.assignment.id,
+        mutationId: superseded.mutation.id,
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 400);
+      assert.match(error.message, /newer memory lifecycle links/);
+      return true;
+    }
+  );
+  assert.equal(
+    (await memory.getEntry(replacementId))?.supersededByMemoryId,
+    newer.id
+  );
+  assert.equal((await memory.getEntry(newer.id))?.lifecycleState, "active");
+  assert.equal(
+    (await memory.getEntry(original.id))?.supersededByMemoryId,
+    replacementId
+  );
+  database.close();
+});
+
+test("AutonomousMutationExecutor blocks memory rollback after later target lifecycle links", async () => {
+  const { assignments, database, executor, memory } =
+    createMemoryEntryLifecycleHarness();
+  const original = await memory.storeEntry({
+    category: "semantic",
+    content: "Incident notes should mention paging.",
+    sourceType: "semantic_fact",
+    importance: 0.8,
+    isFact: true,
+  });
+  const deactivationTarget = await memory.storeEntry({
+    category: "semantic",
+    content: "Handoff notes should mention paging.",
+    sourceType: "semantic_fact",
+    importance: 0.8,
+    isFact: true,
+  });
+  const assignment = assignments.create({
+    objective: "Protect target lifecycle history",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "memory.entry_lifecycle",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+
+  const superseded = executor.apply({
+    assignmentId: assignment.assignment.id,
+    target: "memory",
+    mutationType: "entry_lifecycle",
+    rationale: "Replace stale incident memory.",
+    riskClass: "high",
+    proposedChange: {
+      memoryEntry: {
+        action: "supersede",
+        memoryId: original.id,
+        category: "semantic",
+        content: "Incident notes should mention escalation.",
+      },
+    },
+  });
+  const laterOriginal = await memory.storeEntry({
+    category: "semantic",
+    content: "Incident notes should mention manager escalation.",
+    sourceType: "semantic_fact",
+    importance: 0.85,
+    isFact: true,
+    supersedesMemoryIds: [original.id],
+    lifecycleReason: "Later correction of the original row.",
+  });
+
+  assert.throws(
+    () =>
+      executor.rollback({
+        assignmentId: assignment.assignment.id,
+        mutationId: superseded.mutation.id,
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 400);
+      assert.match(error.message, /newer memory lifecycle links/);
+      return true;
+    }
+  );
+  assert.equal((await memory.getEntry(laterOriginal.id))?.lifecycleState, "active");
+  assert.equal(
+    (await memory.getEntry(original.id))?.supersededByMemoryId,
+    laterOriginal.id
+  );
+
+  const deactivated = executor.apply({
+    assignmentId: assignment.assignment.id,
+    target: "memory",
+    mutationType: "entry_lifecycle",
+    rationale: "Deactivate stale handoff memory.",
+    riskClass: "high",
+    proposedChange: {
+      memoryEntry: {
+        action: "deactivate",
+        memoryId: deactivationTarget.id,
+      },
+    },
+  });
+  const laterDeactivationTarget = await memory.storeEntry({
+    category: "semantic",
+    content: "Handoff notes should mention incident commander paging.",
+    sourceType: "semantic_fact",
+    importance: 0.85,
+    isFact: true,
+    supersedesMemoryIds: [deactivationTarget.id],
+    lifecycleReason: "Later correction of deactivated row.",
+  });
+
+  assert.throws(
+    () =>
+      executor.rollback({
+        assignmentId: assignment.assignment.id,
+        mutationId: deactivated.mutation.id,
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 400);
+      assert.match(error.message, /newer memory lifecycle links/);
+      return true;
+    }
+  );
+  assert.equal(
+    (await memory.getEntry(deactivationTarget.id))?.supersededByMemoryId,
+    laterDeactivationTarget.id
+  );
+  database.close();
+});
+
+test("AutonomousMutationExecutor rejects unsafe memory entry lifecycle mutations", async () => {
+  const { assignments, database, executor, ledger, memory } =
+    createMemoryEntryLifecycleHarness();
+  const original = await memory.storeEntry({
+    category: "semantic",
+    content: "Keep this memory stable.",
+    sourceType: "semantic_fact",
+    importance: 0.7,
+    isFact: true,
+  });
+  const defaultAssignment = assignments.create({
+    objective: "Default policy should not mutate memory entries",
+    autonomyLevel: "evolve",
+  });
+
+  assert.throws(
+    () =>
+      executor.apply({
+        assignmentId: defaultAssignment.assignment.id,
+        target: "memory",
+        mutationType: "entry_lifecycle",
+        rationale: "Try memory lifecycle mutation without opt-in.",
+        riskClass: "high",
+        proposedChange: {
+          memoryEntry: {
+            action: "deactivate",
+            memoryId: original.id,
+          },
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 403);
+      assert.equal(error.mutation?.status, "failed");
+      assert.match(error.message, /does not allow memory\.entry_lifecycle/);
+      return true;
+    }
+  );
+
+  const assignment = assignments.create({
+    objective: "Reject malformed memory lifecycle changes",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "memory.entry_lifecycle",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+  const malformedChanges: JsonValue[] = [
+    { memoryEntry: { action: "create", category: "secret", content: "x" } },
+    {
+      memoryEntry: {
+        action: "create",
+        category: "semantic",
+        content: "x".repeat(2001),
+      },
+    },
+    { memoryEntry: { action: "deactivate", memoryId: "missing" } },
+    {
+      memoryEntry: {
+        action: "supersede",
+        memoryId: original.id,
+        category: "semantic",
+        content: " ",
+      },
+    },
+  ];
+
+  for (const proposedChange of malformedChanges) {
+    assert.throws(
+      () =>
+        executor.apply({
+          assignmentId: assignment.assignment.id,
+          target: "memory",
+          mutationType: "entry_lifecycle",
+          rationale: "Try malformed memory lifecycle mutation.",
+          riskClass: "high",
+          proposedChange,
+        }),
+      (error) => {
+        assert.ok(error instanceof AutonomousMutationExecutionError);
+        assert.equal(error.status, 400);
+        assert.equal(error.mutation?.status, "failed");
+        return true;
+      }
+    );
+  }
+
+  assert.equal((await memory.getEntry(original.id))?.lifecycleState, "active");
+  assert.deepEqual(
+    ledger
+      .list({ assignmentId: assignment.assignment.id })
+      .map((mutation) => ({
+        target: mutation.target,
+        mutationType: mutation.mutationType,
+        status: mutation.status,
+      })),
+    [
+      { target: "memory", mutationType: "entry_lifecycle", status: "failed" },
+      { target: "memory", mutationType: "entry_lifecycle", status: "failed" },
+      { target: "memory", mutationType: "entry_lifecycle", status: "failed" },
+      { target: "memory", mutationType: "entry_lifecycle", status: "failed" },
+    ]
+  );
   database.close();
 });
 
@@ -5320,7 +6058,7 @@ test("AutonomousMutationExecutor audits unsupported and malformed autonomous mut
         mutationType: "tool_bundle_enable",
         status: "failed",
         errorMessage:
-          "Only configuration.operator_settings, configuration.assignment_policy, configuration.runtime_limits, tool.bundle_enable, prompt.runtime_guidance, prompt.managed_fragment, memory_policy.runtime_bounds, role.permission_policy, project_file.draft, project_file.apply_draft, and project_file.apply_bundle autonomous mutations are supported in this slice",
+          "Only configuration.operator_settings, configuration.assignment_policy, configuration.runtime_limits, tool.bundle_enable, prompt.runtime_guidance, prompt.managed_fragment, memory.entry_lifecycle, memory_policy.runtime_bounds, role.permission_policy, project_file.draft, project_file.apply_draft, and project_file.apply_bundle autonomous mutations are supported in this slice",
       },
     ]
   );

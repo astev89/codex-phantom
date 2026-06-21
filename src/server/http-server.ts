@@ -303,6 +303,7 @@ export class HttpServer {
       new AutonomousMutationLedger(database, assignments);
     this.assignmentMutationExecutor = new AutonomousMutationExecutor({
       assignments,
+      database,
       ledger: this.assignmentMutations,
       settings: this.settings,
       memoryPolicy: this.memoryPolicy,

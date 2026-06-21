@@ -83,23 +83,40 @@ export class MemoryStore {
       : [];
 
     const ids = results.map((result) => result.id);
-    const rows =
+    const vectorRows =
       ids.length > 0
         ? this.database.all<MemoryRow>(
             `
-            SELECT ${MEMORY_ROW_COLUMNS}
-            FROM memory_entries
-            WHERE id IN (${ids.map(() => "?").join(",")})
-          `,
+              SELECT ${MEMORY_ROW_COLUMNS}
+              FROM memory_entries
+              WHERE id IN (${ids.map(() => "?").join(",")})
+            `,
             ...ids
           )
+        : [];
+    const keywordRows =
+      ids.length > 0 && queryEmbedding
+        ? this.database.all<MemoryRow>(
+            `
+              SELECT ${MEMORY_ROW_COLUMNS}
+              FROM memory_entries
+              WHERE COALESCE(lifecycle_state, 'active') = 'active'
+                AND embedding_json IS NULL
+              ORDER BY created_at DESC
+              LIMIT 240
+            `
+          )
+        : [];
+    const rows =
+      ids.length > 0
+        ? dedupeMemoryRows([...vectorRows, ...keywordRows])
         : this.database.all<MemoryRow>(
             `
-            SELECT ${MEMORY_ROW_COLUMNS}
-            FROM memory_entries
-            ORDER BY created_at DESC
-            LIMIT 240
-          `
+              SELECT ${MEMORY_ROW_COLUMNS}
+              FROM memory_entries
+              ORDER BY created_at DESC
+              LIMIT 240
+            `
           );
 
     const retrieval = buildMemoryRetrievalContext({
@@ -561,4 +578,12 @@ export class MemoryStore {
       return null;
     }
   }
+}
+
+function dedupeMemoryRows(rows: MemoryRow[]): MemoryRow[] {
+  const byId = new Map<string, MemoryRow>();
+  for (const row of rows) {
+    byId.set(row.id, row);
+  }
+  return [...byId.values()];
 }

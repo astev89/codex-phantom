@@ -12,7 +12,10 @@ export type AutonomousMutationAdapter = {
   readonly mutationClass: string;
   readonly affectedResources: JsonValue;
   readonly minimumRiskClass?: "low" | "medium" | "high" | "critical";
-  readonly rollbackConflictScope?: "assignment" | "global";
+  readonly rollbackConflictScope?:
+    | "assignment"
+    | "global"
+    | "affected_resources";
   apply(input: {
     assignment: AssignmentRecord;
     mutationId: string;
