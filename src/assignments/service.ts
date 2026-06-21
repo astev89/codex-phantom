@@ -252,9 +252,9 @@ export class AutonomousAssignmentService {
       metadata: mergeChildMetadata(input.metadata, {
         parentAssignmentId: parent.id,
         parentWaitsForChild: waitForChild,
+        childDependencyConfigValidated: dependencies ? true : false,
         ...(dependencies
           ? {
-              childDependencyConfigValidated: true,
               dependsOnChildIds: dependencies.dependsOnChildIds,
               waitForChildren: dependencies.waitForChildren,
             }

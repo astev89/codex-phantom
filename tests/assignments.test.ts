@@ -107,6 +107,7 @@ test("AutonomousAssignmentService promotes bounded child assignments with inheri
       source: "planner-marker",
       parentAssignmentId: parent.assignment.id,
       parentWaitsForChild: true,
+      childDependencyConfigValidated: false,
     });
 
     const parentTimeline = assignments.timeline(parent.assignment.id).events;
@@ -1070,10 +1071,19 @@ test("AutonomousAssignmentService ignores dependency-shaped opaque child metadat
       objective: "Child with opaque metadata",
       rationale: "Legacy metadata keys should not become dependencies.",
       metadata: {
+        childDependencyConfigValidated: true,
         dependsOnChildIds: ["not-a-sibling"],
         waitForChildren: "all",
       },
       policy: { maxWakeups: 1 },
+    });
+
+    assert.deepEqual(child.child.assignment.metadata, {
+      childDependencyConfigValidated: false,
+      dependsOnChildIds: ["not-a-sibling"],
+      parentAssignmentId: parent.assignment.id,
+      parentWaitsForChild: false,
+      waitForChildren: "all",
     });
 
     const started = assignments.startWakeup({

@@ -234,6 +234,7 @@ test("AssignmentWakeupPlanner promotes child assignment markers and schedules ch
     source: "planner-marker",
     parentAssignmentId: parent.assignment.id,
     parentWaitsForChild: true,
+    childDependencyConfigValidated: false,
   });
   assert.equal(jobs.length, 2);
   assert.equal(jobs[0]?.name, ASSIGNMENT_WAKEUP_JOB_NAME);
@@ -2429,11 +2430,59 @@ test("AssignmentWakeupPlanner rejects malformed child dependency markers without
     assignments.list({ parentAssignmentId: assignment.assignment.id }),
     []
   );
-  assert.ok(
+  assert.equal(
     assignments
       .timeline(assignment.assignment.id)
-      .events.some((event) => event.type === "child_assignment_failed")
+      .events.some((event) => event.type === "child_assignment_failed"),
+    false
   );
+});
+
+test("AssignmentWakeupPlanner treats empty child dependency arrays as no dependencies", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-06-16T15:41:00.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const database = new AppDatabase(":memory:");
+  t.after(() => database.close());
+  const assignments = new AutonomousAssignmentService(database);
+  const runs = new RunGraphStore(database);
+  const { scheduler, jobs } = makeScheduler(now);
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, [
+      [
+        "Empty dependency marker.",
+        'ASSIGNMENT_CHILD: {"objective":"Independent child","rationale":"Empty dependencies mean no dependency wait.","waitForChild":true,"dependsOnChildIds":[]}',
+        "ASSIGNMENT_STATUS: continue",
+        "NEXT_WAKEUP_MINUTES: 6",
+      ].join("\n"),
+    ]),
+  });
+  const assignment = assignments.create({
+    objective: "Planner should accept empty dependency arrays",
+    autonomyLevel: "execute",
+    policy: { wakeupDelayMinMinutes: 5, wakeupDelayMaxMinutes: 60 },
+  });
+
+  const result = await planner.wakeNow({
+    assignmentId: assignment.assignment.id,
+    reason: "scheduled wakeup",
+  });
+
+  assert.equal(result.status, "scheduled");
+  assert.equal(jobs.length, 2);
+  const children = assignments.list({
+    parentAssignmentId: assignment.assignment.id,
+  });
+  assert.equal(children.length, 1);
+  assert.equal(children[0]?.objective, "Independent child");
+  assert.equal(children[0]?.lifecycleState, "active");
+  assert.deepEqual(children[0]?.metadata, {
+    childDependencyConfigValidated: false,
+    parentAssignmentId: assignment.assignment.id,
+    parentWaitsForChild: true,
+  });
 });
 
 test("AssignmentWakeupPlanner rejects child markers with unknown dependencies without failing the wakeup", async (t) => {

@@ -669,6 +669,9 @@ function parsePlannerChildMarker(
   }
   const autonomyLevel = parseAssignmentAutonomyLevel(value.autonomyLevel);
   const dependsOnChildIds = parseDependsOnChildIds(value.dependsOnChildIds);
+  if (dependsOnChildIds === "invalid") {
+    return undefined;
+  }
   const waitForChildren =
     value.waitForChildren === "any" || value.waitForChildren === "all"
       ? value.waitForChildren
@@ -696,17 +699,20 @@ function parsePlannerChildMarker(
 
 function parseDependsOnChildIds(
   value: JsonValue | undefined
-): string[] | undefined {
+): string[] | "invalid" | undefined {
   if (value === undefined) {
     return undefined;
   }
-  if (!Array.isArray(value) || value.length === 0) {
-    return [""];
+  if (!Array.isArray(value)) {
+    return "invalid";
+  }
+  if (value.length === 0) {
+    return undefined;
   }
   const ids: string[] = [];
   for (const item of value) {
     if (typeof item !== "string" || item.trim() === "") {
-      return [""];
+      return "invalid";
     }
     ids.push(item.trim());
   }

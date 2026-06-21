@@ -17,7 +17,7 @@ The project is now past its first serious production-hardening pass. It is not y
 P1/P2 parity completion wave completed locally on 2026-06-21:
 
 - Split autonomous mutation adapters into focused domain modules without changing runtime behavior.
-- Added deeper parent/child dependency orchestration with `dependsOnChildIds`, `waitForChildren: "all" | "any"`, same-parent validation, cycle rejection, dependent parking, parent wakeups, and durable blocked evidence when required dependencies fail.
+- Added deeper parent/child dependency orchestration with `dependsOnChildIds`, `waitForChildren: "all" | "any"`, same-parent existing-sibling validation, dependent parking, parent wakeups, and durable blocked evidence when required dependencies fail.
 - Added explicit-policy high-risk autonomous mutation classes for `prompt.managed_fragment`, `memory.entry_lifecycle`, and `configuration.channel_state`, each with validation, before/after/rollback evidence, stale-rollback protection where needed, planner marker routing, admin/internal execution, and read-only MCP preservation.
 - Added project-file patch semantics through `project_file.patch_draft` records and high-risk `project_file.apply_patch` execution, using bounded unified-diff parsing, safe path checks, context checks, per-file byte snapshots, rollback evidence, and rollback-conflict protection.
 - Added a credential-gated `npm run smoke:mailbox:live` proof path for live IMAP/SMTP providers. Missing credentials or a missing explicit non-runtime smoke recipient produce JSON `skipped` results and exit successfully; fake IMAP/SMTP tests remain the release gate when live credentials are absent.
