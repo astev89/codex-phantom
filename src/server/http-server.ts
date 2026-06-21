@@ -57,6 +57,7 @@ import { loadRolePolicyConfig } from "../orchestration/role-config.ts";
 import { RolePolicyRuntimeStore } from "../orchestration/role-policy-runtime.ts";
 import { ProjectFileApplyService } from "../project-files/apply.ts";
 import { ProjectFileDraftStore } from "../project-files/drafts.ts";
+import { ProjectFilePatchDraftStore } from "../project-files/patches.ts";
 import { RuntimeConfigLimitsStore } from "../config/runtime-limits.ts";
 import { AppDatabase } from "../platform/database.ts";
 import { Logger } from "../platform/logger.ts";
@@ -181,6 +182,7 @@ export class HttpServer {
   private readonly promptFragments: PromptManagedFragmentStore;
   private readonly rolePolicy: RolePolicyRuntimeStore;
   private readonly projectFileDrafts: ProjectFileDraftStore;
+  private readonly projectFilePatchDrafts: ProjectFilePatchDraftStore;
   private readonly projectFileApply: ProjectFileApplyService;
   private readonly slack: SlackChannel;
   private readonly settings: OperatorSettingsStore;
@@ -219,7 +221,8 @@ export class HttpServer {
     runtimeConfigLimits?: RuntimeConfigLimitsStore,
     rolePolicy?: RolePolicyRuntimeStore,
     projectFileDrafts?: ProjectFileDraftStore,
-    projectFileApply?: ProjectFileApplyService
+    projectFileApply?: ProjectFileApplyService,
+    projectFilePatchDrafts?: ProjectFilePatchDraftStore
   ) {
     if (!assignments) {
       throw new Error("AutonomousAssignmentService is required");
@@ -275,6 +278,8 @@ export class HttpServer {
       );
     this.projectFileDrafts =
       projectFileDrafts ?? new ProjectFileDraftStore(database);
+    this.projectFilePatchDrafts =
+      projectFilePatchDrafts ?? new ProjectFilePatchDraftStore(database);
     this.projectFileApply =
       projectFileApply ??
       new ProjectFileApplyService({ repoRoot: process.cwd() });
@@ -314,6 +319,7 @@ export class HttpServer {
       promptFragments: this.promptFragments,
       rolePolicy: this.rolePolicy,
       projectFileDrafts: this.projectFileDrafts,
+      projectFilePatchDrafts: this.projectFilePatchDrafts,
       projectFileApply: this.projectFileApply,
       toolBundles: this.toolBundleLifecycle,
     });

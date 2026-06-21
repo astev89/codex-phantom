@@ -8,6 +8,7 @@ import type { MemoryPolicyStore } from "../../memory/policy.ts";
 import type { RolePolicyRuntimeStore } from "../../orchestration/role-policy-runtime.ts";
 import type { ProjectFileApplyService } from "../../project-files/apply.ts";
 import type { ProjectFileDraftStore } from "../../project-files/drafts.ts";
+import type { ProjectFilePatchDraftStore } from "../../project-files/patches.ts";
 import type {
   PromptManagedFragmentStore,
   PromptRuntimeGuidanceStore,
@@ -28,7 +29,9 @@ import {
 import {
   createProjectFileApplyBundleAutonomousMutationAdapter,
   createProjectFileApplyDraftAutonomousMutationAdapter,
+  createProjectFileApplyPatchAutonomousMutationAdapter,
   createProjectFileDraftAutonomousMutationAdapter,
+  createProjectFilePatchDraftAutonomousMutationAdapter,
 } from "./project-file.ts";
 import { createRolePermissionPolicyAutonomousMutationAdapter } from "./role.ts";
 import { createToolBundleEnableAutonomousMutationAdapter } from "./tool.ts";
@@ -48,6 +51,7 @@ export type DefaultAutonomousMutationAdapterOptions = {
   promptFragments?: PromptManagedFragmentStore;
   rolePolicy?: RolePolicyRuntimeStore;
   projectFileDrafts?: ProjectFileDraftStore;
+  projectFilePatchDrafts?: ProjectFilePatchDraftStore;
   projectFileApply?: ProjectFileApplyService;
   toolBundles?: ToolBundleLifecycleService;
 };
@@ -115,6 +119,21 @@ export function buildDefaultAutonomousMutationAdapters(
           ),
           createProjectFileApplyBundleAutonomousMutationAdapter(
             options.projectFileDrafts,
+            options.projectFileApply
+          ),
+        ]
+      : []),
+    ...(options.projectFilePatchDrafts
+      ? [
+          createProjectFilePatchDraftAutonomousMutationAdapter(
+            options.projectFilePatchDrafts
+          ),
+        ]
+      : []),
+    ...(options.projectFilePatchDrafts && options.projectFileApply
+      ? [
+          createProjectFileApplyPatchAutonomousMutationAdapter(
+            options.projectFilePatchDrafts,
             options.projectFileApply
           ),
         ]

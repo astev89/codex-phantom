@@ -460,6 +460,7 @@ export class AutonomousMutationLedger {
     assignmentId: string;
     target: AutonomousMutationTarget;
     mutationType: string;
+    mutationTypes?: readonly string[];
     appliedAt: string;
     id: string;
     scope?: "assignment" | "global" | "affected_resources";
@@ -469,13 +470,20 @@ export class AutonomousMutationLedger {
     const scope = input.scope ?? "assignment";
     const assignmentFilter =
       scope === "assignment" ? "AND candidate.assignment_id = ?" : "";
+    const mutationTypes =
+      input.mutationTypes && input.mutationTypes.length > 0
+        ? input.mutationTypes.map((mutationType) =>
+            requireText(mutationType, "mutationTypes")
+          )
+        : [requireText(input.mutationType, "mutationType")];
+    const mutationTypePlaceholders = mutationTypes.map(() => "?").join(", ");
     const values = [
       requireText(input.id, "id"),
       ...(scope === "assignment"
         ? [requireText(input.assignmentId, "assignmentId")]
         : []),
       input.target,
-      requireText(input.mutationType, "mutationType"),
+      ...mutationTypes,
       requireText(input.appliedAt, "appliedAt"),
       requireText(input.appliedAt, "appliedAt"),
     ];
@@ -486,7 +494,7 @@ export class AutonomousMutationLedger {
         WHERE 1 = 1
           ${assignmentFilter}
           AND candidate.target = ?
-          AND candidate.mutation_type = ?
+          AND candidate.mutation_type IN (${mutationTypePlaceholders})
           AND candidate.status = 'applied'
           AND (
             candidate.applied_at > ?

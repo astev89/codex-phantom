@@ -51,6 +51,7 @@ import { loadRolePolicyConfig } from "./orchestration/role-config.ts";
 import { RolePolicyRuntimeStore } from "./orchestration/role-policy-runtime.ts";
 import { ProjectFileApplyService } from "./project-files/apply.ts";
 import { ProjectFileDraftStore } from "./project-files/drafts.ts";
+import { ProjectFilePatchDraftStore } from "./project-files/patches.ts";
 import { SchedulerService } from "./scheduler/service.ts";
 import { McpAuditStore } from "./mcp/audit.ts";
 import { McpServer } from "./mcp/server.ts";
@@ -99,6 +100,7 @@ const promptFragments = new PromptManagedFragmentStore(database);
 const loadedRolePolicy = loadRolePolicyConfig(config.roleConfigPath);
 const rolePolicy = new RolePolicyRuntimeStore(database, loadedRolePolicy);
 const projectFileDrafts = new ProjectFileDraftStore(database);
+const projectFilePatchDrafts = new ProjectFilePatchDraftStore(database);
 const projectFileApply = new ProjectFileApplyService({
   repoRoot: process.cwd(),
 });
@@ -115,6 +117,7 @@ const assignmentMutationExecutor = new AutonomousMutationExecutor({
   promptFragments,
   rolePolicy,
   projectFileDrafts,
+  projectFilePatchDrafts,
   projectFileApply,
   toolBundles: toolBundleLifecycle,
 });

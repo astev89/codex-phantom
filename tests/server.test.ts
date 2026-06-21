@@ -28,6 +28,7 @@ import {
   rolePolicyRuntimeSnapshot,
 } from "../src/orchestration/role-policy-runtime.ts";
 import { ProjectFileDraftStore } from "../src/project-files/drafts.ts";
+import { ProjectFilePatchDraftStore } from "../src/project-files/patches.ts";
 import {
   PromptManagedFragmentStore,
   PromptRuntimeGuidanceStore,
@@ -830,6 +831,7 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     loadRolePolicyConfig(config.roleConfigPath)
   );
   const projectFileDrafts = new ProjectFileDraftStore(database);
+  const projectFilePatchDrafts = new ProjectFilePatchDraftStore(database);
   const promptFragments = new PromptManagedFragmentStore(database);
 
   const runtime = new AgentRuntime(
@@ -918,7 +920,9 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     memoryPolicy,
     runtimeConfigLimits,
     rolePolicy,
-    projectFileDrafts
+    projectFileDrafts,
+    undefined,
+    projectFilePatchDrafts
   );
   const instance = await server.listen();
   const address = instance.address();
@@ -2377,6 +2381,8 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
                 "project_file.draft",
                 "project_file.apply_draft",
                 "project_file.apply_bundle",
+                "project_file.patch_draft",
+                "project_file.apply_patch",
               ],
             },
           },
@@ -2548,6 +2554,121 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assert.equal(projectFileRollback.status, 200);
     assert.equal(
       projectFileDrafts.get(projectFileDraft?.id ?? "")?.status,
+      "rolled_back"
+    );
+
+    const projectFilePatchPath = join(
+      process.cwd(),
+      "docs/http-project-file-patch.md"
+    );
+    if (existsSync(projectFilePatchPath)) {
+      unlinkSync(projectFilePatchPath);
+    }
+    const projectFilePatchDraftApply = await fetch(
+      `${baseUrl}/admin/assignments/${projectFileAssignmentJson.assignment.id}/mutations/apply`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          target: "project_file",
+          mutationType: "patch_draft",
+          riskClass: "high",
+          rationale: "Draft a patch for operator review.",
+          proposedChange: {
+            projectFilePatchDraft: {
+              patch: [
+                "diff --git a/docs/http-project-file-patch.md b/docs/http-project-file-patch.md",
+                "new file mode 100644",
+                "index 0000000..1111111",
+                "--- /dev/null",
+                "+++ b/docs/http-project-file-patch.md",
+                "@@ -0,0 +1,1 @@",
+                "+# HTTP Patch",
+                "",
+              ].join("\n"),
+            },
+          },
+        }),
+      }
+    );
+    assert.equal(projectFilePatchDraftApply.status, 200);
+    const projectFilePatchDraftApplyJson =
+      (await projectFilePatchDraftApply.json()) as {
+        mutation: {
+          id: string;
+          status: string;
+          rollback: { projectFilePatchDraft: { id: string } };
+        };
+      };
+    const patchDraftId =
+      projectFilePatchDraftApplyJson.mutation.rollback.projectFilePatchDraft.id;
+    assert.equal(projectFilePatchDraftApplyJson.mutation.status, "applied");
+    assert.equal(projectFilePatchDrafts.get(patchDraftId)?.status, "active");
+    assert.equal(existsSync(projectFilePatchPath), false);
+
+    const projectFilePatchApply = await fetch(
+      `${baseUrl}/admin/assignments/${projectFileAssignmentJson.assignment.id}/mutations/apply`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          target: "project_file",
+          mutationType: "apply_patch",
+          riskClass: "high",
+          rationale: "Apply reviewed project file patch.",
+          proposedChange: {
+            projectFilePatchApply: {
+              draftId: patchDraftId,
+            },
+          },
+        }),
+      }
+    );
+    assert.equal(projectFilePatchApply.status, 200);
+    const projectFilePatchApplyJson =
+      (await projectFilePatchApply.json()) as {
+        mutation: { id: string; status: string; mutationType: string };
+    };
+    assert.equal(projectFilePatchApplyJson.mutation.status, "applied");
+    assert.equal(projectFilePatchApplyJson.mutation.mutationType, "apply_patch");
+    assert.equal(readFileSync(projectFilePatchPath, "utf8"), "# HTTP Patch\n");
+    assert.equal(projectFilePatchDrafts.get(patchDraftId)?.status, "applied");
+
+    const projectFilePatchRollback = await fetch(
+      `${baseUrl}/admin/assignments/${projectFileAssignmentJson.assignment.id}/mutations/${projectFilePatchApplyJson.mutation.id}/rollback`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({ actor: "operator" }),
+      }
+    );
+    assert.equal(projectFilePatchRollback.status, 200);
+    assert.equal(existsSync(projectFilePatchPath), false);
+    assert.equal(projectFilePatchDrafts.get(patchDraftId)?.status, "active");
+
+    const projectFilePatchDraftRollback = await fetch(
+      `${baseUrl}/admin/assignments/${projectFileAssignmentJson.assignment.id}/mutations/${projectFilePatchDraftApplyJson.mutation.id}/rollback`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({ actor: "operator" }),
+      }
+    );
+    assert.equal(projectFilePatchDraftRollback.status, 200);
+    assert.equal(
+      projectFilePatchDrafts.get(patchDraftId)?.status,
       "rolled_back"
     );
 

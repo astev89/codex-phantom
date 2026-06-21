@@ -34,6 +34,7 @@ import {
 import { AppDatabase } from "../src/platform/database.ts";
 import { ProjectFileApplyService } from "../src/project-files/apply.ts";
 import { ProjectFileDraftStore } from "../src/project-files/drafts.ts";
+import { ProjectFilePatchDraftStore } from "../src/project-files/patches.ts";
 import {
   PromptManagedFragmentStore,
   PromptRuntimeGuidanceStore,
@@ -189,6 +190,7 @@ function createProjectFileDraftHarness() {
   const ledger = new AutonomousMutationLedger(database, assignments);
   const settings = new OperatorSettingsStore(database);
   const projectFileDrafts = new ProjectFileDraftStore(database);
+  const projectFilePatchDrafts = new ProjectFilePatchDraftStore(database);
   const projectFileApply = new ProjectFileApplyService({
     repoRoot: process.cwd(),
   });
@@ -198,6 +200,7 @@ function createProjectFileDraftHarness() {
     settings,
     projectFileApply,
     projectFileDrafts,
+    projectFilePatchDrafts,
   });
   return {
     assignments,
@@ -205,6 +208,7 @@ function createProjectFileDraftHarness() {
     executor,
     ledger,
     projectFileDrafts,
+    projectFilePatchDrafts,
     settings,
   };
 }
@@ -219,6 +223,29 @@ function unlinkIfPresent(path: string): void {
     throw error;
   }
   unlinkSync(path);
+}
+
+function unifiedPatch(
+  path: string,
+  hunkLines: string[],
+  input: { oldPath?: string } = {}
+): string {
+  const oldPath = input.oldPath ?? `a/${path}`;
+  const newPath = `b/${path}`;
+  const oldCount = hunkLines.filter(
+    (line) => line.startsWith(" ") || line.startsWith("-")
+  ).length;
+  const newCount = hunkLines.filter(
+    (line) => line.startsWith(" ") || line.startsWith("+")
+  ).length;
+  return [
+    `diff --git a/${path} b/${path}`,
+    `--- ${oldPath}`,
+    `+++ ${newPath}`,
+    `@@ -1,${oldCount} +1,${newCount} @@`,
+    ...hunkLines,
+    "",
+  ].join("\n");
 }
 
 function createRuntimeConfigLimitsHarness() {
@@ -3952,6 +3979,513 @@ test("AutonomousMutationExecutor applies an existing project file draft to the r
   );
 });
 
+test("AutonomousMutationExecutor creates and applies project file patch drafts", (t) => {
+  const {
+    assignments,
+    database,
+    executor,
+    projectFilePatchDrafts,
+  } = createProjectFileDraftHarness();
+  const relativePath = "docs/autonomous-project-file-patch-test.md";
+  const absolutePath = join(process.cwd(), relativePath);
+  const priorExists = existsSync(absolutePath);
+  const priorContent = priorExists ? readFileSync(absolutePath, "utf8") : "";
+  t.after(() => {
+    if (priorExists) {
+      writeFileSync(absolutePath, priorContent, "utf8");
+    } else if (existsSync(absolutePath)) {
+      unlinkSync(absolutePath);
+    }
+    database.close();
+  });
+  writeFileSync(absolutePath, "alpha\n-- marker\nbravo\ncharlie\n", "utf8");
+  const assignment = assignments.create({
+    objective: "Apply docs patch",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "project_file.patch_draft",
+          "project_file.apply_patch",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+  const patch = [
+    "diff --git a/docs/autonomous-project-file-patch-test.md b/docs/autonomous-project-file-patch-test.md",
+    "index 1111111..2222222 100644",
+    "--- a/docs/autonomous-project-file-patch-test.md",
+    "+++ b/docs/autonomous-project-file-patch-test.md",
+    "@@ -1,4 +1,4 @@",
+    " alpha",
+    "--- marker",
+    "-bravo",
+    "+bravo updated",
+    " charlie",
+    "+delta",
+    "",
+  ].join("\n");
+
+  const draft = executor.apply({
+    assignmentId: assignment.assignment.id,
+    runId: "coord_project_file_patch_draft",
+    target: "project_file",
+    mutationType: "patch_draft",
+    rationale: "Create an auditable patch draft.",
+    riskClass: "high",
+    proposedChange: {
+      projectFilePatchDraft: {
+        patch,
+        metadata: { source: "test" },
+      },
+    },
+  });
+  const draftId = (
+    draft.mutation.rollback as { projectFilePatchDraft: { id: string } }
+  ).projectFilePatchDraft.id;
+  assert.equal(
+    readFileSync(absolutePath, "utf8"),
+    "alpha\n-- marker\nbravo\ncharlie\n"
+  );
+  assert.equal(projectFilePatchDrafts.get(draftId)?.status, "active");
+  assert.deepEqual(draft.mutation.affectedResources, [
+    {
+      type: "project_file_patch_draft",
+      id: draftId,
+      paths: [relativePath],
+    },
+  ]);
+
+  const applied = executor.apply({
+    assignmentId: assignment.assignment.id,
+    runId: "coord_project_file_apply_patch",
+    target: "project_file",
+    mutationType: "apply_patch",
+    rationale: "Apply the audited patch draft.",
+    riskClass: "high",
+    proposedChange: {
+      projectFilePatchApply: { draftId },
+    },
+  });
+
+  assert.equal(
+    readFileSync(absolutePath, "utf8"),
+    "alpha\nbravo updated\ncharlie\ndelta\n"
+  );
+  assert.equal(projectFilePatchDrafts.get(draftId)?.status, "applied");
+  assert.deepEqual(applied.mutation.affectedResources, [
+    {
+      type: "project_file",
+      id: relativePath,
+      path: relativePath,
+    },
+  ]);
+  const beforeFiles = (
+    applied.mutation.before as {
+      files: Array<{
+        path: string;
+        beforeFile: {
+          existed: boolean;
+          sizeBytes?: number;
+          contentBase64?: string;
+        };
+      }>;
+    }
+  ).files;
+  assert.equal(beforeFiles[0]?.path, relativePath);
+  assert.equal(beforeFiles[0]?.beforeFile.existed, true);
+  assert.equal(beforeFiles[0]?.beforeFile.sizeBytes, 30);
+  assert.equal(
+    Buffer.from(beforeFiles[0]?.beforeFile.contentBase64 ?? "", "base64").toString(
+      "utf8"
+    ),
+    "alpha\n-- marker\nbravo\ncharlie\n"
+  );
+  assert.equal(
+    (applied.mutation.after as { files: Array<{ path: string }> }).files[0]
+      ?.path,
+    relativePath
+  );
+  assert.ok(applied.mutation.rollback);
+
+  const rollback = executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: applied.mutation.id,
+  });
+  assert.equal(rollback.mutation.status, "rolled_back");
+  assert.equal(
+    readFileSync(absolutePath, "utf8"),
+    "alpha\n-- marker\nbravo\ncharlie\n"
+  );
+  assert.equal(projectFilePatchDrafts.get(draftId)?.status, "active");
+});
+
+test("AutonomousMutationExecutor rejects unsafe project file patch mutations without writing files", (t) => {
+  const {
+    assignments,
+    database,
+    executor,
+    ledger,
+    projectFilePatchDrafts,
+  } = createProjectFileDraftHarness();
+  const relativePath = "docs/autonomous-project-file-patch-reject.md";
+  const absolutePath = join(process.cwd(), relativePath);
+  const symlinkPath = join(
+    process.cwd(),
+    "docs/autonomous-project-file-patch-symlink.md"
+  );
+  const priorExists = existsSync(absolutePath);
+  const priorContent = priorExists ? readFileSync(absolutePath, "utf8") : "";
+  t.after(() => {
+    if (existsSync(symlinkPath)) {
+      unlinkSync(symlinkPath);
+    }
+    if (priorExists) {
+      writeFileSync(absolutePath, priorContent, "utf8");
+    } else if (existsSync(absolutePath)) {
+      unlinkSync(absolutePath);
+    }
+    database.close();
+  });
+  writeFileSync(absolutePath, "one\ntwo\nthree\n", "utf8");
+
+  const defaultAssignment = assignments.create({
+    objective: "Default patch policy must fail closed",
+    autonomyLevel: "evolve",
+  });
+  assert.throws(
+    () =>
+      executor.apply({
+        assignmentId: defaultAssignment.assignment.id,
+        target: "project_file",
+        mutationType: "patch_draft",
+        rationale: "Default policy should not create patch drafts.",
+        proposedChange: {
+          projectFilePatchDraft: {
+            patch: unifiedPatch(relativePath, [" one", "-two", "+TWO", " three"]),
+          },
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 403);
+      return true;
+    }
+  );
+
+  const mediumRiskAssignment = assignments.create({
+    objective: "Patch drafts are high risk",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "project_file.patch_draft",
+        ],
+        maxRiskClass: "medium",
+      },
+    },
+  });
+  assert.throws(
+    () =>
+      executor.apply({
+        assignmentId: mediumRiskAssignment.assignment.id,
+        target: "project_file",
+        mutationType: "patch_draft",
+        rationale: "Patch drafts should remain high risk.",
+        proposedChange: {
+          projectFilePatchDraft: {
+            patch: unifiedPatch(relativePath, [" one", "-two", "+TWO", " three"]),
+          },
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 403);
+      assert.match(error.message, /risk exceeds assignment self-evolution policy/);
+      return true;
+    }
+  );
+
+  const assignment = assignments.create({
+    objective: "Reject unsafe patch writes",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "project_file.patch_draft",
+          "project_file.apply_patch",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+
+  const unsafePatchDrafts = [
+    [
+      "duplicate paths",
+      [
+        unifiedPatch(relativePath, [" one", "-two", "+TWO", " three"]).trimEnd(),
+        unifiedPatch(relativePath, [" one", "-two", "+TWO", " three"]).trimEnd(),
+        "",
+      ].join("\n"),
+    ],
+    [
+      "protected path",
+      unifiedPatch(".env", ["+SECRET=value"], { oldPath: "/dev/null" }),
+    ],
+    ["oversized patch", "x".repeat(200_001)],
+  ] as const;
+  for (const [, patch] of unsafePatchDrafts) {
+    assert.throws(
+      () =>
+        executor.apply({
+          assignmentId: assignment.assignment.id,
+          target: "project_file",
+          mutationType: "patch_draft",
+          rationale: "Unsafe patch draft should fail.",
+          riskClass: "high",
+          proposedChange: {
+            projectFilePatchDraft: { patch },
+          },
+        }),
+      (error) => {
+        assert.ok(error instanceof AutonomousMutationExecutionError);
+        assert.equal(error.status, 400);
+        return true;
+      }
+    );
+  }
+  assert.equal(projectFilePatchDrafts.list({ assignmentId: assignment.assignment.id }).length, 0);
+
+  const mismatchDraft = projectFilePatchDrafts.create({
+    assignmentId: assignment.assignment.id,
+    patch: unifiedPatch(relativePath, [
+      " one",
+      "-not-two",
+      "+TWO",
+      " three",
+    ]),
+  });
+  assert.throws(
+    () =>
+      executor.apply({
+        assignmentId: assignment.assignment.id,
+        target: "project_file",
+        mutationType: "apply_patch",
+        rationale: "Context mismatch must fail before writing.",
+        riskClass: "high",
+        proposedChange: {
+          projectFilePatchApply: { draftId: mismatchDraft.id },
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 400);
+      assert.match(error.message, /context does not match/);
+      return true;
+    }
+  );
+  assert.equal(readFileSync(absolutePath, "utf8"), "one\ntwo\nthree\n");
+  assert.equal(projectFilePatchDrafts.get(mismatchDraft.id)?.status, "active");
+
+  if (existsSync(symlinkPath)) {
+    unlinkSync(symlinkPath);
+  }
+  symlinkSync(absolutePath, symlinkPath);
+  const symlinkRelativePath = "docs/autonomous-project-file-patch-symlink.md";
+  const symlinkDraft = projectFilePatchDrafts.create({
+    assignmentId: assignment.assignment.id,
+    patch: unifiedPatch(symlinkRelativePath, [" one", "-two", "+TWO", " three"]),
+  });
+  assert.throws(
+    () =>
+      executor.apply({
+        assignmentId: assignment.assignment.id,
+        target: "project_file",
+        mutationType: "apply_patch",
+        rationale: "Symlink patch targets must fail.",
+        riskClass: "high",
+        proposedChange: {
+          projectFilePatchApply: { draftId: symlinkDraft.id },
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 400);
+      assert.match(error.message, /symlinked paths/);
+      return true;
+    }
+  );
+  assert.equal(readFileSync(absolutePath, "utf8"), "one\ntwo\nthree\n");
+  assert.equal(projectFilePatchDrafts.get(symlinkDraft.id)?.status, "active");
+  assert.ok(
+    ledger
+      .list({ assignmentId: assignment.assignment.id, status: "failed" })
+      .some((mutation) => mutation.mutationType === "apply_patch")
+  );
+});
+
+test("AutonomousMutationExecutor scopes project file patch rollback conflicts by file", (t) => {
+  const {
+    assignments,
+    database,
+    executor,
+    projectFileDrafts,
+    projectFilePatchDrafts,
+  } =
+    createProjectFileDraftHarness();
+  const firstRelativePath = "docs/project-file-patch-conflict-a.md";
+  const secondRelativePath = "docs/project-file-patch-conflict-b.md";
+  const firstPath = join(process.cwd(), firstRelativePath);
+  const secondPath = join(process.cwd(), secondRelativePath);
+  t.after(() => {
+    unlinkIfPresent(firstPath);
+    unlinkIfPresent(secondPath);
+    database.close();
+  });
+  writeFileSync(firstPath, "first\n", "utf8");
+  writeFileSync(secondPath, "second\n", "utf8");
+  const selfEvolution = {
+    allowedMutationClasses: [
+      "configuration.operator_settings",
+      "project_file.apply_draft",
+      "project_file.apply_patch",
+    ],
+    maxRiskClass: "high" as const,
+  };
+  const firstAssignment = assignments.create({
+    objective: "First patch apply",
+    autonomyLevel: "evolve",
+    policy: { selfEvolution },
+  });
+  const secondAssignment = assignments.create({
+    objective: "Second patch apply",
+    autonomyLevel: "evolve",
+    policy: { selfEvolution },
+  });
+
+  const firstDraft = projectFilePatchDrafts.create({
+    assignmentId: firstAssignment.assignment.id,
+    patch: unifiedPatch(firstRelativePath, ["-first", "+first updated"]),
+  });
+  const firstApply = executor.apply({
+    assignmentId: firstAssignment.assignment.id,
+    target: "project_file",
+    mutationType: "apply_patch",
+    riskClass: "high",
+    rationale: "Apply first patch.",
+    proposedChange: { projectFilePatchApply: { draftId: firstDraft.id } },
+  });
+  const secondDraft = projectFilePatchDrafts.create({
+    assignmentId: secondAssignment.assignment.id,
+    patch: unifiedPatch(secondRelativePath, ["-second", "+second updated"]),
+  });
+  executor.apply({
+    assignmentId: secondAssignment.assignment.id,
+    target: "project_file",
+    mutationType: "apply_patch",
+    riskClass: "high",
+    rationale: "Apply unrelated patch.",
+    proposedChange: { projectFilePatchApply: { draftId: secondDraft.id } },
+  });
+
+  executor.rollback({
+    assignmentId: firstAssignment.assignment.id,
+    mutationId: firstApply.mutation.id,
+  });
+  assert.equal(readFileSync(firstPath, "utf8"), "first\n");
+  assert.equal(readFileSync(secondPath, "utf8"), "second updated\n");
+
+  const patchBeforeDraft = projectFilePatchDrafts.create({
+    assignmentId: firstAssignment.assignment.id,
+    patch: unifiedPatch(firstRelativePath, ["-first", "+first via patch"]),
+  });
+  const patchBeforeDraftApply = executor.apply({
+    assignmentId: firstAssignment.assignment.id,
+    target: "project_file",
+    mutationType: "apply_patch",
+    riskClass: "high",
+    rationale: "Apply patch before a later draft.",
+    proposedChange: {
+      projectFilePatchApply: { draftId: patchBeforeDraft.id },
+    },
+  });
+  const laterDraft = projectFileDrafts.create({
+    assignmentId: secondAssignment.assignment.id,
+    path: firstRelativePath,
+    content: "first via draft\n",
+  });
+  executor.apply({
+    assignmentId: secondAssignment.assignment.id,
+    target: "project_file",
+    mutationType: "apply_draft",
+    riskClass: "high",
+    rationale: "Apply a later draft to the same file.",
+    proposedChange: { projectFileApply: { draftId: laterDraft.id } },
+  });
+  assert.throws(
+    () =>
+      executor.rollback({
+        assignmentId: firstAssignment.assignment.id,
+        mutationId: patchBeforeDraftApply.mutation.id,
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 409);
+      assert.match(error.message, /newer applied project_file\.apply_patch/);
+      return true;
+    }
+  );
+  assert.equal(readFileSync(firstPath, "utf8"), "first via draft\n");
+
+  const thirdDraft = projectFilePatchDrafts.create({
+    assignmentId: firstAssignment.assignment.id,
+    patch: unifiedPatch(firstRelativePath, [
+      "-first via draft",
+      "+first again",
+    ]),
+  });
+  const thirdApply = executor.apply({
+    assignmentId: firstAssignment.assignment.id,
+    target: "project_file",
+    mutationType: "apply_patch",
+    riskClass: "high",
+    rationale: "Apply same file again.",
+    proposedChange: { projectFilePatchApply: { draftId: thirdDraft.id } },
+  });
+  const fourthDraft = projectFilePatchDrafts.create({
+    assignmentId: secondAssignment.assignment.id,
+    patch: unifiedPatch(firstRelativePath, ["-first again", "+first later"]),
+  });
+  executor.apply({
+    assignmentId: secondAssignment.assignment.id,
+    target: "project_file",
+    mutationType: "apply_patch",
+    riskClass: "high",
+    rationale: "Apply same file later.",
+    proposedChange: { projectFilePatchApply: { draftId: fourthDraft.id } },
+  });
+
+  assert.throws(
+    () =>
+      executor.rollback({
+        assignmentId: firstAssignment.assignment.id,
+        mutationId: thirdApply.mutation.id,
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 409);
+      assert.match(error.message, /newer applied project_file\.apply_patch/);
+      return true;
+    }
+  );
+  assert.equal(readFileSync(firstPath, "utf8"), "first later\n");
+});
+
 test("AutonomousMutationExecutor atomically applies a project file draft bundle", (t) => {
   const { assignments, database, executor, projectFileDrafts } =
     createProjectFileDraftHarness();
@@ -6448,7 +6982,7 @@ test("AutonomousMutationExecutor audits unsupported and malformed autonomous mut
         mutationType: "tool_bundle_enable",
         status: "failed",
         errorMessage:
-          "Only configuration.operator_settings, configuration.assignment_policy, configuration.runtime_limits, configuration.channel_state, tool.bundle_enable, prompt.runtime_guidance, prompt.managed_fragment, memory.entry_lifecycle, memory_policy.runtime_bounds, role.permission_policy, project_file.draft, project_file.apply_draft, and project_file.apply_bundle autonomous mutations are supported in this slice",
+          "Only configuration.operator_settings, configuration.assignment_policy, configuration.runtime_limits, configuration.channel_state, tool.bundle_enable, prompt.runtime_guidance, prompt.managed_fragment, memory.entry_lifecycle, memory_policy.runtime_bounds, role.permission_policy, project_file.draft, project_file.apply_draft, project_file.apply_bundle, project_file.patch_draft, and project_file.apply_patch autonomous mutations are supported in this slice",
       },
     ]
   );

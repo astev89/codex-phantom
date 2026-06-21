@@ -29,6 +29,7 @@ export type AutonomousMutationAdapter = {
     | "assignment"
     | "global"
     | "affected_resources";
+  readonly rollbackConflictMutationTypes?: readonly string[];
   apply(input: {
     assignment: AssignmentRecord;
     mutationId: string;

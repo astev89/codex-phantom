@@ -12,6 +12,7 @@ import type {
 import type { RolePolicyRuntimeStore } from "../orchestration/role-policy-runtime.ts";
 import type { ProjectFileDraftStore } from "../project-files/drafts.ts";
 import type { ProjectFileApplyService } from "../project-files/apply.ts";
+import type { ProjectFilePatchDraftStore } from "../project-files/patches.ts";
 import type { SelfEvolutionRiskClass } from "../self-evolution/proposals.ts";
 import type {
   AutonomousMutationRecord,
@@ -84,13 +85,14 @@ export type AutonomousMutationExecutorOptions = {
   promptFragments?: PromptManagedFragmentStore;
   rolePolicy?: RolePolicyRuntimeStore;
   projectFileDrafts?: ProjectFileDraftStore;
+  projectFilePatchDrafts?: ProjectFilePatchDraftStore;
   projectFileApply?: ProjectFileApplyService;
   toolBundles?: ToolBundleLifecycleService;
   adapters?: AutonomousMutationAdapter[];
 };
 
 const UNSUPPORTED_MUTATION_ERROR =
-  "Only configuration.operator_settings, configuration.assignment_policy, configuration.runtime_limits, configuration.channel_state, tool.bundle_enable, prompt.runtime_guidance, prompt.managed_fragment, memory.entry_lifecycle, memory_policy.runtime_bounds, role.permission_policy, project_file.draft, project_file.apply_draft, and project_file.apply_bundle autonomous mutations are supported in this slice";
+  "Only configuration.operator_settings, configuration.assignment_policy, configuration.runtime_limits, configuration.channel_state, tool.bundle_enable, prompt.runtime_guidance, prompt.managed_fragment, memory.entry_lifecycle, memory_policy.runtime_bounds, role.permission_policy, project_file.draft, project_file.apply_draft, project_file.apply_bundle, project_file.patch_draft, and project_file.apply_patch autonomous mutations are supported in this slice";
 const RISK_ORDER: SelfEvolutionRiskClass[] = [
   "low",
   "medium",
@@ -279,6 +281,7 @@ export class AutonomousMutationExecutor {
       assignmentId: mutation.assignmentId,
       target: mutation.target,
       mutationType: mutation.mutationType,
+      mutationTypes: adapter.rollbackConflictMutationTypes,
       appliedAt: mutation.appliedAt ?? mutation.updatedAt,
       id: mutation.id,
       scope: adapter.rollbackConflictScope ?? "assignment",
@@ -359,6 +362,7 @@ export class AutonomousMutationExecutor {
       assignmentId: mutation.assignmentId,
       target: mutation.target,
       mutationType: mutation.mutationType,
+      mutationTypes: adapter.rollbackConflictMutationTypes,
       appliedAt: mutation.appliedAt ?? mutation.updatedAt,
       id: mutation.id,
       scope: adapter.rollbackConflictScope ?? "assignment",

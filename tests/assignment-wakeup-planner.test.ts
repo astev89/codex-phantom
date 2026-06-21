@@ -13,6 +13,7 @@ import { loadRolePolicyConfig } from "../src/orchestration/role-config.ts";
 import { RolePolicyRuntimeStore } from "../src/orchestration/role-policy-runtime.ts";
 import { ProjectFileDraftStore } from "../src/project-files/drafts.ts";
 import { ProjectFileApplyService } from "../src/project-files/apply.ts";
+import { ProjectFilePatchDraftStore } from "../src/project-files/patches.ts";
 import {
   ASSIGNMENT_WAKEUP_JOB_NAME,
   AssignmentWakeupPlanner,
@@ -1738,6 +1739,154 @@ test("AssignmentWakeupPlanner applies explicitly allowed project file apply draf
     mutationClass: "project_file.apply_draft",
     actor: "planner",
   });
+});
+
+test("AssignmentWakeupPlanner applies explicitly allowed project file patch draft mutation markers", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-06-16T12:44:35.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const database = new AppDatabase(":memory:");
+  t.after(() => database.close());
+  const assignments = new AutonomousAssignmentService(database);
+  const ledger = new AutonomousMutationLedger(database, assignments);
+  const settings = new OperatorSettingsStore(database);
+  const projectFilePatchDrafts = new ProjectFilePatchDraftStore(database);
+  const executor = new AutonomousMutationExecutor({
+    assignments,
+    ledger,
+    settings,
+    projectFilePatchDrafts,
+  });
+  const runs = new RunGraphStore(database);
+  const { scheduler } = makeScheduler(now);
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, [
+      [
+        "Drafted a project file patch for operator review.",
+        'ASSIGNMENT_MUTATION: {"target":"project_file","mutationType":"patch_draft","riskClass":"high","rationale":"Draft patch for review without filesystem writes.","proposedChange":{"projectFilePatchDraft":{"patch":"diff --git a/docs/planner-project-file-patch.md b/docs/planner-project-file-patch.md\\n--- /dev/null\\n+++ b/docs/planner-project-file-patch.md\\n@@ -0,0 +1,1 @@\\n+# Planner Patch\\n"}}}',
+        "ASSIGNMENT_STATUS: complete",
+      ].join("\n"),
+    ]),
+    mutations: executor,
+  });
+  const assignment = assignments.create({
+    objective: "Planner should draft project file patch",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "project_file.patch_draft",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+
+  const result = await planner.wakeNow({
+    assignmentId: assignment.assignment.id,
+    actor: "scheduler",
+    reason: "scheduled wakeup",
+  });
+
+  assert.equal(result.status, "completed");
+  const drafts = projectFilePatchDrafts.list({
+    assignmentId: assignment.assignment.id,
+  });
+  assert.equal(drafts.length, 1);
+  assert.deepEqual(drafts[0]?.filePaths, [
+    "docs/planner-project-file-patch.md",
+  ]);
+  const mutations = ledger.list({ assignmentId: assignment.assignment.id });
+  assert.equal(mutations.length, 1);
+  assert.equal(mutations[0]?.status, "applied");
+  assert.equal(mutations[0]?.target, "project_file");
+  assert.equal(mutations[0]?.mutationType, "patch_draft");
+  assert.equal(mutations[0]?.runId, "coord_wakeup_1");
+});
+
+test("AssignmentWakeupPlanner applies explicitly allowed project file apply patch mutation markers", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-06-16T12:44:40.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const targetPath = join(process.cwd(), "docs/planner-project-file-patch.md");
+  const database = new AppDatabase(":memory:");
+  t.after(() => {
+    if (existsSync(targetPath)) {
+      unlinkSync(targetPath);
+    }
+    database.close();
+  });
+  const assignments = new AutonomousAssignmentService(database);
+  const ledger = new AutonomousMutationLedger(database, assignments);
+  const settings = new OperatorSettingsStore(database);
+  const projectFilePatchDrafts = new ProjectFilePatchDraftStore(database);
+  const projectFileApply = new ProjectFileApplyService({
+    repoRoot: process.cwd(),
+  });
+  const executor = new AutonomousMutationExecutor({
+    assignments,
+    ledger,
+    settings,
+    projectFilePatchDrafts,
+    projectFileApply,
+  });
+  const runs = new RunGraphStore(database);
+  const { scheduler } = makeScheduler(now);
+  const assignment = assignments.create({
+    objective: "Planner should apply a project file patch",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "project_file.apply_patch",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+  const draft = projectFilePatchDrafts.create({
+    assignmentId: assignment.assignment.id,
+    patch: [
+      "diff --git a/docs/planner-project-file-patch.md b/docs/planner-project-file-patch.md",
+      "--- /dev/null",
+      "+++ b/docs/planner-project-file-patch.md",
+      "@@ -0,0 +1,1 @@",
+      "+# Planner Patch",
+      "",
+    ].join("\n"),
+  });
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, [
+      [
+        "Applied a reviewed project file patch.",
+        `ASSIGNMENT_MUTATION: {"target":"project_file","mutationType":"apply_patch","riskClass":"high","rationale":"Apply reviewed project file patch.","proposedChange":{"projectFilePatchApply":{"draftId":"${draft.id}"}}}`,
+        "ASSIGNMENT_STATUS: complete",
+      ].join("\n"),
+    ]),
+    mutations: executor,
+  });
+
+  const result = await planner.wakeNow({
+    assignmentId: assignment.assignment.id,
+    actor: "scheduler",
+    reason: "scheduled wakeup",
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(readFileSync(targetPath, "utf8"), "# Planner Patch\n");
+  assert.equal(projectFilePatchDrafts.get(draft.id)?.status, "applied");
+  const mutations = ledger.list({ assignmentId: assignment.assignment.id });
+  assert.equal(mutations.length, 1);
+  assert.equal(mutations[0]?.status, "applied");
+  assert.equal(mutations[0]?.target, "project_file");
+  assert.equal(mutations[0]?.mutationType, "apply_patch");
+  assert.equal(mutations[0]?.runId, "coord_wakeup_1");
 });
 
 test("AssignmentWakeupPlanner applies explicitly allowed project file apply bundle mutation markers", async (t) => {

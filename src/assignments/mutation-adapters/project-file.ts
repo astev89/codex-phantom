@@ -4,8 +4,13 @@ import {
 } from "../../project-files/drafts.ts";
 import {
   type ProjectFileApplyBeforeSnapshot,
+  type ProjectFilePatchApplyItem,
   type ProjectFileApplyService,
 } from "../../project-files/apply.ts";
+import {
+  projectFilePatchDraftSummary,
+  type ProjectFilePatchDraftStore,
+} from "../../project-files/patches.ts";
 import type { JsonValue } from "../../shared/types.ts";
 import {
   asJsonObject,
@@ -20,8 +25,17 @@ export const PROJECT_FILE_APPLY_DRAFT_MUTATION_CLASS =
   "project_file.apply_draft";
 export const PROJECT_FILE_APPLY_BUNDLE_MUTATION_CLASS =
   "project_file.apply_bundle";
+export const PROJECT_FILE_PATCH_DRAFT_MUTATION_CLASS =
+  "project_file.patch_draft";
+export const PROJECT_FILE_APPLY_PATCH_MUTATION_CLASS =
+  "project_file.apply_patch";
 
 const MAX_PROJECT_FILE_BUNDLE_DRAFTS = 10;
+const PROJECT_FILE_APPLY_ROLLBACK_CONFLICT_MUTATION_TYPES = [
+  "apply_draft",
+  "apply_patch",
+  "apply_bundle",
+] as const;
 
 export function createProjectFileDraftAutonomousMutationAdapter(
   projectFileDrafts: ProjectFileDraftStore
@@ -102,7 +116,9 @@ export function createProjectFileApplyDraftAutonomousMutationAdapter(
     mutationType: "apply_draft",
     mutationClass: PROJECT_FILE_APPLY_DRAFT_MUTATION_CLASS,
     minimumRiskClass: "high",
-    rollbackConflictScope: "global",
+    rollbackConflictScope: "affected_resources",
+    rollbackConflictMutationTypes:
+      PROJECT_FILE_APPLY_ROLLBACK_CONFLICT_MUTATION_TYPES,
     affectedResources: [{ type: "project_file" }],
     apply(input) {
       const proposedChange = asJsonObject(
@@ -182,6 +198,183 @@ export function createProjectFileApplyDraftAutonomousMutationAdapter(
   };
 }
 
+export function createProjectFilePatchDraftAutonomousMutationAdapter(
+  projectFilePatchDrafts: ProjectFilePatchDraftStore
+): AutonomousMutationAdapter {
+  return {
+    target: "project_file",
+    mutationType: "patch_draft",
+    mutationClass: PROJECT_FILE_PATCH_DRAFT_MUTATION_CLASS,
+    minimumRiskClass: "high",
+    affectedResources: [{ type: "project_file_patch_draft" }],
+    apply(input) {
+      const proposedChange = asJsonObject(
+        input.proposedChange,
+        "proposedChange"
+      );
+      const projectFilePatchDraft = asJsonObject(
+        proposedChange.projectFilePatchDraft,
+        "proposedChange.projectFilePatchDraft"
+      );
+      const draft = projectFilePatchDrafts.create({
+        assignmentId: input.assignment.id,
+        runId: input.request.runId,
+        patch:
+          typeof projectFilePatchDraft.patch === "string"
+            ? projectFilePatchDraft.patch
+            : requiredString(
+                projectFilePatchDraft.patch,
+                "projectFilePatchDraft.patch"
+              ),
+        metadata:
+          projectFilePatchDraft.metadata === undefined
+            ? {
+                rationale: input.request.rationale,
+                actor: input.request.actor ?? null,
+              }
+            : projectFilePatchDraft.metadata,
+      });
+      const summary = projectFilePatchDraftSummary(draft);
+      const affectedResources = [
+        {
+          type: "project_file_patch_draft",
+          id: draft.id,
+          paths: draft.filePaths,
+        },
+      ];
+      return {
+        before: { activePatchDrafts: [] } as unknown as JsonValue,
+        after: { patchDraft: summary } as unknown as JsonValue,
+        rollback: { projectFilePatchDraft: { id: draft.id } },
+        affectedResources,
+        verificationMethod: "project_file_patch_draft_create",
+      };
+    },
+    rollback(input) {
+      const rollback = asJsonObject(input.rollback, "rollback");
+      const projectFilePatchDraft = asJsonObject(
+        rollback.projectFilePatchDraft,
+        "rollback.projectFilePatchDraft"
+      );
+      const id = requiredString(
+        projectFilePatchDraft.id,
+        "projectFilePatchDraft.id"
+      );
+      projectFilePatchDrafts.markRolledBack(id);
+      return { verificationMethod: "project_file_patch_draft_rollback" };
+    },
+  };
+}
+
+export function createProjectFileApplyPatchAutonomousMutationAdapter(
+  projectFilePatchDrafts: ProjectFilePatchDraftStore,
+  projectFileApply: ProjectFileApplyService
+): AutonomousMutationAdapter {
+  return {
+    target: "project_file",
+    mutationType: "apply_patch",
+    mutationClass: PROJECT_FILE_APPLY_PATCH_MUTATION_CLASS,
+    minimumRiskClass: "high",
+    rollbackConflictScope: "affected_resources",
+    rollbackConflictMutationTypes:
+      PROJECT_FILE_APPLY_ROLLBACK_CONFLICT_MUTATION_TYPES,
+    affectedResources: [{ type: "project_file_patch" }],
+    apply(input) {
+      const proposedChange = asJsonObject(
+        input.proposedChange,
+        "proposedChange"
+      );
+      const projectFilePatchApply = asJsonObject(
+        proposedChange.projectFilePatchApply,
+        "proposedChange.projectFilePatchApply"
+      );
+      const draftId = requiredString(
+        projectFilePatchApply.draftId,
+        "projectFilePatchApply.draftId"
+      );
+      const draft = projectFilePatchDrafts.get(draftId);
+      if (!draft) {
+        throw new Error("Project file patch draft not found");
+      }
+      if (draft.assignmentId !== input.assignment.id) {
+        throw new Error("Project file patch draft does not belong to assignment");
+      }
+      if (draft.status !== "active") {
+        throw new Error("Project file patch draft is not active");
+      }
+
+      let result: { files: ProjectFilePatchApplyItem[] };
+      try {
+        result = projectFileApply.applyPatch({ patch: draft.patch });
+      } catch (error) {
+        throw error;
+      }
+
+      let appliedDraft;
+      try {
+        appliedDraft = projectFilePatchDrafts.markApplied(draft.id, {
+          mutationId: input.mutationId,
+          sha256: draft.sha256,
+        });
+      } catch (error) {
+        for (const file of result.files.slice().reverse()) {
+          projectFileApply.rollback(file.before);
+        }
+        throw error;
+      }
+
+      const affectedResources = result.files.map((file) => ({
+        type: "project_file",
+        id: file.path,
+        path: file.path,
+      }));
+      return {
+        before: projectFilePatchApplyBeforeEvidence(result.files),
+        after: {
+          patchDraft: projectFilePatchDraftSummary(appliedDraft),
+          files: result.files.map((file) => file.after),
+        } as unknown as JsonValue,
+        rollback: {
+          projectFilePatch: {
+            draftId: draft.id,
+            items: result.files.map((file) => ({
+              path: file.path,
+              beforeFile: file.before,
+            })),
+          },
+        } as unknown as JsonValue,
+        affectedResources,
+        verificationMethod: "project_file_apply_patch_write",
+      };
+    },
+    rollback(input) {
+      const rollback = asJsonObject(input.rollback, "rollback");
+      const projectFilePatch = asJsonObject(
+        rollback.projectFilePatch,
+        "rollback.projectFilePatch"
+      );
+      const draftId = requiredString(
+        projectFilePatch.draftId,
+        "rollback.projectFilePatch.draftId"
+      );
+      if (!Array.isArray(projectFilePatch.items)) {
+        throw new Error("rollback.projectFilePatch.items must be an array");
+      }
+      const items = projectFilePatch.items.map((itemValue) =>
+        normalizeProjectFilePatchRollbackItem(itemValue)
+      );
+      for (const item of items) {
+        projectFileApply.assertRollbackSafe(item.beforeFile);
+      }
+      for (const item of items.slice().reverse()) {
+        projectFileApply.rollback(item.beforeFile);
+      }
+      projectFilePatchDrafts.markActiveAfterApplyRollback(draftId);
+      return { verificationMethod: "project_file_apply_patch_rollback" };
+    },
+  };
+}
+
 type ProjectFileBundleApplyItem = {
   draftId: string;
   path: string;
@@ -193,6 +386,11 @@ type ProjectFileBundleApplyItem = {
   };
 };
 
+type ProjectFilePatchRollbackItem = {
+  path: string;
+  beforeFile: ProjectFileApplyBeforeSnapshot;
+};
+
 export function createProjectFileApplyBundleAutonomousMutationAdapter(
   projectFileDrafts: ProjectFileDraftStore,
   projectFileApply: ProjectFileApplyService
@@ -202,7 +400,9 @@ export function createProjectFileApplyBundleAutonomousMutationAdapter(
     mutationType: "apply_bundle",
     mutationClass: PROJECT_FILE_APPLY_BUNDLE_MUTATION_CLASS,
     minimumRiskClass: "high",
-    rollbackConflictScope: "global",
+    rollbackConflictScope: "affected_resources",
+    rollbackConflictMutationTypes:
+      PROJECT_FILE_APPLY_ROLLBACK_CONFLICT_MUTATION_TYPES,
     affectedResources: [{ type: "project_file_bundle" }],
     apply(input) {
       const proposedChange = asJsonObject(
@@ -339,6 +539,31 @@ function requireProjectFileBundleDraftIds(value: JsonValue): string[] {
     throw new Error("projectFileBundle.draftIds must be unique");
   }
   return ids;
+}
+
+function projectFilePatchApplyBeforeEvidence(
+  files: ProjectFilePatchApplyItem[]
+): JsonValue {
+  return {
+    files: files.map((file) => ({
+      path: file.path,
+      beforeFile: file.before,
+    })),
+  } as unknown as JsonValue;
+}
+
+function normalizeProjectFilePatchRollbackItem(
+  value: JsonValue
+): ProjectFilePatchRollbackItem {
+  const item = asJsonObject(value, "rollback.projectFilePatch.items[]");
+  const path = requiredString(
+    item.path,
+    "rollback.projectFilePatch.item.path"
+  );
+  return {
+    path,
+    beforeFile: normalizeProjectFileApplyBeforeSnapshot(item.beforeFile),
+  };
 }
 
 function projectFileBundleApplyEvidence(
