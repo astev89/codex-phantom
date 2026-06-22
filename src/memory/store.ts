@@ -20,7 +20,6 @@ import {
   type MemoryRow,
   normalizeText,
   toMemoryEntry,
-  tokenize,
   trimLine,
   vectorPointForRow,
 } from "./records.ts";
@@ -589,10 +588,21 @@ export class MemoryStore {
 }
 
 function boundedKeywordFallbackTokens(input: string): string[] {
-  return [...new Set(tokenize(input))].slice(
-    0,
-    MAX_KEYWORD_FALLBACK_QUERY_TOKENS
-  );
+  const tokens: string[] = [];
+  const seen = new Set<string>();
+  const tokenPattern = /[a-z0-9]{3,}/gi;
+  let match: RegExpExecArray | null;
+  while (
+    tokens.length < MAX_KEYWORD_FALLBACK_QUERY_TOKENS &&
+    (match = tokenPattern.exec(input)) !== null
+  ) {
+    const token = match[0].toLowerCase();
+    if (!seen.has(token)) {
+      tokens.push(token);
+      seen.add(token);
+    }
+  }
+  return tokens;
 }
 
 function dedupeMemoryRows(rows: MemoryRow[]): MemoryRow[] {
