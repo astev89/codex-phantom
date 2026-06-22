@@ -489,6 +489,8 @@ export class AutonomousMutationLedger {
       requireText(input.appliedAt, "appliedAt"),
       requireText(input.appliedAt, "appliedAt"),
     ];
+    const scanLimit =
+      scope === "affected_resources" ? NEWER_APPLIED_SCAN_LIMIT + 1 : 1;
     const rows = this.database.all<AutonomousMutationRow>(
       `
         SELECT candidate.* FROM assignment_mutations AS candidate
@@ -509,7 +511,7 @@ export class AutonomousMutationLedger {
         LIMIT ?
       `,
       ...values,
-      NEWER_APPLIED_SCAN_LIMIT + 1
+      scanLimit
     );
     if (scope !== "affected_resources") {
       return rows[0] ? toAutonomousMutationRecord(rows[0]) : null;

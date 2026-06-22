@@ -459,6 +459,11 @@ test("runtime assembles managed prompt fragments in deterministic order", async 
   assert.match(systemPrompt, /# Managed Prompt Fragments\n## alpha\nFirst fragment\./);
   assert.match(systemPrompt, /## tone_injected\nLegacy fragment\./);
   assert.match(systemPrompt, /## zeta\nSecond fragment\./);
+  const alphaIndex = systemPrompt.indexOf("## alpha\nFirst fragment.");
+  const legacyIndex = systemPrompt.indexOf("## tone_injected\nLegacy fragment.");
+  const zetaIndex = systemPrompt.indexOf("## zeta\nSecond fragment.");
+  assert.ok(alphaIndex < legacyIndex);
+  assert.ok(legacyIndex < zetaIndex);
   assert.doesNotMatch(systemPrompt, /\n## injected\n/);
   assert.doesNotMatch(systemPrompt, /Do not include me/);
   database.close();

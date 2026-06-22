@@ -67,7 +67,9 @@ function buildManagedFragmentsSection(
 ): string | null {
   const activeFragments = fragments
     .filter((fragment) => fragment.active && fragment.text.trim())
-    .sort((left, right) => left.id.localeCompare(right.id));
+    .sort((left, right) =>
+      left.id < right.id ? -1 : left.id > right.id ? 1 : 0
+    );
   if (activeFragments.length === 0) {
     return null;
   }
