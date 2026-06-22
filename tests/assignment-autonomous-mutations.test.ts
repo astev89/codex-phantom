@@ -4393,6 +4393,98 @@ test("AutonomousMutationExecutor preserves newline-terminated patch coordinates"
   assert.equal(readFileSync(absolutePath, "utf8"), "alpha\nbravo\ncharlie\n");
 });
 
+test("AutonomousMutationExecutor applies patches to CRLF project files", (t) => {
+  const {
+    assignments,
+    database,
+    executor,
+    projectFilePatchDrafts,
+  } = createProjectFileDraftHarness();
+  const relativePath = "docs/autonomous-project-file-patch-crlf-test.md";
+  const absolutePath = join(process.cwd(), relativePath);
+  const priorExists = existsSync(absolutePath);
+  const priorContent = priorExists ? readFileSync(absolutePath) : Buffer.alloc(0);
+  t.after(() => {
+    if (priorExists) {
+      writeFileSync(absolutePath, priorContent);
+    } else if (existsSync(absolutePath)) {
+      unlinkSync(absolutePath);
+    }
+    database.close();
+  });
+  writeFileSync(absolutePath, "alpha\r\nbravo\r\ncharlie\r\n", "utf8");
+  const assignment = assignments.create({
+    objective: "Apply CRLF docs patch",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "project_file.patch_draft",
+          "project_file.apply_patch",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+  const patch = [
+    `diff --git a/${relativePath} b/${relativePath}`,
+    "index 1111111..2222222 100644",
+    `--- a/${relativePath}`,
+    `+++ b/${relativePath}`,
+    "@@ -2,1 +2,1 @@",
+    "-bravo",
+    "+bravo updated",
+    "",
+  ].join("\n");
+
+  const draft = executor.apply({
+    assignmentId: assignment.assignment.id,
+    runId: "coord_project_file_patch_crlf_draft",
+    target: "project_file",
+    mutationType: "patch_draft",
+    rationale: "Create an auditable CRLF patch draft.",
+    riskClass: "high",
+    proposedChange: {
+      projectFilePatchDraft: {
+        patch,
+        metadata: { source: "test" },
+      },
+    },
+  });
+  const draftId = (
+    draft.mutation.rollback as { projectFilePatchDraft: { id: string } }
+  ).projectFilePatchDraft.id;
+
+  const applied = executor.apply({
+    assignmentId: assignment.assignment.id,
+    runId: "coord_project_file_apply_crlf_patch",
+    target: "project_file",
+    mutationType: "apply_patch",
+    rationale: "Apply the audited CRLF patch draft.",
+    riskClass: "high",
+    proposedChange: {
+      projectFilePatchApply: { draftId },
+    },
+  });
+
+  assert.equal(
+    readFileSync(absolutePath, "utf8"),
+    "alpha\nbravo updated\ncharlie\n"
+  );
+  assert.equal(projectFilePatchDrafts.get(draftId)?.status, "applied");
+  assert.equal(applied.mutation.status, "applied");
+
+  executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: applied.mutation.id,
+  });
+  assert.equal(
+    readFileSync(absolutePath, "utf8"),
+    "alpha\r\nbravo\r\ncharlie\r\n"
+  );
+});
+
 test("AutonomousMutationExecutor rejects unsafe project file patch mutations without writing files", (t) => {
   const {
     assignments,

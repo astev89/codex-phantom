@@ -202,7 +202,7 @@ function readTextProjectFile(absolutePath: string, path: string): string {
   if (content.includes(0)) {
     throw new Error(`projectFilePatch.path must be text: ${path}`);
   }
-  return content.toString("utf8");
+  return content.toString("utf8").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 }
 
 function applyParsedFilePatch(

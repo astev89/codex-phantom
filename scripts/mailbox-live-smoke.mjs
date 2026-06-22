@@ -101,10 +101,15 @@ async function verifyImap(input) {
 }
 
 async function sendSmtpProbe(input) {
+  const smtpPort = positiveInteger(
+    process.env.EMAIL_SMTP_PORT,
+    587,
+    "EMAIL_SMTP_PORT"
+  );
   const transporter = nodemailer.createTransport({
     host: requiredEnv("EMAIL_SMTP_HOST"),
-    port: positiveInteger(process.env.EMAIL_SMTP_PORT, 587, "EMAIL_SMTP_PORT"),
-    secure: booleanEnv(process.env.EMAIL_SMTP_TLS, true),
+    port: smtpPort,
+    secure: booleanEnv(process.env.EMAIL_SMTP_TLS, smtpPort === 465),
     auth: {
       user: requiredEnv("EMAIL_SMTP_USERNAME"),
       pass: requiredEnv("EMAIL_SMTP_PASSWORD"),

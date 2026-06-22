@@ -105,6 +105,42 @@ test("config identifies invalid email boolean settings", () => {
   });
 });
 
+test("config defaults SMTP TLS from the selected SMTP port", () => {
+  withEnv(
+    {
+      EMAIL_SMTP_PORT: undefined,
+      EMAIL_SMTP_TLS: undefined,
+    },
+    () => {
+      const config = loadConfig();
+      assert.equal(config.emailSmtpPort, 587);
+      assert.equal(config.emailSmtpTls, false);
+    }
+  );
+  withEnv(
+    {
+      EMAIL_SMTP_PORT: "465",
+      EMAIL_SMTP_TLS: undefined,
+    },
+    () => {
+      const config = loadConfig();
+      assert.equal(config.emailSmtpPort, 465);
+      assert.equal(config.emailSmtpTls, true);
+    }
+  );
+  withEnv(
+    {
+      EMAIL_SMTP_PORT: "587",
+      EMAIL_SMTP_TLS: "true",
+    },
+    () => {
+      const config = loadConfig();
+      assert.equal(config.emailSmtpPort, 587);
+      assert.equal(config.emailSmtpTls, true);
+    }
+  );
+});
+
 test("production config rejects blank and placeholder secrets", () => {
   const original = { ...process.env };
   process.env.APP_ENV = "production";

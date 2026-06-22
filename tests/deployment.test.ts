@@ -132,6 +132,11 @@ test("deployment smoke scripts and docs cover boot, restart persistence, and bac
   assert.match(mailboxSmokeScript, /missing_credentials/);
   assert.match(mailboxSmokeScript, /client\.status/);
   assert.match(mailboxSmokeScript, /sendMail/);
+  assert.match(mailboxSmokeScript, /const smtpPort = positiveInteger/);
+  assert.match(
+    mailboxSmokeScript,
+    /secure: booleanEnv\(process\.env\.EMAIL_SMTP_TLS, smtpPort === 465\)/
+  );
   assert.doesNotMatch(mailboxSmokeScript, /console\.log\(process\.env/);
   assert.doesNotMatch(mailboxSmokeScript, /pass:\s*process\.env/);
   assert.match(restoreScript, /docker volume rm codex-phantom-data/);
