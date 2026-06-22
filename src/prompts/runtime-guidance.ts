@@ -170,6 +170,7 @@ export class PromptManagedFragmentStore {
         INSERT INTO prompt_managed_fragments (id, fragment_text, active, updated_by, created_at, updated_at)
         VALUES (?, '', 0, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
+          fragment_text = excluded.fragment_text,
           active = 0,
           updated_by = excluded.updated_by,
           updated_at = excluded.updated_at

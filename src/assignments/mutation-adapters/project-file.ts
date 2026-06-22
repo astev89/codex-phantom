@@ -657,7 +657,7 @@ function normalizeProjectFileApplyBeforeSnapshot(
     typeof snapshot.content !== "string"
   ) {
     throw new Error(
-      "rollback.projectFileApply.beforeFile.contentBase64 must be a string"
+      "rollback.projectFileApply.beforeFile.contentBase64 or content must be a string"
     );
   }
   const before: ProjectFileApplyBeforeSnapshot = {

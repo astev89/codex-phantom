@@ -2202,6 +2202,7 @@ test("AutonomousMutationExecutor clears managed prompt fragments with rollback",
   });
 
   assert.equal(promptFragments.get("handoff")?.active, false);
+  assert.equal(promptFragments.get("handoff")?.text, "");
   assert.deepEqual(applied.mutation.rollback, {
     promptFragment: {
       id: "handoff",
@@ -2282,7 +2283,7 @@ test("AutonomousMutationExecutor restores inactive and absent managed prompt fra
   });
   assert.deepEqual(promptFragments.get("tone"), {
     id: "tone",
-    text: "Dormant tone.",
+    text: "",
     active: false,
   });
   database.close();
