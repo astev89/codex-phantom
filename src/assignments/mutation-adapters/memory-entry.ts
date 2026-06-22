@@ -93,15 +93,17 @@ export function createMemoryEntryLifecycleAutonomousMutationAdapter(
         };
       }
 
-      const replacement = insertMemoryEntry(database, {
+      const replacementInput = {
         category: normalizeMemoryCategory(memoryEntry.category),
         content: normalizeMemoryContent(memoryEntry.content),
         importance: normalizeMemoryImportance(memoryEntry.importance),
         runId: input.request.runId,
-      });
+      };
       const reason = optionalMemoryReason(memoryEntry.reason);
       const lifecycleLinkId = createId("memlink");
+      let replacement: MemoryRow | undefined;
       database.transaction(() => {
+        replacement = insertMemoryEntry(database, replacementInput);
         database.run(
           `
             INSERT INTO memory_lifecycle_links (
@@ -130,6 +132,9 @@ export function createMemoryEntryLifecycleAutonomousMutationAdapter(
           before.id
         );
       });
+      if (!replacement) {
+        throw new Error("memoryEntry.supersede did not create a replacement");
+      }
       const afterTarget = getRequiredMemoryEntry(database, before.id);
       return {
         before: { target: memoryEntryEvidence(before) } as JsonValue,

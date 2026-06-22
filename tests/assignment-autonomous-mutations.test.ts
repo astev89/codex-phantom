@@ -3157,6 +3157,75 @@ test("AutonomousMutationExecutor deactivates and supersedes memory entries with 
   database.close();
 });
 
+test("AutonomousMutationExecutor preserves memory supersede atomicity when lifecycle link insert fails", async () => {
+  const { assignments, database, executor, memory } =
+    createMemoryEntryLifecycleHarness();
+  const original = await memory.storeEntry({
+    category: "semantic",
+    content: "Release train leaves on Friday.",
+    sourceType: "semantic_fact",
+    importance: 0.8,
+    isFact: true,
+  });
+  database.exec(`
+    CREATE TRIGGER fail_autonomous_supersede_link
+    BEFORE INSERT ON memory_lifecycle_links
+    WHEN NEW.relationship = 'supersedes'
+    BEGIN
+      SELECT RAISE(ABORT, 'injected lifecycle link failure');
+    END
+  `);
+  const assignment = assignments.create({
+    objective: "Protect memory supersede atomicity",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "memory.entry_lifecycle",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+
+  assert.throws(
+    () =>
+      executor.apply({
+        assignmentId: assignment.assignment.id,
+        target: "memory",
+        mutationType: "entry_lifecycle",
+        rationale: "Replace stale release memory.",
+        riskClass: "high",
+        proposedChange: {
+          memoryEntry: {
+            action: "supersede",
+            memoryId: original.id,
+            category: "semantic",
+            content: "Release train leaves on Monday.",
+          },
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 400);
+      assert.equal(error.mutation?.status, "failed");
+      assert.match(error.message, /injected lifecycle link failure/);
+      return true;
+    }
+  );
+
+  assert.equal((await memory.getEntry(original.id))?.lifecycleState, "active");
+  assert.equal(
+    database.get<{ count: number }>(
+      "SELECT COUNT(*) AS count FROM memory_entries WHERE content = ?",
+      "Release train leaves on Monday."
+    )?.count,
+    0
+  );
+  database.close();
+});
+
 test("AutonomousMutationExecutor rolls back memory entries after unrelated lifecycle mutations", async () => {
   const { assignments, database, executor, memory } =
     createMemoryEntryLifecycleHarness();

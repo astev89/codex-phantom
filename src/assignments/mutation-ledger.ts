@@ -14,8 +14,6 @@ import { ASSIGNMENT_AUTONOMY_LEVELS } from "./types.ts";
 import type { AutonomousAssignmentService } from "./service.ts";
 import type { SelfEvolutionRiskClass } from "../self-evolution/proposals.ts";
 
-const NEWER_APPLIED_SCAN_LIMIT = 1_000;
-
 export type AutonomousMutationTarget =
   | "prompt"
   | "memory"
@@ -479,6 +477,23 @@ export class AutonomousMutationLedger {
           )
         : [requireText(input.mutationType, "mutationType")];
     const mutationTypePlaceholders = mutationTypes.map(() => "?").join(", ");
+    const resourcePairs =
+      scope === "affected_resources"
+        ? affectedResourcePairs(input.affectedResources)
+        : [];
+    const affectedResourceFilter =
+      scope === "affected_resources" && resourcePairs.length > 0
+        ? `AND EXISTS (
+            SELECT 1
+            FROM json_each(candidate.affected_resources_json) AS resource
+            WHERE ${resourcePairs
+              .map(
+                () =>
+                  "(json_extract(resource.value, '$.type') = ? AND (json_extract(resource.value, '$.id') = ? OR json_extract(resource.value, '$.path') = ?))"
+              )
+              .join(" OR ")}
+          )`
+        : "";
     const values = [
       requireText(input.id, "id"),
       ...(scope === "assignment"
@@ -486,11 +501,14 @@ export class AutonomousMutationLedger {
         : []),
       input.target,
       ...mutationTypes,
+      ...resourcePairs.flatMap((resource) => [
+        resource.type,
+        resource.resourceId,
+        resource.resourceId,
+      ]),
       requireText(input.appliedAt, "appliedAt"),
       requireText(input.appliedAt, "appliedAt"),
     ];
-    const scanLimit =
-      scope === "affected_resources" ? NEWER_APPLIED_SCAN_LIMIT + 1 : 1;
     const rows = this.database.all<AutonomousMutationRow>(
       `
         SELECT candidate.* FROM assignment_mutations AS candidate
@@ -500,6 +518,7 @@ export class AutonomousMutationLedger {
           AND candidate.target = ?
           AND candidate.mutation_type IN (${mutationTypePlaceholders})
           AND candidate.status = 'applied'
+          ${affectedResourceFilter}
           AND (
             candidate.applied_at > ?
             OR (
@@ -511,33 +530,15 @@ export class AutonomousMutationLedger {
         LIMIT ?
       `,
       ...values,
-      scanLimit
+      1
     );
     if (scope !== "affected_resources") {
       return rows[0] ? toAutonomousMutationRecord(rows[0]) : null;
     }
-    const currentResources = affectedResourceKeys(input.affectedResources);
-    if (currentResources.size === 0) {
+    if (resourcePairs.length === 0) {
       return rows[0] ? toAutonomousMutationRecord(rows[0]) : null;
     }
-    const scannedRows = rows.slice(0, NEWER_APPLIED_SCAN_LIMIT);
-    for (const row of scannedRows) {
-      const candidate = toAutonomousMutationRecord(row);
-      if (
-        hasSharedAffectedResource(
-          currentResources,
-          candidate.affectedResources
-        )
-      ) {
-        return candidate;
-      }
-    }
-    if (rows.length > NEWER_APPLIED_SCAN_LIMIT) {
-      return toAutonomousMutationRecord(
-        scannedRows[scannedRows.length - 1]
-      );
-    }
-    return null;
+    return rows[0] ? toAutonomousMutationRecord(rows[0]) : null;
   }
 
   private getRequired(id: string): AutonomousMutationRecord {
@@ -722,33 +723,35 @@ function toAutonomousMutationRecord(
   };
 }
 
-function affectedResourceKeys(value: JsonValue | undefined): Set<string> {
+function affectedResourcePairs(
+  value: JsonValue | undefined
+): { type: string; resourceId: string }[] {
   if (!Array.isArray(value)) {
-    return new Set();
+    return [];
   }
-  const keys = new Set<string>();
+  const pairs: { type: string; resourceId: string }[] = [];
+  const seen = new Set<string>();
   for (const item of value) {
     if (
       item &&
       typeof item === "object" &&
       !Array.isArray(item) &&
-      typeof item.type === "string" &&
-      typeof item.id === "string"
+      typeof item.type === "string"
     ) {
-      keys.add(`${item.type}:${item.id}`);
+      const resourceId =
+        typeof item.id === "string"
+          ? item.id
+          : typeof item.path === "string"
+            ? item.path
+            : undefined;
+      if (resourceId) {
+        const key = `${item.type}:${resourceId}`;
+        if (!seen.has(key)) {
+          pairs.push({ type: item.type, resourceId });
+          seen.add(key);
+        }
+      }
     }
   }
-  return keys;
-}
-
-function hasSharedAffectedResource(
-  currentResources: Set<string>,
-  candidateResources: JsonValue
-): boolean {
-  for (const key of affectedResourceKeys(candidateResources)) {
-    if (currentResources.has(key)) {
-      return true;
-    }
-  }
-  return false;
+  return pairs;
 }
