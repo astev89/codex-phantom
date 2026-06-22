@@ -246,7 +246,7 @@ function applyParsedFilePatch(
     finalHunk.newStart + finalHunk.newCount - 1 >= output.length;
   if (
     filePatch.newEndsWithNewline &&
-    result !== "" &&
+    output.length > 0 &&
     !result.endsWith("\n") &&
     (originalEndsWithNewline || finalHunkTouchesEnd)
   ) {

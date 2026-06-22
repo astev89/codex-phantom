@@ -639,14 +639,15 @@ function normalizeProjectFileBundleRollbackItem(
 function normalizeProjectFileApplyBeforeSnapshot(
   value: JsonValue
 ): ProjectFileApplyBeforeSnapshot {
-  const snapshot = asJsonObject(value, "rollback.projectFileApply.beforeFile");
+  const label = "rollback.projectFile.beforeFile";
+  const snapshot = asJsonObject(value, label);
   const path = requiredString(
     snapshot.path,
-    "rollback.projectFileApply.beforeFile.path"
+    `${label}.path`
   );
   if (typeof snapshot.existed !== "boolean") {
     throw new Error(
-      "rollback.projectFileApply.beforeFile.existed must be a boolean"
+      `${label}.existed must be a boolean`
     );
   }
   if (!snapshot.existed) {
@@ -657,7 +658,7 @@ function normalizeProjectFileApplyBeforeSnapshot(
     typeof snapshot.content !== "string"
   ) {
     throw new Error(
-      "rollback.projectFileApply.beforeFile.contentBase64 or content must be a string"
+      `${label}.contentBase64 or content must be a string`
     );
   }
   const before: ProjectFileApplyBeforeSnapshot = {
