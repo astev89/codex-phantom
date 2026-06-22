@@ -1922,7 +1922,12 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
         status: string;
         target: string;
         mutationType: string;
-        before: { id: string; exists: boolean };
+        before: {
+          id: string;
+          text: string;
+          active: boolean;
+          exists: boolean;
+        };
         after: { id: string; text: string; active: boolean; exists: boolean };
         rollback: unknown;
       };
