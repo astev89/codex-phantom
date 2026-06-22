@@ -98,7 +98,7 @@ export class MemoryStore {
         : [];
     const queryTokens = boundedKeywordFallbackTokens(input);
     const keywordRows =
-      ids.length > 0 && queryEmbedding && queryTokens.length > 0
+      queryEmbedding && queryTokens.length > 0
         ? this.database.all<MemoryRow>(
             `
               SELECT ${MEMORY_ROW_COLUMNS}
@@ -115,7 +115,7 @@ export class MemoryStore {
           )
         : [];
     const rows =
-      ids.length > 0
+      queryEmbedding && (ids.length > 0 || keywordRows.length > 0)
         ? dedupeMemoryRows([...vectorRows, ...keywordRows])
         : this.database.all<MemoryRow>(
             `

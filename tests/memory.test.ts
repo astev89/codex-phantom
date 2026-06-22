@@ -157,6 +157,103 @@ test("semantic query narrows unembedded keyword fallback rows by query tokens", 
   database.close();
 });
 
+test("semantic query uses keyword fallback when vector search has no hits", async () => {
+  const database = new AppDatabase(":memory:");
+  const qdrant = makeFakeVectorStore({ backend: "qdrant", available: true });
+  const memory = new MemoryStore(
+    database,
+    makeConfig(),
+    makeFakeEmbeddings({
+      "release checklist": [1, 0, 0],
+    }),
+    qdrant,
+    makeFakeVectorStore({ backend: "sqlite_fallback", available: true })
+  );
+  database.run(
+    `
+      INSERT INTO memory_entries (
+        id, category, content, created_at, source_user_input, source_assistant_output, score,
+        embedding_json, embedding_model, source_type, importance, last_accessed_at, access_count,
+        is_summary, is_fact, parent_summary_id, source_session_id, source_run_id,
+        vector_backend, vector_synced_at, vector_sync_error, vector_point_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    "mem_keyword_unembedded",
+    "procedural",
+    "Release checklist must be reviewed before deploy",
+    new Date(Date.now() - 1_000).toISOString(),
+    null,
+    null,
+    0,
+    null,
+    null,
+    "procedural_note",
+    0.8,
+    null,
+    0,
+    0,
+    0,
+    null,
+    "session-1",
+    "run-1",
+    "sqlite_fallback",
+    null,
+    null,
+    "mem_keyword_unembedded"
+  );
+  database.run(
+    `
+      INSERT INTO memory_entries (
+        id, category, content, created_at, source_user_input, source_assistant_output, score,
+        embedding_json, embedding_model, source_type, importance, last_accessed_at, access_count,
+        is_summary, is_fact, parent_summary_id, source_session_id, source_run_id,
+        vector_backend, vector_synced_at, vector_sync_error, vector_point_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    "mem_unrelated_unembedded_empty_vector",
+    "procedural",
+    "Pizza oven calibration is important",
+    new Date().toISOString(),
+    null,
+    null,
+    0,
+    null,
+    null,
+    "procedural_note",
+    1,
+    null,
+    0,
+    0,
+    0,
+    null,
+    "session-1",
+    "run-1",
+    "sqlite_fallback",
+    null,
+    null,
+    "mem_unrelated_unembedded_empty_vector"
+  );
+
+  const result = await memory.query("release checklist");
+  const returned = [
+    ...result.summaries,
+    ...result.episodic,
+    ...result.semantic,
+    ...result.procedural,
+  ];
+  assert.equal(
+    returned.some((entry) => entry.id === "mem_keyword_unembedded"),
+    true
+  );
+  assert.equal(
+    returned.some(
+      (entry) => entry.id === "mem_unrelated_unembedded_empty_vector"
+    ),
+    false
+  );
+  database.close();
+});
+
 test("semantic query bounds unembedded keyword fallback tokens", async () => {
   const database = new AppDatabase(":memory:");
   const qdrant = makeFakeVectorStore({ backend: "qdrant", available: true });

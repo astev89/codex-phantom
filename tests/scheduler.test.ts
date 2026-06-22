@@ -203,6 +203,40 @@ test("retry scheduling caps backoff at sixty seconds", async (t) => {
   assert.equal(job?.scheduledAt, new Date(now + 60_000).toISOString());
 });
 
+test("reschedule rejects invalid scheduledAt values", async () => {
+  const database = new AppDatabase(":memory:");
+  const now = Date.UTC(2026, 3, 28, 12, 17, 0);
+  insertJob(database, {
+    id: "job-invalid-reschedule",
+    status: "scheduled",
+    scheduledAt: new Date(now + 10_000).toISOString(),
+    createdAt: new Date(now - 120_000).toISOString(),
+    attemptCount: 0,
+    maxAttempts: 1,
+  });
+  const scheduler = new SchedulerService(
+    database,
+    makeOrchestration(async () => ({
+      sessionId: "session",
+      runId: "run",
+      outputText: "done",
+    }))
+  );
+
+  await assert.rejects(
+    () =>
+      scheduler.reschedule("job-invalid-reschedule", {
+        scheduledAt: "not a date",
+      }),
+    /Invalid scheduledAt/
+  );
+  const job = (await scheduler.list()).find(
+    (item) => item.id === "job-invalid-reschedule"
+  );
+  assert.equal(job?.scheduledAt, new Date(now + 10_000).toISOString());
+  database.close();
+});
+
 test("registered scheduler handlers execute matching jobs and record run ids", async (t) => {
   t.mock.timers.enable({ apis: ["Date", "setTimeout"] });
   const now = Date.UTC(2026, 3, 28, 12, 20, 0);

@@ -165,7 +165,7 @@ export class SchedulerService {
     }
     const now = new Date();
     const scheduledAt = options.scheduledAt
-      ? new Date(options.scheduledAt).toISOString()
+      ? normalizeRescheduleTimestamp(options.scheduledAt)
       : new Date(now.getTime() + (options.delayMs ?? 0)).toISOString();
     const updated: JobRecord = {
       ...job,
@@ -329,6 +329,14 @@ function retryDelayMs(attemptCount: number): number {
     60_000,
     1_000 * Math.max(1, 2 ** Math.max(0, attemptCount - 1))
   );
+}
+
+function normalizeRescheduleTimestamp(value: string): string {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error("Invalid scheduledAt timestamp");
+  }
+  return parsed.toISOString();
 }
 
 function toJobRecord(row: JobRow): JobRecord {
