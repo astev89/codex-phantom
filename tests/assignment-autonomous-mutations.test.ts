@@ -4896,6 +4896,66 @@ test("AutonomousMutationExecutor rejects unsafe project file patch mutations wit
   assert.equal(readFileSync(absolutePath, "utf8"), "one\ntwo\nthree\n");
   assert.equal(projectFilePatchDrafts.get(mismatchDraft.id)?.status, "active");
 
+  const createOverExistingDraft = projectFilePatchDrafts.create({
+    assignmentId: assignment.assignment.id,
+    patch: [
+      `diff --git a/${relativePath} b/${relativePath}`,
+      "--- /dev/null",
+      `+++ b/${relativePath}`,
+      "@@ -0,0 +1,1 @@",
+      "+replacement",
+      "",
+    ].join("\n"),
+  });
+  assert.throws(
+    () =>
+      executor.apply({
+        assignmentId: assignment.assignment.id,
+        target: "project_file",
+        mutationType: "apply_patch",
+        rationale: "Creation patches must not overwrite existing files.",
+        riskClass: "high",
+        proposedChange: {
+          projectFilePatchApply: { draftId: createOverExistingDraft.id },
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 400);
+      assert.equal(error.mutation?.status, "failed");
+      assert.match(error.message, /creation patch cannot target existing file/);
+      return true;
+    }
+  );
+  assert.equal(readFileSync(absolutePath, "utf8"), "one\ntwo\nthree\n");
+  assert.equal(
+    projectFilePatchDrafts.get(createOverExistingDraft.id)?.status,
+    "active"
+  );
+  assert.deepEqual(
+    ledger
+      .list({ assignmentId: assignment.assignment.id })
+      .filter(
+        (mutation) =>
+          mutation.mutationType === "apply_patch" &&
+          mutation.errorMessage?.includes(
+            "creation patch cannot target existing file"
+          )
+      )
+      .map((mutation) => ({
+        status: mutation.status,
+        mutationType: mutation.mutationType,
+        errorMessage: mutation.errorMessage,
+      })),
+    [
+      {
+        status: "failed",
+        mutationType: "apply_patch",
+        errorMessage: `projectFilePatch.creation patch cannot target existing file: ${relativePath}`,
+      },
+    ]
+  );
+
   if (existsSync(symlinkPath)) {
     unlinkSync(symlinkPath);
   }

@@ -153,6 +153,11 @@ export class ProjectFileApplyService {
     const beforeContent = before.existed
       ? readTextProjectFile(absolutePath, path)
       : "";
+    if (before.existed && !filePatch.oldPath) {
+      throw new Error(
+        `projectFilePatch.creation patch cannot target existing file: ${path}`
+      );
+    }
     if (!before.existed && filePatch.oldPath) {
       throw new Error(`projectFilePatch.path does not exist: ${path}`);
     }
