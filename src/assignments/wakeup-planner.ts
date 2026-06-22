@@ -847,7 +847,7 @@ function shouldScheduleParentContinuation(
     return false;
   }
   if (parent.lifecycleState === "active") {
-    return true;
+    return !hasOpenParentWakeup(assignments, parentAssignmentId);
   }
   if (parent.lifecycleState !== "waiting") {
     return false;
@@ -861,6 +861,49 @@ function shouldScheduleParentContinuation(
     latestWait.reason === "Waiting for active child assignment" ||
     latestWait.reason === "Waited child assignments satisfied"
   );
+}
+
+function hasOpenParentWakeup(
+  assignments: AutonomousAssignmentService,
+  parentAssignmentId: string
+): boolean {
+  const events = assignments.latestTimelineByTypes(
+    parentAssignmentId,
+    [
+      "blocked",
+      "cancelled",
+      "completed",
+      "expired",
+      "failed",
+      "paused",
+      "resumed",
+      "waiting",
+      "wakeup_failed",
+      "wakeup_run_completed",
+      "wakeup_started",
+    ],
+    10
+  ).events;
+  for (const event of [...events].reverse()) {
+    if (event.type === "wakeup_started") {
+      return true;
+    }
+    if (
+      event.type === "blocked" ||
+      event.type === "cancelled" ||
+      event.type === "completed" ||
+      event.type === "expired" ||
+      event.type === "failed" ||
+      event.type === "paused" ||
+      event.type === "resumed" ||
+      event.type === "waiting" ||
+      event.type === "wakeup_failed" ||
+      event.type === "wakeup_run_completed"
+    ) {
+      return false;
+    }
+  }
+  return false;
 }
 
 function latestParentWaitEvent(

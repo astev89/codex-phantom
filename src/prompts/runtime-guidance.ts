@@ -163,7 +163,6 @@ export class PromptManagedFragmentStore {
     options: PromptFragmentIdOptions = {}
   ): PromptManagedFragmentRecord {
     const normalizedId = normalizePromptFragmentId(id, options);
-    const before = this.get(normalizedId, options);
     const now = new Date().toISOString();
     this.database.run(
       `

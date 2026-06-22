@@ -850,6 +850,117 @@ test("AssignmentWakeupPlanner does not wake operator-paused parents after waited
   );
 });
 
+test("AssignmentWakeupPlanner does not schedule currently-running parents after waited children finish", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-06-16T14:17:00.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const database = new AppDatabase(":memory:");
+  t.after(() => database.close());
+  const assignments = new AutonomousAssignmentService(database);
+  const runs = new RunGraphStore(database);
+  const { scheduler, jobs } = makeScheduler(now);
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, ["ASSIGNMENT_STATUS: complete"]),
+  });
+  const parent = assignments.create({
+    objective: "Running parent should not be double-scheduled",
+    policy: {
+      maxWakeups: 5,
+      childAssignments: { maxDepth: 1, maxActiveChildren: 1 },
+    },
+  });
+  assignments.startWakeup({
+    assignmentId: parent.assignment.id,
+    reason: "Parent is already running",
+  });
+  const child = assignments.promoteChild({
+    parentAssignmentId: parent.assignment.id,
+    objective: "Waited child",
+    rationale: "Parent is still running while child finishes.",
+    waitForChild: true,
+    policy: { maxWakeups: 1 },
+  });
+  assignments.applyWakeupDecision({
+    assignmentId: child.child.assignment.id,
+    decision: "completed",
+    reason: "Child completed",
+  });
+
+  await planner.scheduleDependencyContinuationsForAssignment(
+    child.child.assignment.id
+  );
+
+  assert.equal(jobs.length, 0);
+  assert.equal(
+    assignments.getRequired(parent.assignment.id).assignment.lifecycleState,
+    "active"
+  );
+});
+
+test("AssignmentWakeupPlanner schedules resumed parents after waited children finish", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-06-16T14:18:00.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const database = new AppDatabase(":memory:");
+  t.after(() => database.close());
+  const assignments = new AutonomousAssignmentService(database);
+  const runs = new RunGraphStore(database);
+  const { scheduler, jobs } = makeScheduler(now);
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, ["ASSIGNMENT_STATUS: complete"]),
+  });
+  const parent = assignments.create({
+    objective: "Resumed parent should continue after child finishes",
+    policy: {
+      maxWakeups: 5,
+      childAssignments: { maxDepth: 1, maxActiveChildren: 1 },
+    },
+  });
+  assignments.startWakeup({
+    assignmentId: parent.assignment.id,
+    reason: "Parent previously ran",
+  });
+  assignments.failWakeup({
+    assignmentId: parent.assignment.id,
+    error: "Temporary coordinator failure",
+  });
+  assignments.applyWakeupDecision({
+    assignmentId: parent.assignment.id,
+    decision: "waiting",
+    reason: "Continue after recovery",
+  });
+  assignments.control(parent.assignment.id, {
+    action: "resume",
+    reason: "Operator resumes parent",
+  });
+  const child = assignments.promoteChild({
+    parentAssignmentId: parent.assignment.id,
+    objective: "Waited child",
+    rationale: "Resumed parent should wake after this child.",
+    waitForChild: true,
+    policy: { maxWakeups: 1 },
+  });
+  assignments.applyWakeupDecision({
+    assignmentId: child.child.assignment.id,
+    decision: "completed",
+    reason: "Child completed",
+  });
+
+  await planner.scheduleDependencyContinuationsForAssignment(
+    child.child.assignment.id
+  );
+
+  assert.equal(jobs.length, 1);
+  assert.deepEqual(JSON.parse(jobs[0]?.message ?? "{}"), {
+    assignmentId: parent.assignment.id,
+    reason: "Waited child assignments satisfied",
+  });
+});
+
 test("AssignmentWakeupPlanner does not schedule terminal parents after waited children finish", async (t) => {
   t.mock.timers.enable({ apis: ["Date"] });
   const now = "2026-06-16T14:20:00.000Z";
