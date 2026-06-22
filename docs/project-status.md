@@ -2,17 +2,42 @@
 
 This is the living status ledger for `codex-phantom`. Update it at the end of each development wave, after tests pass and before handing off or opening a PR.
 
-Last updated: 2026-06-17
-Branch: `jarvis/autonomous-project-file-bundle-apply`
-Latest verified implementation commit: `20627fe feat(assignments): apply project file draft bundles`
+Last updated: 2026-06-21
+Branch: `jarvis/complete-p1-p2-parity`
+Latest verified implementation commit: `85c2119 test(channels): add credential-gated mailbox smoke`
 
 ## Current State
 
-`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, durable autonomous assignment records with operator controls, retention-aware assignment events with bounded summary compaction, deterministic scheduler-backed wakeup planning, bounded planner-promoted child assignment execution, explicit channel/API assignment intake, assignment-scoped autonomous mutation ledger evidence with read-only MCP/operator/export visibility, assignment-authorized autonomous operator-settings, opt-in assignment-policy, opt-in runtime config-limit overlay, opt-in approved read-only tool-bundle, opt-in prompt runtime-guidance, opt-in memory-policy runtime-bound, opt-in role permission-policy, opt-in project-file draft-record execution, opt-in high-risk single-draft project-file apply execution, and opt-in high-risk project-file draft-bundle apply execution with byte-exact rollback, planner-driven autonomous mutation markers routed through the assignment mutation executor, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, module-backed operator exports, a Codex-native `/chat` product surface with durable/searchable attachment continuity, explicit artifacts, and bounded automatic artifact extraction, hybrid long-term memory with Qdrant-backed vector recall, SQLite fallback, lifecycle controls, restart-safe maintenance, decay/reinforcement-aware ranking, governed self-evolution proposals with mutation module-backed operator-approved apply/rollback for settings changes, governed internal tool bundles with preview, approval, enable, disable, and uninstall lifecycle, and a disabled-by-default Email runtime channel with bounded IMAP polling and audited SMTP replies.
+`codex-phantom` is a Codex-first autonomous agent runtime with a working single-process Node service, SQLite persistence, durable autonomous assignment records with operator controls, retention-aware assignment events with bounded summary compaction, deterministic scheduler-backed wakeup planning, bounded planner-promoted child assignment execution with dependency waits, explicit channel/API assignment intake, assignment-scoped autonomous mutation ledger evidence with read-only MCP/operator/export visibility, assignment-authorized autonomous operator-settings, opt-in assignment-policy, opt-in runtime config-limit overlay, opt-in channel runtime-state toggles, opt-in approved read-only tool-bundle, opt-in prompt runtime-guidance and managed prompt fragments, opt-in memory-policy runtime-bound and memory entry-lifecycle mutations, opt-in role permission-policy, opt-in project-file draft-record execution, opt-in patch-draft records, opt-in high-risk single-draft and patch project-file apply execution, and opt-in high-risk project-file draft-bundle apply execution with byte-exact rollback, planner-driven autonomous mutation markers routed through the assignment mutation executor, resumable sessions, scoped subagents, MCP tool exposure, scheduling, operator APIs, a browser operator console, module-backed operator exports, a Codex-native `/chat` product surface with durable/searchable attachment continuity, explicit artifacts, and bounded automatic artifact extraction, hybrid long-term memory with Qdrant-backed vector recall, SQLite fallback, lifecycle controls, restart-safe maintenance, decay/reinforcement-aware ranking, governed self-evolution proposals with mutation module-backed operator-approved apply/rollback for settings changes, governed internal tool bundles with preview, approval, enable, disable, and uninstall lifecycle, and a disabled-by-default Email runtime channel with bounded IMAP polling, audited SMTP replies, and credential-gated live mailbox smoke proof.
 
 The project is now past its first serious production-hardening pass. It is not yet equivalent to the original Phantom project, but the core runtime is materially safer to run: request sizes are bounded, secrets are rejected in production when defaults are used, outbound model calls have timeouts, scheduler jobs recover deterministically after restarts, MCP events are durably audited, external webhooks are signed, Slack sends retry transient failures, operator-console workflows have browser coverage, and the Docker image runs compiled JavaScript instead of stripped TypeScript.
 
 ## Just Completed
+
+P1/P2 parity completion wave completed locally on 2026-06-21:
+
+- Split autonomous mutation adapters into focused domain modules without changing runtime behavior.
+- Added deeper parent/child dependency orchestration with `dependsOnChildIds`, `waitForChildren: "all" | "any"`, same-parent existing-sibling validation, dependent parking, parent wakeups, and durable blocked evidence when required dependencies fail.
+- Added explicit-policy high-risk autonomous mutation classes for `prompt.managed_fragment`, `memory.entry_lifecycle`, and `configuration.channel_state`, each with validation, before/after/rollback evidence, stale-rollback protection where needed, planner marker routing, admin/internal execution, and read-only MCP preservation.
+- Added project-file patch semantics through `project_file.patch_draft` records and high-risk `project_file.apply_patch` execution, using bounded unified-diff parsing, safe path checks, context checks, per-file byte snapshots, rollback evidence, and rollback-conflict protection.
+- Added a credential-gated `npm run smoke:mailbox:live` proof path for live IMAP/SMTP providers. Missing credentials or a missing explicit non-runtime smoke recipient produce JSON `skipped` results and exit successfully; fake IMAP/SMTP tests remain the release gate when live credentials are absent.
+- Kept proposal-based self-evolution APIs unchanged, kept MCP assignment mutation tooling read-only, and completed GPT-5.4 xhigh reviewer loops for each atomic commit with Critical/Important findings addressed before commit.
+
+Verification from this wave:
+
+```bash
+npm run smoke:mailbox:live
+node --experimental-strip-types --test tests/assignment-autonomous-mutations.test.ts tests/assignment-wakeup-planner.test.ts tests/assignments.test.ts tests/server.test.ts tests/mcp.test.ts
+node --experimental-strip-types --test tests/memory.test.ts tests/memory-maintenance.test.ts tests/orchestration.test.ts tests/operator-export.test.ts tests/self-evolution-mutations.test.ts
+npm run typecheck
+npm test
+npm run build
+git diff --check
+npm_config_cache=/tmp/codex-npm-cache-complete-p1-p2 npx gitnexus detect-changes --scope staged --repo codex-phantom
+GPT-5.4 xhigh reviewer loops: Critical/Important findings addressed for each atomic commit
+```
+
+Live mailbox proof status: credential-blocked locally because `EMAIL_IMAP_*`, `EMAIL_SMTP_*`, `EMAIL_FROM_ADDRESS`, and an explicit `EMAIL_SMOKE_TO_ADDRESS` were not present; the smoke command returned JSON `skipped` with exit 0.
 
 Autonomous project-file draft-bundle apply mutation wave completed locally on 2026-06-17:
 
@@ -1033,15 +1058,15 @@ Use `docs/phantom-parity.md` as the canonical production-level parity roadmap. K
 
 Suggested work:
 
-- Add additional mutation classes one at a time only after each has explicit assignment self-evolution policy, adapter-level rollback evidence, and service/HTTP safety coverage.
-- Continue with remaining mutation classes, such as broader configuration, bounded runtime prompt rewriting, broader memory mutation, or deeper parent/child execution controls, only when each class has explicit assignment self-evolution policy and rollback evidence.
-- Keep deeper parent/child dependency orchestration separate from mutation-adapter expansion so mutation authority does not expand by accident.
+- No open P1 parity item remains from the current safe autonomous-mutation slice.
+- Treat any future mutation expansion as new scope, not parity cleanup: secrets/auth mutation, package install, git staging/commit/push, broad source rewriting, write-capable MCP tooling, and unrestricted prompt/tool/filesystem mutation remain out of scope unless a new ADR explicitly authorizes them.
+- Keep future mutation classes one at a time with explicit assignment self-evolution policy, adapter-level rollback evidence, and service/HTTP safety coverage.
 
 ### P2: Channel And Parity Polish
 
 Suggested work:
 
-- Run an optional live mailbox smoke once provider credentials are available to validate real provider behavior on top of the fake transport test matrix.
+- Run the credential-gated live mailbox smoke against a real provider once `EMAIL_IMAP_*`, `EMAIL_SMTP_*`, `EMAIL_FROM_ADDRESS`, and an explicit non-runtime `EMAIL_SMOKE_TO_ADDRESS` are available.
 - Tighten operator-facing polish only if real mailbox usage reveals gaps in diagnostics, summaries, or delivery visibility.
 - Keep roadmap detail in `docs/phantom-parity.md`; do not reopen Email as a missing parity feature.
 

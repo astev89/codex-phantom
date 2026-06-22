@@ -24,7 +24,12 @@ export type MemoryRow = {
   embedding_json: string | null;
   source_session_id: string | null;
   source_run_id: string | null;
-  lifecycle_state?: "active" | "superseded" | "contradicted" | null;
+  lifecycle_state?:
+    | "active"
+    | "superseded"
+    | "contradicted"
+    | "deactivated"
+    | null;
   superseded_by_memory_id?: string | null;
   contradicted_by_memory_id?: string | null;
   vector_backend: "qdrant" | "sqlite_fallback" | null;

@@ -16,6 +16,7 @@ import type { SelfEvolutionRiskClass } from "../self-evolution/proposals.ts";
 
 export type AutonomousMutationTarget =
   | "prompt"
+  | "memory"
   | "memory_policy"
   | "tool"
   | "role"
@@ -24,6 +25,7 @@ export type AutonomousMutationTarget =
 
 export const AUTONOMOUS_MUTATION_TARGETS = [
   "prompt",
+  "memory",
   "memory_policy",
   "tool",
   "role",
@@ -106,6 +108,7 @@ export type RecordFailedAutonomousMutationOutcomeInput = {
   before?: JsonValue;
   after?: JsonValue;
   rollback?: JsonValue;
+  affectedResources?: JsonValue;
   verification?: JsonValue;
 };
 
@@ -325,6 +328,7 @@ export class AutonomousMutationLedger {
               before_json = ?,
               after_json = ?,
               rollback_json = ?,
+              affected_resources_json = ?,
               verification_json = ?,
               error_message = ?,
               updated_at = ?,
@@ -334,6 +338,9 @@ export class AutonomousMutationLedger {
         encodeJson(toJsonOrNull(input.before)),
         encodeJson(toJsonOrNull(input.after)),
         encodeJson(toJsonOrNull(input.rollback)),
+        encodeJson(
+          toJsonOrExisting(input.affectedResources, current.affectedResources)
+        ),
         encodeJson(toJsonOrNull(input.verification)),
         errorMessage,
         now,
@@ -453,33 +460,68 @@ export class AutonomousMutationLedger {
     assignmentId: string;
     target: AutonomousMutationTarget;
     mutationType: string;
+    mutationTypes?: readonly string[];
     appliedAt: string;
     id: string;
-    scope?: "assignment" | "global";
+    scope?: "assignment" | "global" | "affected_resources";
+    affectedResources?: JsonValue;
   }): AutonomousMutationRecord | null {
     assertTarget(input.target);
     const scope = input.scope ?? "assignment";
     const assignmentFilter =
       scope === "assignment" ? "AND candidate.assignment_id = ?" : "";
+    const mutationTypes =
+      input.mutationTypes && input.mutationTypes.length > 0
+        ? input.mutationTypes.map((mutationType) =>
+            requireText(mutationType, "mutationTypes")
+          )
+        : [requireText(input.mutationType, "mutationType")];
+    const mutationTypePlaceholders = mutationTypes.map(() => "?").join(", ");
+    const resourcePairs =
+      scope === "affected_resources"
+        ? affectedResourcePairs(input.affectedResources)
+        : [];
+    if (scope === "affected_resources" && resourcePairs.length === 0) {
+      return null;
+    }
+    const affectedResourceFilter =
+      scope === "affected_resources" && resourcePairs.length > 0
+        ? `AND EXISTS (
+            SELECT 1
+            FROM json_each(candidate.affected_resources_json) AS resource
+            WHERE ${resourcePairs
+              .map(
+                () =>
+                  "(json_extract(resource.value, '$.type') = ? AND (json_extract(resource.value, '$.id') = ? OR json_extract(resource.value, '$.path') = ?))"
+              )
+              .join(" OR ")}
+          )`
+        : "";
     const values = [
       requireText(input.id, "id"),
       ...(scope === "assignment"
         ? [requireText(input.assignmentId, "assignmentId")]
         : []),
       input.target,
-      requireText(input.mutationType, "mutationType"),
+      ...mutationTypes,
+      ...resourcePairs.flatMap((resource) => [
+        resource.type,
+        resource.resourceId,
+        resource.resourceId,
+      ]),
       requireText(input.appliedAt, "appliedAt"),
       requireText(input.appliedAt, "appliedAt"),
     ];
-    const row = this.database.get<AutonomousMutationRow>(
+    const rows = this.database.all<AutonomousMutationRow>(
       `
         SELECT candidate.* FROM assignment_mutations AS candidate
         JOIN assignment_mutations AS current ON current.id = ?
         WHERE 1 = 1
           ${assignmentFilter}
           AND candidate.target = ?
-          AND candidate.mutation_type = ?
+          AND candidate.mutation_type IN (${mutationTypePlaceholders})
           AND candidate.status = 'applied'
+          ${affectedResourceFilter}
           AND (
             candidate.applied_at > ?
             OR (
@@ -488,11 +530,12 @@ export class AutonomousMutationLedger {
             )
           )
         ORDER BY candidate.applied_at DESC, candidate.rowid DESC
-        LIMIT 1
+        LIMIT ?
       `,
-      ...values
+      ...values,
+      1
     );
-    return row ? toAutonomousMutationRecord(row) : null;
+    return rows[0] ? toAutonomousMutationRecord(rows[0]) : null;
   }
 
   private getRequired(id: string): AutonomousMutationRecord {
@@ -566,7 +609,7 @@ function normalizeBaseInput(
 function assertTarget(target: AutonomousMutationTarget): void {
   if (!TARGETS.has(target)) {
     throw new Error(
-      "target must be prompt, memory_policy, tool, role, configuration, or project_file"
+      "target must be prompt, memory, memory_policy, tool, role, configuration, or project_file"
     );
   }
 }
@@ -675,4 +718,37 @@ function toAutonomousMutationRecord(
     rolledBackAt: row.rolled_back_at ?? undefined,
     notifiedAt: row.notified_at ?? undefined,
   };
+}
+
+function affectedResourcePairs(
+  value: JsonValue | undefined
+): { type: string; resourceId: string }[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const pairs: { type: string; resourceId: string }[] = [];
+  const seen = new Set<string>();
+  for (const item of value) {
+    if (
+      item &&
+      typeof item === "object" &&
+      !Array.isArray(item) &&
+      typeof item.type === "string"
+    ) {
+      const resourceId =
+        typeof item.id === "string"
+          ? item.id
+          : typeof item.path === "string"
+            ? item.path
+            : undefined;
+      if (resourceId) {
+        const key = `${item.type}:${resourceId}`;
+        if (!seen.has(key)) {
+          pairs.push({ type: item.type, resourceId });
+          seen.add(key);
+        }
+      }
+    }
+  }
+  return pairs;
 }

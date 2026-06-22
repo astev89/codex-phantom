@@ -63,7 +63,7 @@ export type MemoryEntry = {
   isSummary: boolean;
   isFact: boolean;
   parentSummaryId?: string;
-  lifecycleState?: "active" | "superseded" | "contradicted";
+  lifecycleState?: "active" | "superseded" | "contradicted" | "deactivated";
   supersededByMemoryId?: string;
   contradictedByMemoryId?: string;
   lifecycleLinks?: MemoryLifecycleLink[];

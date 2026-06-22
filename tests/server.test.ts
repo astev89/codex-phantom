@@ -28,7 +28,11 @@ import {
   rolePolicyRuntimeSnapshot,
 } from "../src/orchestration/role-policy-runtime.ts";
 import { ProjectFileDraftStore } from "../src/project-files/drafts.ts";
-import { PromptRuntimeGuidanceStore } from "../src/prompts/runtime-guidance.ts";
+import { ProjectFilePatchDraftStore } from "../src/project-files/patches.ts";
+import {
+  PromptManagedFragmentStore,
+  PromptRuntimeGuidanceStore,
+} from "../src/prompts/runtime-guidance.ts";
 import { ToolRegistry } from "../src/tools/registry.ts";
 import { DynamicToolRegistry } from "../src/tools/dynamic-registry.ts";
 import { ToolGovernanceService } from "../src/tools/governance.ts";
@@ -827,6 +831,8 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     loadRolePolicyConfig(config.roleConfigPath)
   );
   const projectFileDrafts = new ProjectFileDraftStore(database);
+  const projectFilePatchDrafts = new ProjectFilePatchDraftStore(database);
+  const promptFragments = new PromptManagedFragmentStore(database);
 
   const runtime = new AgentRuntime(
     config,
@@ -834,7 +840,8 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     sessions,
     memory,
     tools,
-    promptGuidance
+    promptGuidance,
+    promptFragments
   );
   const runs = new RunGraphStore(database);
   const orchestration = new OrchestrationService(runtime, tools, runs);
@@ -909,10 +916,13 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     undefined,
     assignmentMutations,
     promptGuidance,
+    promptFragments,
     memoryPolicy,
     runtimeConfigLimits,
     rolePolicy,
-    projectFileDrafts
+    projectFileDrafts,
+    undefined,
+    projectFilePatchDrafts
   );
   const instance = await server.listen();
   const address = instance.address();
@@ -1584,6 +1594,97 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       runtimeLimitsBefore.defaultMaxToolCalls
     );
 
+    const channelAssignmentCreate = await fetch(`${baseUrl}/admin/assignments`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.operatorBearerToken}`,
+      },
+      body: JSON.stringify({
+        objective: "Autonomously tune channel state",
+        autonomyLevel: "evolve",
+        policy: {
+          selfEvolution: {
+            allowedMutationClasses: [
+              "configuration.operator_settings",
+              "configuration.channel_state",
+            ],
+            maxRiskClass: "high",
+          },
+        },
+      }),
+    });
+    assert.equal(channelAssignmentCreate.status, 201);
+    const channelAssignmentJson = (await channelAssignmentCreate.json()) as {
+      assignment: { id: string };
+    };
+
+    const channelApply = await fetch(
+      `${baseUrl}/admin/assignments/${channelAssignmentJson.assignment.id}/mutations/apply`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          target: "configuration",
+          mutationType: "channel_state",
+          riskClass: "high",
+          rationale: "Pause webhook intake from the admin surface.",
+          runId: "coord_http_channel_state",
+          actor: "operator",
+          proposedChange: {
+            channelState: {
+              channelId: "webhook",
+              enabled: false,
+            },
+          },
+        }),
+      }
+    );
+    assert.equal(channelApply.status, 200);
+    const channelApplyJson = (await channelApply.json()) as {
+      mutation: {
+        id: string;
+        status: string;
+        mutationType: string;
+        affectedResources: unknown;
+      };
+    };
+    assert.equal(channelApplyJson.mutation.status, "applied");
+    assert.equal(channelApplyJson.mutation.mutationType, "channel_state");
+    assert.deepEqual(channelApplyJson.mutation.affectedResources, [
+      { type: "channel", id: "webhook" },
+    ]);
+
+    const channelSummary = await fetch(`${baseUrl}/admin/summary`, {
+      headers: { Authorization: `Bearer ${config.operatorBearerToken}` },
+    });
+    assert.equal(channelSummary.status, 200);
+    const channelSummaryJson = (await channelSummary.json()) as {
+      channels: Array<{ id: string; enabled: boolean }>;
+    };
+    assert.ok(
+      channelSummaryJson.channels.some(
+        (channel) => channel.id === "webhook" && channel.enabled === false
+      )
+    );
+
+    const channelRollback = await fetch(
+      `${baseUrl}/admin/assignments/${channelAssignmentJson.assignment.id}/mutations/${channelApplyJson.mutation.id}/rollback`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({ actor: "operator" }),
+      }
+    );
+    assert.equal(channelRollback.status, 200);
+    assert.equal(channels.get("webhook")?.enabled, true);
+
     promptGuidance.update("Prefer neutral summaries.", "operator");
     const promptAssignmentCreate = await fetch(`${baseUrl}/admin/assignments`, {
       method: "POST",
@@ -1759,6 +1860,133 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       }
     );
     assert.equal(promptGuidance.get().text, "Prefer neutral summaries.");
+
+    const fragmentAssignmentCreate = await fetch(
+      `${baseUrl}/admin/assignments`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          objective: "Autonomously tune a managed prompt fragment",
+          autonomyLevel: "evolve",
+          policy: {
+            selfEvolution: {
+              allowedMutationClasses: [
+                "configuration.operator_settings",
+                "prompt.managed_fragment",
+              ],
+              maxRiskClass: "high",
+            },
+          },
+        }),
+      }
+    );
+    assert.equal(fragmentAssignmentCreate.status, 201);
+    const fragmentAssignmentJson =
+      (await fragmentAssignmentCreate.json()) as {
+        assignment: { id: string };
+      };
+
+    const fragmentApply = await fetch(
+      `${baseUrl}/admin/assignments/${fragmentAssignmentJson.assignment.id}/mutations/apply`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          target: "prompt",
+          mutationType: "managed_fragment",
+          rationale: "Add a bounded runtime fragment.",
+          runId: "coord_http_prompt_fragment",
+          actor: "operator",
+          riskClass: "high",
+          proposedChange: {
+            promptFragment: {
+              id: "tone",
+              mode: "upsert",
+              text: "Prefer concise operator summaries.",
+            },
+          },
+        }),
+      }
+    );
+    assert.equal(fragmentApply.status, 200);
+    const fragmentApplyJson = (await fragmentApply.json()) as {
+      mutation: {
+        id: string;
+        status: string;
+        target: string;
+        mutationType: string;
+        before: {
+          id: string;
+          text: string;
+          active: boolean;
+          exists: boolean;
+        };
+        after: { id: string; text: string; active: boolean; exists: boolean };
+        rollback: unknown;
+      };
+    };
+    assert.deepEqual(
+      {
+        status: fragmentApplyJson.mutation.status,
+        target: fragmentApplyJson.mutation.target,
+        mutationType: fragmentApplyJson.mutation.mutationType,
+        before: fragmentApplyJson.mutation.before,
+        after: fragmentApplyJson.mutation.after,
+      },
+      {
+        status: "applied",
+        target: "prompt",
+        mutationType: "managed_fragment",
+        before: { id: "tone", text: "", active: false, exists: false },
+        after: {
+          id: "tone",
+          text: "Prefer concise operator summaries.",
+          active: true,
+          exists: true,
+        },
+      }
+    );
+    assert.deepEqual(fragmentApplyJson.mutation.rollback, {
+      promptFragment: { id: "tone", mode: "delete" },
+    });
+    assert.equal(
+      promptFragments.get("tone")?.text,
+      "Prefer concise operator summaries."
+    );
+
+    const fragmentRollback = await fetch(
+      `${baseUrl}/admin/assignments/${fragmentAssignmentJson.assignment.id}/mutations/${fragmentApplyJson.mutation.id}/rollback`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({ actor: "operator" }),
+      }
+    );
+    assert.equal(fragmentRollback.status, 200);
+    const fragmentRollbackJson = (await fragmentRollback.json()) as {
+      mutation: { id: string; status: string };
+    };
+    assert.deepEqual(
+      {
+        id: fragmentRollbackJson.mutation.id,
+        status: fragmentRollbackJson.mutation.status,
+      },
+      {
+        id: fragmentApplyJson.mutation.id,
+        status: "rolled_back",
+      }
+    );
+    assert.equal(promptFragments.get("tone"), null);
 
     const memoryPolicyBefore = {
       memoryTopK: memoryPolicy.get().memoryTopK,
@@ -2158,6 +2386,8 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
                 "project_file.draft",
                 "project_file.apply_draft",
                 "project_file.apply_bundle",
+                "project_file.patch_draft",
+                "project_file.apply_patch",
               ],
             },
           },
@@ -2329,6 +2559,121 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
     assert.equal(projectFileRollback.status, 200);
     assert.equal(
       projectFileDrafts.get(projectFileDraft?.id ?? "")?.status,
+      "rolled_back"
+    );
+
+    const projectFilePatchPath = join(
+      process.cwd(),
+      "docs/http-project-file-patch.md"
+    );
+    if (existsSync(projectFilePatchPath)) {
+      unlinkSync(projectFilePatchPath);
+    }
+    const projectFilePatchDraftApply = await fetch(
+      `${baseUrl}/admin/assignments/${projectFileAssignmentJson.assignment.id}/mutations/apply`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          target: "project_file",
+          mutationType: "patch_draft",
+          riskClass: "high",
+          rationale: "Draft a patch for operator review.",
+          proposedChange: {
+            projectFilePatchDraft: {
+              patch: [
+                "diff --git a/docs/http-project-file-patch.md b/docs/http-project-file-patch.md",
+                "new file mode 100644",
+                "index 0000000..1111111",
+                "--- /dev/null",
+                "+++ b/docs/http-project-file-patch.md",
+                "@@ -0,0 +1,1 @@",
+                "+# HTTP Patch",
+                "",
+              ].join("\n"),
+            },
+          },
+        }),
+      }
+    );
+    assert.equal(projectFilePatchDraftApply.status, 200);
+    const projectFilePatchDraftApplyJson =
+      (await projectFilePatchDraftApply.json()) as {
+        mutation: {
+          id: string;
+          status: string;
+          rollback: { projectFilePatchDraft: { id: string } };
+        };
+      };
+    const patchDraftId =
+      projectFilePatchDraftApplyJson.mutation.rollback.projectFilePatchDraft.id;
+    assert.equal(projectFilePatchDraftApplyJson.mutation.status, "applied");
+    assert.equal(projectFilePatchDrafts.get(patchDraftId)?.status, "active");
+    assert.equal(existsSync(projectFilePatchPath), false);
+
+    const projectFilePatchApply = await fetch(
+      `${baseUrl}/admin/assignments/${projectFileAssignmentJson.assignment.id}/mutations/apply`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({
+          target: "project_file",
+          mutationType: "apply_patch",
+          riskClass: "high",
+          rationale: "Apply reviewed project file patch.",
+          proposedChange: {
+            projectFilePatchApply: {
+              draftId: patchDraftId,
+            },
+          },
+        }),
+      }
+    );
+    assert.equal(projectFilePatchApply.status, 200);
+    const projectFilePatchApplyJson =
+      (await projectFilePatchApply.json()) as {
+        mutation: { id: string; status: string; mutationType: string };
+    };
+    assert.equal(projectFilePatchApplyJson.mutation.status, "applied");
+    assert.equal(projectFilePatchApplyJson.mutation.mutationType, "apply_patch");
+    assert.equal(readFileSync(projectFilePatchPath, "utf8"), "# HTTP Patch\n");
+    assert.equal(projectFilePatchDrafts.get(patchDraftId)?.status, "applied");
+
+    const projectFilePatchRollback = await fetch(
+      `${baseUrl}/admin/assignments/${projectFileAssignmentJson.assignment.id}/mutations/${projectFilePatchApplyJson.mutation.id}/rollback`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({ actor: "operator" }),
+      }
+    );
+    assert.equal(projectFilePatchRollback.status, 200);
+    assert.equal(existsSync(projectFilePatchPath), false);
+    assert.equal(projectFilePatchDrafts.get(patchDraftId)?.status, "active");
+
+    const projectFilePatchDraftRollback = await fetch(
+      `${baseUrl}/admin/assignments/${projectFileAssignmentJson.assignment.id}/mutations/${projectFilePatchDraftApplyJson.mutation.id}/rollback`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.operatorBearerToken}`,
+        },
+        body: JSON.stringify({ actor: "operator" }),
+      }
+    );
+    assert.equal(projectFilePatchDraftRollback.status, 200);
+    assert.equal(
+      projectFilePatchDrafts.get(patchDraftId)?.status,
       "rolled_back"
     );
 
@@ -2875,6 +3220,58 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
             job.status === "scheduled"
         )
     );
+
+    const operatorDependencyParent = assignments.create({
+      objective: "Coordinate operator dependency control",
+      policy: {
+        maxWakeups: 5,
+        childAssignments: { maxDepth: 1, maxActiveChildren: 1 },
+      },
+    });
+    const operatorDependencyChild = assignments.promoteChild({
+      parentAssignmentId: operatorDependencyParent.assignment.id,
+      objective: "Waited child cancelled through HTTP",
+      rationale: "Operator cancellation should release the parent promptly.",
+      waitForChild: true,
+      policy: { maxWakeups: 1 },
+    });
+    await scheduler.stop();
+    try {
+      const parkedParentJob = await assignmentWakeups.scheduleNext({
+        assignmentId: operatorDependencyParent.assignment.id,
+        reason: "Waiting for child assignment",
+        delayMinutes: 120,
+      });
+      const cancelWaitedChild = await fetch(
+        `${baseUrl}/admin/assignments/${operatorDependencyChild.child.assignment.id}/control`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${config.operatorBearerToken}`,
+          },
+          body: JSON.stringify({
+            action: "cancel",
+            reason: "Operator cancelled waited child",
+          }),
+        }
+      );
+      assert.equal(cancelWaitedChild.status, 200);
+      const rescheduledParentJob = (await scheduler.list()).find(
+        (job) => job.id === parkedParentJob.id
+      );
+      assert.ok(rescheduledParentJob);
+      assert.equal(rescheduledParentJob.status, "scheduled");
+      assert.deepEqual(JSON.parse(rescheduledParentJob.message), {
+        assignmentId: operatorDependencyParent.assignment.id,
+        reason: "Waited child assignments satisfied",
+      });
+      assert.ok(
+        Date.parse(rescheduledParentJob.scheduledAt) <= Date.now() + 1000
+      );
+    } finally {
+      await scheduler.start();
+    }
     const disableFailureNotifications = await fetch(
       `${baseUrl}/admin/assignments/${assignmentCreateJson.assignment.id}/control`,
       {
@@ -4051,6 +4448,43 @@ test("chat streaming, health, scheduler, channels, and mcp routes work", async (
       assignmentWebhookJson.nextJob.name,
       ASSIGNMENT_WAKEUP_JOB_NAME
     );
+
+    channels.upsert({ id: "webhook", enabled: false });
+    const disabledAssignmentWebhookBody = JSON.stringify({
+      conversationId: "disabled-hook-assignment",
+      message: "This disabled webhook assignment must not be created.",
+      assignment: { create: true },
+    });
+    const disabledAssignmentWebhookResponse = await fetch(
+      `http://127.0.0.1:${port}/channels/webhook`,
+      {
+        method: "POST",
+        headers: signedWebhookHeaders(
+          config.externalChannelSecret,
+          disabledAssignmentWebhookBody
+        ),
+        body: disabledAssignmentWebhookBody,
+      }
+    );
+    assert.equal(disabledAssignmentWebhookResponse.status, 409);
+    const disabledAssignmentWebhookJson =
+      (await disabledAssignmentWebhookResponse.json()) as {
+        error: string;
+      };
+    assert.equal(
+      disabledAssignmentWebhookJson.error,
+      "webhook channel is not enabled"
+    );
+    assert.equal(
+      assignments
+        .list({ sourceChannelId: "webhook" })
+        .some(
+          (record) =>
+            record.source.conversationId === "disabled-hook-assignment"
+        ),
+      false
+    );
+    channels.upsert({ id: "webhook", enabled: true });
 
     const sessionBackedAssignmentResponse = await fetch(
       `http://127.0.0.1:${port}/chat/message`,

@@ -79,6 +79,11 @@ export function loadConfig(): AppConfig {
   const datastorePath =
     process.env.CODEX_PHANTOM_DATABASE_PATH ??
     join(dataDir, "codex-phantom.sqlite");
+  const emailSmtpPort = parsePositiveInteger(
+    process.env.EMAIL_SMTP_PORT,
+    587,
+    "EMAIL_SMTP_PORT"
+  );
 
   const config: AppConfig = {
     appEnv,
@@ -155,16 +160,12 @@ export function loadConfig(): AppConfig {
       "EMAIL_IMAP_TLS"
     ),
     emailSmtpHost: process.env.EMAIL_SMTP_HOST,
-    emailSmtpPort: parsePositiveInteger(
-      process.env.EMAIL_SMTP_PORT,
-      587,
-      "EMAIL_SMTP_PORT"
-    ),
+    emailSmtpPort,
     emailSmtpUsername: process.env.EMAIL_SMTP_USERNAME,
     emailSmtpPassword: process.env.EMAIL_SMTP_PASSWORD,
     emailSmtpTls: parseBoolean(
       process.env.EMAIL_SMTP_TLS,
-      true,
+      emailSmtpPort === 465,
       "EMAIL_SMTP_TLS"
     ),
     emailFromAddress: process.env.EMAIL_FROM_ADDRESS,

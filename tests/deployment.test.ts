@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 test("package scripts and build config target a compiled production runtime", async () => {
   const packageJson = JSON.parse(await readFile("package.json", "utf8")) as {
@@ -10,6 +14,10 @@ test("package scripts and build config target a compiled production runtime", as
 
   assert.equal(packageJson.scripts?.build, "tsc -p tsconfig.build.json");
   assert.equal(packageJson.scripts?.start, "node dist/index.js");
+  assert.equal(
+    packageJson.scripts?.["smoke:mailbox:live"],
+    "node scripts/mailbox-live-smoke.mjs"
+  );
   assert.match(buildTsconfig, /"outDir":\s*"dist"/);
   assert.match(buildTsconfig, /"rootDir":\s*"src"/);
   assert.match(buildTsconfig, /"rewriteRelativeImportExtensions":\s*true/);
@@ -79,6 +87,10 @@ test("deployment smoke scripts and docs cover boot, restart persistence, and bac
     "scripts/slack-tunnel-smoke.mjs",
     "utf8"
   );
+  const mailboxSmokeScript = await readFile(
+    "scripts/mailbox-live-smoke.mjs",
+    "utf8"
+  );
   const seedScript = await readFile("scripts/restore-smoke-seed.mjs", "utf8");
   const readme = await readFile("README.md", "utf8");
   const parity = await readFile("docs/phantom-parity.md", "utf8");
@@ -113,6 +125,20 @@ test("deployment smoke scripts and docs cover boot, restart persistence, and bac
     /\/admin\/channels\/inbound\?channelId=slack/
   );
   assert.doesNotMatch(slackTunnelScript, /trycloudflare\.com/);
+  assert.match(mailboxSmokeScript, /^#!\/usr\/bin\/env node/);
+  assert.match(mailboxSmokeScript, /EMAIL_IMAP_HOST/);
+  assert.match(mailboxSmokeScript, /EMAIL_SMTP_HOST/);
+  assert.match(mailboxSmokeScript, /EMAIL_SMOKE_TO_ADDRESS/);
+  assert.match(mailboxSmokeScript, /missing_credentials/);
+  assert.match(mailboxSmokeScript, /client\.status/);
+  assert.match(mailboxSmokeScript, /sendMail/);
+  assert.match(mailboxSmokeScript, /const smtpPort = positiveInteger/);
+  assert.match(
+    mailboxSmokeScript,
+    /secure: booleanEnv\(process\.env\.EMAIL_SMTP_TLS, smtpPort === 465\)/
+  );
+  assert.doesNotMatch(mailboxSmokeScript, /console\.log\(process\.env/);
+  assert.doesNotMatch(mailboxSmokeScript, /pass:\s*process\.env/);
   assert.match(restoreScript, /docker volume rm codex-phantom-data/);
   assert.match(restoreScript, /docker volume create codex-phantom-data/);
   assert.match(restoreScript, /codex-phantom-data\.tgz/);
@@ -137,4 +163,54 @@ test("deployment smoke scripts and docs cover boot, restart persistence, and bac
   assert.match(readme, /codex-phantom-data/);
   assert.match(parity, /Compiled production runtime/);
   assert.match(parity, /dist\/index\.js/);
+});
+
+test("mailbox live smoke skips cleanly without credentials", async () => {
+  const { stdout } = await execFileAsync(
+    process.execPath,
+    ["scripts/mailbox-live-smoke.mjs"],
+    {
+      env: { PATH: process.env.PATH ?? "" },
+    }
+  );
+  const result = JSON.parse(stdout) as {
+    status?: string;
+    reason?: string;
+    missing?: string[];
+  };
+
+  assert.equal(result.status, "skipped");
+  assert.equal(result.reason, "missing_credentials");
+  assert.ok(result.missing?.includes("EMAIL_IMAP_HOST"));
+  assert.ok(result.missing?.includes("EMAIL_SMTP_HOST"));
+});
+
+test("mailbox live smoke requires an explicit non-runtime recipient", async () => {
+  const { stdout } = await execFileAsync(
+    process.execPath,
+    ["scripts/mailbox-live-smoke.mjs"],
+    {
+      env: {
+        PATH: process.env.PATH ?? "",
+        EMAIL_IMAP_HOST: "imap.example.test",
+        EMAIL_IMAP_USERNAME: "user@example.test",
+        EMAIL_IMAP_PASSWORD: "imap-password",
+        EMAIL_SMTP_HOST: "smtp.example.test",
+        EMAIL_SMTP_USERNAME: "user@example.test",
+        EMAIL_SMTP_PASSWORD: "smtp-password",
+        EMAIL_FROM_ADDRESS: "runtime@example.test",
+      },
+    }
+  );
+  const result = JSON.parse(stdout) as {
+    status?: string;
+    reason?: string;
+    missing?: string[];
+    message?: string;
+  };
+
+  assert.equal(result.status, "skipped");
+  assert.equal(result.reason, "missing_recipient");
+  assert.deepEqual(result.missing, ["EMAIL_SMOKE_TO_ADDRESS"]);
+  assert.match(result.message ?? "", /non-runtime mailbox/);
 });

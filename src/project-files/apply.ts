@@ -10,6 +10,10 @@ import {
 } from "node:fs";
 import { dirname, resolve, sep } from "node:path";
 import { normalizeProjectFilePath } from "./drafts.ts";
+import {
+  parseUnifiedProjectFilePatch,
+  type ProjectFileParsedFilePatch,
+} from "./patches.ts";
 
 export type ProjectFileApplyBeforeSnapshot = {
   path: string;
@@ -29,6 +33,20 @@ export type ProjectFileApplyResult = {
     sizeBytes: number;
     sha256: string;
   };
+};
+
+export type ProjectFilePatchApplyItem = {
+  path: string;
+  before: ProjectFileApplyBeforeSnapshot;
+  after: {
+    path: string;
+    sizeBytes: number;
+    sha256: string;
+  };
+};
+
+export type ProjectFilePatchApplyResult = {
+  files: ProjectFilePatchApplyItem[];
 };
 
 export class ProjectFileApplyService {
@@ -56,6 +74,33 @@ export class ProjectFileApplyService {
         sha256: sha256(afterContent),
       },
     };
+  }
+
+  applyPatch(input: { patch: string }): ProjectFilePatchApplyResult {
+    const parsed = parseUnifiedProjectFilePatch(input.patch);
+    const planned = parsed.files.map((filePatch) =>
+      this.planPatchFile(filePatch)
+    );
+    const files: ProjectFilePatchApplyItem[] = [];
+    try {
+      for (const item of planned) {
+        const result = this.apply({
+          path: item.path,
+          content: item.afterContent,
+        });
+        files.push({
+          path: item.path,
+          before: result.before,
+          after: result.after,
+        });
+      }
+    } catch (error) {
+      for (const file of files.slice().reverse()) {
+        this.rollback(file.before);
+      }
+      throw error;
+    }
+    return { files };
   }
 
   rollback(snapshot: ProjectFileApplyBeforeSnapshot): void {
@@ -96,6 +141,33 @@ export class ProjectFileApplyService {
     };
   }
 
+  private planPatchFile(filePatch: ProjectFileParsedFilePatch): {
+    path: string;
+    before: ProjectFileApplyBeforeSnapshot;
+    afterContent: string;
+  } {
+    const path = normalizeProjectFilePath(filePatch.path);
+    const absolutePath = this.resolveProjectPath(path);
+    this.assertNoSymlinkSegments(path);
+    const before = this.snapshot(path, absolutePath);
+    const beforeContent = before.existed
+      ? readTextProjectFile(absolutePath, path)
+      : "";
+    if (before.existed && !filePatch.oldPath) {
+      throw new Error(
+        `projectFilePatch.creation patch cannot target existing file: ${path}`
+      );
+    }
+    if (!before.existed && filePatch.oldPath) {
+      throw new Error(`projectFilePatch.path does not exist: ${path}`);
+    }
+    return {
+      path,
+      before,
+      afterContent: applyParsedFilePatch(beforeContent, filePatch),
+    };
+  }
+
   private resolveProjectPath(path: string): string {
     const absolutePath = resolve(this.repoRoot, path);
     if (
@@ -128,4 +200,73 @@ function snapshotBytes(snapshot: ProjectFileApplyBeforeSnapshot): Buffer {
 
 function sha256(content: string | Buffer): string {
   return createHash("sha256").update(content).digest("hex");
+}
+
+function readTextProjectFile(absolutePath: string, path: string): string {
+  const content = readFileSync(absolutePath);
+  if (content.includes(0)) {
+    throw new Error(`projectFilePatch.path must be text: ${path}`);
+  }
+  return content.toString("utf8").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+}
+
+function applyParsedFilePatch(
+  content: string,
+  filePatch: ProjectFileParsedFilePatch
+): string {
+  const originalLines = splitPatchContentLines(content);
+  const originalEndsWithNewline = content.endsWith("\n");
+  const output: string[] = [];
+  let originalIndex = 0;
+  for (const hunk of filePatch.hunks) {
+    const hunkStart = hunk.oldStart === 0 ? 0 : hunk.oldStart - 1;
+    if (hunkStart < originalIndex || hunkStart > originalLines.length) {
+      throw new Error(
+        `projectFilePatch.context does not match for ${filePatch.path}`
+      );
+    }
+    output.push(...originalLines.slice(originalIndex, hunkStart));
+    originalIndex = hunkStart;
+    for (const line of hunk.lines) {
+      if (line.kind === "add") {
+        output.push(line.text);
+        continue;
+      }
+      if (originalLines[originalIndex] !== line.text) {
+        throw new Error(
+          `projectFilePatch.context does not match for ${filePatch.path}`
+        );
+      }
+      if (line.kind === "context") {
+        output.push(line.text);
+      }
+      originalIndex += 1;
+    }
+  }
+  output.push(...originalLines.slice(originalIndex));
+  let result = output.join("\n");
+  const finalHunk = filePatch.hunks.at(-1);
+  const finalHunkTouchesEnd =
+    finalHunk !== undefined &&
+    finalHunk.newStart + finalHunk.newCount - 1 >= output.length;
+  if (
+    filePatch.newEndsWithNewline &&
+    output.length > 0 &&
+    !result.endsWith("\n") &&
+    (originalEndsWithNewline || finalHunkTouchesEnd)
+  ) {
+    result += "\n";
+  }
+  return result;
+}
+
+function splitPatchContentLines(content: string): string[] {
+  if (content === "") {
+    return [];
+  }
+  if (!content.endsWith("\n")) {
+    return content.split("\n");
+  }
+  const withoutFinalNewline = content.slice(0, -1);
+  return withoutFinalNewline === "" ? [""] : withoutFinalNewline.split("\n");
 }

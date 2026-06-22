@@ -8,6 +8,7 @@ import {
 import { ASSIGNMENT_AUTONOMY_LEVELS } from "./types.ts";
 import type {
   AssignmentAutonomyLevel,
+  AssignmentChildDependencyWaitMode,
   AssignmentChildPolicy,
   AssignmentControlInput,
   AssignmentDetail,
@@ -84,6 +85,13 @@ type CountRow = {
 
 type ParentAssignmentRow = {
   parent_assignment_id: string | null;
+};
+
+export type AssignmentDependencyResolutionResult = {
+  parentAssignmentId: string;
+  activatedChildIds: string[];
+  blockedChildIds: string[];
+  activeWaitedChildIds: string[];
 };
 
 export class AssignmentNotFoundError extends Error {
@@ -218,6 +226,8 @@ export class AutonomousAssignmentService {
       remainingWakeups
     );
 
+    const dependencies = this.normalizeChildDependencies(parent.id, input);
+    const dependencyState = this.evaluateChildDependencyState(dependencies);
     const now = new Date().toISOString();
     const waitForChild = input.waitForChild === true;
     const actor = normalizeOptionalText(input.actor) ?? "planner";
@@ -226,7 +236,12 @@ export class AutonomousAssignmentService {
       parentAssignmentId: parent.id,
       objective,
       title: normalizeOptionalText(input.title),
-      lifecycleState: "active",
+      lifecycleState:
+        dependencyState === "waiting"
+          ? "waiting"
+          : dependencyState === "blocked"
+            ? "blocked"
+            : "active",
       autonomyLevel: capAutonomyLevel(
         input.autonomyLevel ?? parent.autonomyLevel,
         parent.autonomyLevel
@@ -237,6 +252,13 @@ export class AutonomousAssignmentService {
       metadata: mergeChildMetadata(input.metadata, {
         parentAssignmentId: parent.id,
         parentWaitsForChild: waitForChild,
+        childDependencyConfigValidated: dependencies ? true : false,
+        ...(dependencies
+          ? {
+              dependsOnChildIds: dependencies.dependsOnChildIds,
+              waitForChildren: dependencies.waitForChildren,
+            }
+          : {}),
       }),
       wakeupCount: 0,
       consecutiveFailureCount: 0,
@@ -277,9 +299,44 @@ export class AutonomousAssignmentService {
           objective: child.objective,
           rationale,
           waitForChild,
+          ...(dependencies
+            ? {
+                dependsOnChildIds: dependencies.dependsOnChildIds,
+                waitForChildren: dependencies.waitForChildren,
+              }
+            : {}),
         },
         createdAt: now,
       });
+      if (dependencyState === "blocked") {
+        this.recordEvent({
+          assignmentId: child.id,
+          type: "blocked",
+          importance: "audit",
+          compactable: false,
+          payload: {
+            decision: "blocked",
+            reason: "Required child assignment dependency failed",
+            blockingDependencies: this.childDependencyEvidence(child),
+            nextWakeupAt: null,
+          },
+          createdAt: now,
+        });
+      } else if (dependencyState === "waiting") {
+        this.recordEvent({
+          assignmentId: child.id,
+          type: "waiting",
+          importance: "milestone",
+          compactable: false,
+          payload: {
+            decision: "waiting",
+            reason: "Waiting for child assignment dependencies",
+            blockingDependencies: this.childDependencyEvidence(child),
+            nextWakeupAt: null,
+          },
+          createdAt: now,
+        });
+      }
     });
 
     return {
@@ -363,6 +420,16 @@ export class AutonomousAssignmentService {
     const actor = normalizeOptionalText(input.actor) ?? "operator";
     const now = new Date().toISOString();
     const current = this.getRequired(assignmentId).assignment;
+
+    if (
+      input.action === "resume" &&
+      current.parentAssignmentId &&
+      !this.parentHasCapacityToReactivateChild(current)
+    ) {
+      throw new AssignmentValidationError(
+        "Assignment parent has no child capacity to resume this assignment"
+      );
+    }
 
     if (input.action === "add_context") {
       if (input.context === undefined) {
@@ -455,7 +522,15 @@ export class AutonomousAssignmentService {
       });
     });
 
-    return this.getRequired(assignmentId);
+    const detail = this.getRequired(assignmentId);
+    if (
+      detail.assignment.parentAssignmentId &&
+      input.resolveDependencies !== false
+    ) {
+      this.resolveChildDependencies(detail.assignment.parentAssignmentId);
+      return this.getRequired(assignmentId);
+    }
+    return detail;
   }
 
   recordChildPromotionFailure(input: {
@@ -486,6 +561,105 @@ export class AutonomousAssignmentService {
     });
   }
 
+  resolveChildDependencies(
+    parentAssignmentId: string
+  ): AssignmentDependencyResolutionResult {
+    this.getRequired(parentAssignmentId);
+    const activatedChildIds: string[] = [];
+    const blockedChildIds: string[] = [];
+    let changed = true;
+    while (changed) {
+      changed = false;
+      const children = this.listChildren(parentAssignmentId);
+      for (const child of children) {
+        if (isTerminalLifecycleState(child.lifecycleState)) {
+          continue;
+        }
+        const dependencies = dependencyConfigFromMetadata(child.metadata);
+        if (!dependencies) {
+          continue;
+        }
+        const state = evaluateChildDependencies(children, dependencies);
+        if (state === "blocked" && child.lifecycleState !== "blocked") {
+          this.applyWakeupDecision({
+            assignmentId: child.id,
+            decision: "blocked",
+            reason: "Required child assignment dependency failed",
+            resolveDependencies: false,
+          });
+          blockedChildIds.push(child.id);
+          changed = true;
+        } else if (
+          state === "satisfied" &&
+          ((child.lifecycleState === "waiting" &&
+            this.isDependencyWaiting(child.id)) ||
+            (child.lifecycleState === "blocked" &&
+              this.isDependencyBlocked(child.id) &&
+              !this.shouldRestoreWaitingAfterDependencyBlock(child.id)))
+        ) {
+          if (!this.parentHasCapacityToReactivateChild(child)) {
+            if (child.lifecycleState === "blocked") {
+              this.applyWakeupDecision({
+                assignmentId: child.id,
+                decision: "waiting",
+                reason: "Waiting for child assignment dependencies",
+                resolveDependencies: false,
+              });
+              changed = true;
+            }
+            continue;
+          }
+          this.control(child.id, {
+            action: "resume",
+            actor: "system",
+            reason: "Child assignment dependencies satisfied",
+            resolveDependencies: false,
+          });
+          activatedChildIds.push(child.id);
+          changed = true;
+        } else if (
+          state === "satisfied" &&
+          child.lifecycleState === "blocked" &&
+          this.isDependencyBlocked(child.id) &&
+          this.shouldRestoreWaitingAfterDependencyBlock(child.id)
+        ) {
+          this.applyWakeupDecision({
+            assignmentId: child.id,
+            decision: "waiting",
+            reason: "Restoring previous child assignment wait",
+            resolveDependencies: false,
+          });
+          changed = true;
+        } else if (
+          state === "waiting" &&
+          (child.lifecycleState === "active" ||
+            (child.lifecycleState === "blocked" &&
+              this.isDependencyBlocked(child.id)))
+        ) {
+          const restorePreviousWait =
+            child.lifecycleState === "blocked" &&
+            this.shouldRestoreWaitingAfterDependencyBlock(child.id);
+          this.applyWakeupDecision({
+            assignmentId: child.id,
+            decision: "waiting",
+            reason: restorePreviousWait
+              ? "Restoring previous child assignment wait"
+              : "Waiting for child assignment dependencies",
+            resolveDependencies: false,
+          });
+          changed = true;
+        }
+      }
+    }
+
+    return {
+      parentAssignmentId,
+      activatedChildIds,
+      blockedChildIds,
+      activeWaitedChildIds: this.activeWaitedChildIds(parentAssignmentId),
+    };
+  }
+
   timeline(assignmentId: string, limit = 100): AssignmentTimeline {
     if (!this.get(assignmentId)) {
       throw new AssignmentNotFoundError(assignmentId);
@@ -496,6 +670,58 @@ export class AutonomousAssignmentService {
        ORDER BY created_at ASC, rowid ASC
        LIMIT ?`,
       assignmentId,
+      boundLimit(limit, 250)
+    );
+    return {
+      assignmentId,
+      events: rows.map(toAssignmentEventRecord),
+    };
+  }
+
+  latestTimeline(assignmentId: string, limit = 100): AssignmentTimeline {
+    if (!this.get(assignmentId)) {
+      throw new AssignmentNotFoundError(assignmentId);
+    }
+    const rows = this.database.all<AssignmentEventRow>(
+      `SELECT * FROM (
+         SELECT assignment_events.*, rowid AS event_rowid FROM assignment_events
+         WHERE assignment_id = ?
+         ORDER BY created_at DESC, event_rowid DESC
+         LIMIT ?
+       )
+       ORDER BY created_at ASC, event_rowid ASC`,
+      assignmentId,
+      boundLimit(limit, 250)
+    );
+    return {
+      assignmentId,
+      events: rows.map(toAssignmentEventRecord),
+    };
+  }
+
+  latestTimelineByTypes(
+    assignmentId: string,
+    eventTypes: string[],
+    limit = 100
+  ): AssignmentTimeline {
+    if (!this.get(assignmentId)) {
+      throw new AssignmentNotFoundError(assignmentId);
+    }
+    if (eventTypes.length === 0) {
+      return { assignmentId, events: [] };
+    }
+    const placeholders = eventTypes.map(() => "?").join(", ");
+    const rows = this.database.all<AssignmentEventRow>(
+      `SELECT * FROM (
+         SELECT assignment_events.*, rowid AS event_rowid FROM assignment_events
+         WHERE assignment_id = ?
+           AND type IN (${placeholders})
+         ORDER BY created_at DESC, event_rowid DESC
+         LIMIT ?
+       )
+       ORDER BY created_at ASC, event_rowid ASC`,
+      assignmentId,
+      ...eventTypes,
       boundLimit(limit, 250)
     );
     return {
@@ -568,6 +794,10 @@ export class AutonomousAssignmentService {
     const now = new Date().toISOString();
     const current = this.getRequired(input.assignmentId).assignment;
     assertWakeable(current.lifecycleState);
+    const dependencyWaitReason = this.childDependencyWaitReason(current);
+    if (dependencyWaitReason) {
+      throw new AssignmentValidationError(dependencyWaitReason);
+    }
     if (this.hasActiveWaitedChild(current.id)) {
       throw new AssignmentValidationError(
         "Assignment is waiting for active child assignment"
@@ -685,12 +915,27 @@ export class AutonomousAssignmentService {
         payload: {
           decision: input.decision,
           reason: input.reason,
+          ...(input.decision === "blocked"
+            ? {
+                blockingDependencies: this.childDependencyEvidence(
+                  this.getRequired(input.assignmentId).assignment
+                ),
+              }
+            : {}),
           nextWakeupAt: input.nextWakeupAt ?? null,
         },
         createdAt: now,
       });
     });
-    return this.getRequired(input.assignmentId);
+    const detail = this.getRequired(input.assignmentId);
+    if (
+      input.resolveDependencies !== false &&
+      detail.assignment.parentAssignmentId
+    ) {
+      this.resolveChildDependencies(detail.assignment.parentAssignmentId);
+      return this.getRequired(input.assignmentId);
+    }
+    return detail;
   }
 
   linkRun(input: LinkAssignmentRunInput): AssignmentRunLinkRecord {
@@ -889,10 +1134,21 @@ export class AutonomousAssignmentService {
       this.database.get<CountRow>(
         `SELECT COUNT(*) AS count FROM assignments
          WHERE parent_assignment_id = ?
-           AND lifecycle_state NOT IN ('completed', 'cancelled', 'expired', 'failed')`,
+           AND lifecycle_state NOT IN ('completed', 'cancelled', 'blocked', 'expired', 'failed')`,
         parentAssignmentId
       )?.count ?? 0
     );
+  }
+
+  private listChildren(parentAssignmentId: string): AssignmentRecord[] {
+    return this.database
+      .all<AssignmentRow>(
+        `SELECT * FROM assignments
+         WHERE parent_assignment_id = ?
+         ORDER BY updated_at DESC, rowid DESC`,
+        parentAssignmentId
+      )
+      .map(toAssignmentRecord);
   }
 
   private reservedActiveChildWakeupBudget(parentAssignmentId: string): number {
@@ -900,7 +1156,7 @@ export class AutonomousAssignmentService {
       .all<AssignmentRow>(
         `SELECT * FROM assignments
          WHERE parent_assignment_id = ?
-           AND lifecycle_state NOT IN ('completed', 'cancelled', 'expired', 'failed')`,
+           AND lifecycle_state NOT IN ('completed', 'cancelled', 'blocked', 'expired', 'failed')`,
         parentAssignmentId
       )
       .map(toAssignmentRecord)
@@ -908,15 +1164,19 @@ export class AutonomousAssignmentService {
   }
 
   private hasActiveWaitedChild(parentAssignmentId: string): boolean {
+    return this.activeWaitedChildIds(parentAssignmentId).length > 0;
+  }
+
+  private activeWaitedChildIds(parentAssignmentId: string): string[] {
     return this.database
       .all<AssignmentRow>(
         `SELECT * FROM assignments
          WHERE parent_assignment_id = ?
-           AND lifecycle_state NOT IN ('completed', 'cancelled', 'expired', 'failed')`,
+           AND lifecycle_state NOT IN ('completed', 'cancelled', 'blocked', 'expired', 'failed')`,
         parentAssignmentId
       )
       .map(toAssignmentRecord)
-      .some((child) => {
+      .filter((child) => {
         const metadata = child.metadata;
         return (
           metadata !== null &&
@@ -924,7 +1184,177 @@ export class AutonomousAssignmentService {
           !Array.isArray(metadata) &&
           (metadata as Record<string, JsonValue>).parentWaitsForChild === true
         );
-      });
+      })
+      .map((child) => child.id);
+  }
+
+  private parentHasCapacityToReactivateChild(child: AssignmentRecord): boolean {
+    if (!child.parentAssignmentId) {
+      return true;
+    }
+    const parent = this.getRequired(child.parentAssignmentId).assignment;
+    const childAlreadyReservesCapacity =
+      child.lifecycleState !== "blocked" &&
+      !isTerminalLifecycleState(child.lifecycleState);
+    const activeChildren =
+      this.countActiveChildren(parent.id) -
+      (childAlreadyReservesCapacity ? 1 : 0);
+    if (
+      activeChildren >= parent.policy.childAssignments.maxActiveChildren
+    ) {
+      return false;
+    }
+    const childReservedWakeups = childAlreadyReservesCapacity
+      ? child.policy.maxWakeups
+      : 0;
+    const remainingWakeups =
+      parent.policy.maxWakeups -
+      parent.wakeupCount -
+      (this.reservedActiveChildWakeupBudget(parent.id) -
+        childReservedWakeups);
+    return remainingWakeups >= child.policy.maxWakeups;
+  }
+
+  private normalizeChildDependencies(
+    parentAssignmentId: string,
+    input: PromoteChildAssignmentInput
+  ): ChildDependencyConfig | null {
+    if (!input.dependsOnChildIds || input.dependsOnChildIds.length === 0) {
+      return null;
+    }
+    const dependsOnChildIds = normalizeDependencyIds(input.dependsOnChildIds);
+    const waitForChildren = input.waitForChildren ?? "all";
+    if (waitForChildren !== "all" && waitForChildren !== "any") {
+      throw new AssignmentValidationError(
+        "waitForChildren must be all or any"
+      );
+    }
+    const dependencies = dependsOnChildIds.map((id) => {
+      const dependency = this.get(id);
+      if (!dependency) {
+        throw new AssignmentValidationError(`Assignment not found: ${id}`);
+      }
+      return dependency.assignment;
+    });
+    for (const dependency of dependencies) {
+      if (dependency.parentAssignmentId !== parentAssignmentId) {
+        throw new AssignmentValidationError(
+          "Child assignment dependencies must belong to the same parent assignment"
+        );
+      }
+    }
+    return { dependsOnChildIds, waitForChildren };
+  }
+
+  private evaluateChildDependencyState(
+    dependencies: ChildDependencyConfig | null
+  ): "satisfied" | "waiting" | "blocked" {
+    if (!dependencies) {
+      return "satisfied";
+    }
+    const parentAssignmentId = this.getRequired(
+      dependencies.dependsOnChildIds[0] ?? ""
+    ).assignment.parentAssignmentId;
+    const siblings = parentAssignmentId ? this.listChildren(parentAssignmentId) : [];
+    return evaluateChildDependencies(siblings, dependencies);
+  }
+
+  private childDependencyWaitReason(assignment: AssignmentRecord): string | null {
+    const dependencies = dependencyConfigFromMetadata(assignment.metadata);
+    if (!dependencies) {
+      return null;
+    }
+    const siblings = assignment.parentAssignmentId
+      ? this.listChildren(assignment.parentAssignmentId)
+      : [];
+    const state = evaluateChildDependencies(siblings, dependencies);
+    if (state === "satisfied") {
+      return null;
+    }
+    if (state === "blocked") {
+      throw new AssignmentValidationError(
+        "Required child assignment dependency failed"
+      );
+    }
+    return "Assignment is waiting for child assignment dependencies";
+  }
+
+  private childDependencyEvidence(assignment: AssignmentRecord): JsonValue {
+    const dependencies = dependencyConfigFromMetadata(assignment.metadata);
+    if (!dependencies || !assignment.parentAssignmentId) {
+      return [];
+    }
+    const siblings = this.listChildren(assignment.parentAssignmentId);
+    return dependencySnapshots(siblings, dependencies);
+  }
+
+  private isDependencyBlocked(assignmentId: string): boolean {
+    return this.latestLifecycleReason(assignmentId, "blocked") ===
+      "Required child assignment dependency failed";
+  }
+
+  private isDependencyWaiting(assignmentId: string): boolean {
+    const wait = this.latestWaitLikeEvent(assignmentId);
+    return (
+      wait?.type !== "paused" &&
+      wait?.reason === "Waiting for child assignment dependencies"
+    );
+  }
+
+  private shouldRestoreWaitingAfterDependencyBlock(
+    assignmentId: string
+  ): boolean {
+    const wait = this.latestWaitLikeEvent(assignmentId);
+    if (!wait || wait.type === "resumed") {
+      return false;
+    }
+    return wait.reason !== "Waiting for child assignment dependencies";
+  }
+
+  private latestWaitLikeEvent(
+    assignmentId: string
+  ): { type: string; reason?: string } | null {
+    const row = this.database.get<AssignmentEventRow>(
+      `SELECT * FROM assignment_events
+       WHERE assignment_id = ?
+         AND type IN ('paused', 'waiting', 'wakeup_scheduled', 'resumed')
+       ORDER BY created_at DESC, rowid DESC
+       LIMIT 1`,
+      assignmentId
+    );
+    if (!row) {
+      return null;
+    }
+    const payload = decodeJson<JsonValue>(row.payload_json, {});
+    if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+      return { type: row.type };
+    }
+    const reason = (payload as Record<string, JsonValue>).reason;
+    return { type: row.type, reason: typeof reason === "string" ? reason : undefined };
+  }
+
+  private latestLifecycleReason(
+    assignmentId: string,
+    type: "blocked" | "waiting"
+  ): string | undefined {
+    const row = this.database.get<AssignmentEventRow>(
+      `SELECT * FROM assignment_events
+       WHERE assignment_id = ?
+         AND type = ?
+       ORDER BY created_at DESC, rowid DESC
+       LIMIT 1`,
+      assignmentId,
+      type
+    );
+    if (!row) {
+      return undefined;
+    }
+    const payload = decodeJson<JsonValue>(row.payload_json, {});
+    if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+      return undefined;
+    }
+    const reason = (payload as Record<string, JsonValue>).reason;
+    return typeof reason === "string" ? reason : undefined;
   }
 }
 
@@ -1231,6 +1661,114 @@ function wakeupDecisionTransition(input: ApplyAssignmentWakeupDecisionInput): {
 
 function isTerminalLifecycleState(state: AssignmentLifecycleState): boolean {
   return ["completed", "cancelled", "expired", "failed"].includes(state);
+}
+
+type ChildDependencyConfig = {
+  dependsOnChildIds: string[];
+  waitForChildren: AssignmentChildDependencyWaitMode;
+};
+
+function normalizeDependencyIds(ids: string[]): string[] {
+  const normalized = ids.map((id, index) => {
+    if (typeof id !== "string" || id.trim() === "") {
+      throw new AssignmentValidationError(
+        `dependsOnChildIds[${index}] must be a non-empty string`
+      );
+    }
+    return id.trim();
+  });
+  if (new Set(normalized).size !== normalized.length) {
+    throw new AssignmentValidationError("dependsOnChildIds must be unique");
+  }
+  return normalized;
+}
+
+function dependencyConfigFromMetadata(
+  metadata: JsonValue
+): ChildDependencyConfig | null {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+    return null;
+  }
+  const value = metadata as Record<string, JsonValue>;
+  if (value.childDependencyConfigValidated !== true) {
+    return null;
+  }
+  if (!Array.isArray(value.dependsOnChildIds)) {
+    return null;
+  }
+  const waitForChildren =
+    value.waitForChildren === "any" || value.waitForChildren === "all"
+      ? value.waitForChildren
+      : "all";
+  return {
+    dependsOnChildIds: normalizeDependencyIds(
+      value.dependsOnChildIds as string[]
+    ),
+    waitForChildren,
+  };
+}
+
+function evaluateChildDependencies(
+  siblings: AssignmentRecord[],
+  dependencies: ChildDependencyConfig
+): "satisfied" | "waiting" | "blocked" {
+  const byId = new Map(siblings.map((child) => [child.id, child]));
+  const dependencyStates = dependencies.dependsOnChildIds.map((id) => {
+    const dependency = byId.get(id);
+    if (!dependency) {
+      return "blocked";
+    }
+    return dependency.lifecycleState;
+  });
+  if (dependencies.waitForChildren === "any") {
+    if (dependencyStates.some((state) => state === "completed")) {
+      return "satisfied";
+    }
+    if (dependencyStates.every(isTerminalOrBlockedDependencyState)) {
+      return "blocked";
+    }
+    return "waiting";
+  }
+  if (
+    dependencyStates.some(
+      (state) =>
+        state === "failed" ||
+        state === "cancelled" ||
+        state === "expired" ||
+        state === "blocked"
+    )
+  ) {
+    return "blocked";
+  }
+  return dependencyStates.every((state) => state === "completed")
+    ? "satisfied"
+    : "waiting";
+}
+
+function dependencySnapshots(
+  siblings: AssignmentRecord[],
+  dependencies: ChildDependencyConfig
+): JsonValue {
+  const byId = new Map(siblings.map((child) => [child.id, child]));
+  return dependencies.dependsOnChildIds.map((id) => {
+    const dependency = byId.get(id);
+    return {
+      childAssignmentId: id,
+      lifecycleState: dependency?.lifecycleState ?? "missing",
+    };
+  });
+}
+
+function isTerminalOrBlockedDependencyState(
+  state: AssignmentLifecycleState | "blocked"
+): boolean {
+  return (
+    state === "blocked" ||
+    state === "completed" ||
+    state === "cancelled" ||
+    state === "expired" ||
+    state === "failed"
+  );
 }
 
 function assertWakeable(state: AssignmentLifecycleState): void {

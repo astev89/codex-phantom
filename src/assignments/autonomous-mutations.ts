@@ -1,38 +1,18 @@
 import type { JsonValue } from "../shared/types.ts";
-import {
-  memoryPolicyValues,
-  normalizeMemoryPolicyPatch,
-  type MemoryPolicyStore,
-} from "../memory/policy.ts";
-import {
-  normalizeRuntimeConfigLimitsSnapshot,
-  normalizeRuntimeConfigLimitsPatch,
-  runtimeConfigLimitValues,
-  type RuntimeConfigLimitsStore,
-} from "../config/runtime-limits.ts";
-import {
-  applyOperatorSettingsMutation,
-  rollbackOperatorSettingsMutation,
-  type OperatorSettingsMutationPort,
-} from "../self-evolution/mutations.ts";
-import {
-  normalizeRuntimeGuidanceText,
-  type PromptRuntimeGuidanceStore,
+import type { RuntimeChannelCapabilities } from "../channels/capabilities.ts";
+import type { ChannelRegistry } from "../channels/registry.ts";
+import type { AppDatabase } from "../platform/database.ts";
+import type { MemoryPolicyStore } from "../memory/policy.ts";
+import type { RuntimeConfigLimitsStore } from "../config/runtime-limits.ts";
+import type { OperatorSettingsMutationPort } from "../self-evolution/mutations.ts";
+import type {
+  PromptManagedFragmentStore,
+  PromptRuntimeGuidanceStore,
 } from "../prompts/runtime-guidance.ts";
-import {
-  rolePolicyRuntimeSnapshot,
-  type RolePolicyRuntimeStore,
-  type RolePolicyPatch,
-  type RolePolicyOverrides,
-} from "../orchestration/role-policy-runtime.ts";
-import {
-  projectFileDraftSummary,
-  type ProjectFileDraftStore,
-} from "../project-files/drafts.ts";
-import {
-  type ProjectFileApplyBeforeSnapshot,
-  type ProjectFileApplyService,
-} from "../project-files/apply.ts";
+import type { RolePolicyRuntimeStore } from "../orchestration/role-policy-runtime.ts";
+import type { ProjectFileDraftStore } from "../project-files/drafts.ts";
+import type { ProjectFileApplyService } from "../project-files/apply.ts";
+import type { ProjectFilePatchDraftStore } from "../project-files/patches.ts";
 import type { SelfEvolutionRiskClass } from "../self-evolution/proposals.ts";
 import type {
   AutonomousMutationRecord,
@@ -40,13 +20,20 @@ import type {
 } from "./mutation-ledger.ts";
 import { AutonomousMutationLedger } from "./mutation-ledger.ts";
 import type {
-  AssignmentPolicy,
-  AssignmentPolicyPatch,
   AssignmentRecord,
   AssignmentSelfEvolutionPolicy,
 } from "./types.ts";
 import { AutonomousAssignmentService } from "./service.ts";
 import type { ToolBundleLifecycleService } from "../tools/bundle-lifecycle.ts";
+import { AutonomousMutationApplyFailure } from "./mutation-adapters/common.ts";
+import { buildDefaultAutonomousMutationAdapters } from "./mutation-adapters/defaults.ts";
+import type {
+  AutonomousMutationAdapter,
+  AutonomousMutationApplyResult,
+  AutonomousMutationRollbackResult,
+} from "./mutation-adapters/types.ts";
+
+export type { AutonomousMutationAdapter } from "./mutation-adapters/types.ts";
 
 export class AutonomousMutationExecutionError extends Error {
   readonly status: number;
@@ -87,78 +74,25 @@ export type AutonomousMutationExecutionResult = {
 
 export type AutonomousMutationExecutorOptions = {
   assignments: AutonomousAssignmentService;
+  channels?: ChannelRegistry;
+  runtimeChannels?: RuntimeChannelCapabilities;
+  database?: AppDatabase;
   ledger: AutonomousMutationLedger;
   settings: OperatorSettingsMutationPort;
   memoryPolicy?: MemoryPolicyStore;
   runtimeConfigLimits?: RuntimeConfigLimitsStore;
   promptGuidance?: PromptRuntimeGuidanceStore;
+  promptFragments?: PromptManagedFragmentStore;
   rolePolicy?: RolePolicyRuntimeStore;
   projectFileDrafts?: ProjectFileDraftStore;
+  projectFilePatchDrafts?: ProjectFilePatchDraftStore;
   projectFileApply?: ProjectFileApplyService;
   toolBundles?: ToolBundleLifecycleService;
   adapters?: AutonomousMutationAdapter[];
 };
 
-export type AutonomousMutationAdapter = {
-  readonly target: AutonomousMutationTarget;
-  readonly mutationType: string;
-  readonly mutationClass: string;
-  readonly affectedResources: JsonValue;
-  readonly minimumRiskClass?: SelfEvolutionRiskClass;
-  readonly rollbackConflictScope?: "assignment" | "global";
-  apply(input: {
-    assignment: AssignmentRecord;
-    mutationId: string;
-    request: ApplyAutonomousMutationInput;
-    proposedChange: JsonValue;
-  }): {
-    before: JsonValue;
-    after: JsonValue;
-    rollback: JsonValue;
-    affectedResources?: JsonValue;
-    verificationMethod?: string;
-  };
-  rollback(input: {
-    assignment: AssignmentRecord;
-    mutation: AutonomousMutationRecord;
-    rollback: JsonValue;
-    actor?: string;
-  }): { verificationMethod?: string } | void;
-};
-
-type AutonomousMutationApplyFailureEvidence = {
-  before?: JsonValue;
-  after?: JsonValue;
-  rollback?: JsonValue;
-};
-
-class AutonomousMutationApplyFailure extends Error {
-  readonly evidence: AutonomousMutationApplyFailureEvidence;
-
-  constructor(
-    message: string,
-    evidence: AutonomousMutationApplyFailureEvidence
-  ) {
-    super(message);
-    this.name = "AutonomousMutationApplyFailure";
-    this.evidence = evidence;
-  }
-}
-
-const OPERATOR_SETTINGS_MUTATION_CLASS = "configuration.operator_settings";
-const ASSIGNMENT_POLICY_MUTATION_CLASS = "configuration.assignment_policy";
-const TOOL_BUNDLE_ENABLE_MUTATION_CLASS = "tool.bundle_enable";
-const PROMPT_RUNTIME_GUIDANCE_MUTATION_CLASS = "prompt.runtime_guidance";
-const MEMORY_POLICY_RUNTIME_BOUNDS_MUTATION_CLASS =
-  "memory_policy.runtime_bounds";
-const RUNTIME_CONFIG_LIMITS_MUTATION_CLASS = "configuration.runtime_limits";
-const ROLE_PERMISSION_POLICY_MUTATION_CLASS = "role.permission_policy";
-const PROJECT_FILE_DRAFT_MUTATION_CLASS = "project_file.draft";
-const PROJECT_FILE_APPLY_DRAFT_MUTATION_CLASS = "project_file.apply_draft";
-const PROJECT_FILE_APPLY_BUNDLE_MUTATION_CLASS = "project_file.apply_bundle";
-const MAX_PROJECT_FILE_BUNDLE_DRAFTS = 10;
 const UNSUPPORTED_MUTATION_ERROR =
-  "Only configuration.operator_settings, configuration.assignment_policy, configuration.runtime_limits, tool.bundle_enable, prompt.runtime_guidance, memory_policy.runtime_bounds, role.permission_policy, project_file.draft, project_file.apply_draft, and project_file.apply_bundle autonomous mutations are supported in this slice";
+  "Only configuration.operator_settings, configuration.assignment_policy, configuration.runtime_limits, configuration.channel_state, tool.bundle_enable, prompt.runtime_guidance, prompt.managed_fragment, memory.entry_lifecycle, memory_policy.runtime_bounds, role.permission_policy, project_file.draft, project_file.apply_draft, project_file.apply_bundle, project_file.patch_draft, and project_file.apply_patch autonomous mutations are supported in this slice";
 const RISK_ORDER: SelfEvolutionRiskClass[] = [
   "low",
   "medium",
@@ -175,64 +109,7 @@ export class AutonomousMutationExecutor {
     this.assignments = options.assignments;
     this.ledger = options.ledger;
     this.adapters = buildAdapterMap(
-      options.adapters ?? [
-        createOperatorSettingsAutonomousMutationAdapter(options.settings),
-        createAssignmentPolicyAutonomousMutationAdapter(options.assignments),
-        ...(options.promptGuidance
-          ? [
-              createPromptRuntimeGuidanceAutonomousMutationAdapter(
-                options.promptGuidance
-              ),
-            ]
-          : []),
-        ...(options.memoryPolicy
-          ? [
-              createMemoryPolicyRuntimeBoundsAutonomousMutationAdapter(
-                options.memoryPolicy
-              ),
-            ]
-          : []),
-        ...(options.runtimeConfigLimits
-          ? [
-              createRuntimeConfigLimitsAutonomousMutationAdapter(
-                options.runtimeConfigLimits
-              ),
-            ]
-          : []),
-        ...(options.rolePolicy
-          ? [
-              createRolePermissionPolicyAutonomousMutationAdapter(
-                options.rolePolicy
-              ),
-            ]
-          : []),
-        ...(options.projectFileDrafts
-          ? [
-              createProjectFileDraftAutonomousMutationAdapter(
-                options.projectFileDrafts
-              ),
-            ]
-          : []),
-        ...(options.projectFileDrafts && options.projectFileApply
-          ? [
-              createProjectFileApplyDraftAutonomousMutationAdapter(
-                options.projectFileDrafts,
-                options.projectFileApply
-              ),
-              createProjectFileApplyBundleAutonomousMutationAdapter(
-                options.projectFileDrafts,
-                options.projectFileApply
-              ),
-            ]
-          : []),
-        ...(options.toolBundles
-          ? [
-              createToolBundleEnableAutonomousMutationAdapter(
-                options.toolBundles
-              ),
-            ]
-          : []),
-      ]
+      options.adapters ?? buildDefaultAutonomousMutationAdapters(options)
     );
   }
 
@@ -264,24 +141,23 @@ export class AutonomousMutationExecutor {
     });
 
     try {
+      if (adapter.requiresAsync) {
+        throw new Error(
+          `${adapter.mutationClass} requires async autonomous mutation execution`
+        );
+      }
       const result = adapter.apply({
         assignment: assignment.assignment,
         mutationId: planned.id,
         request: input,
         proposedChange: input.proposedChange,
       });
-      const mutation = this.ledger.recordApplied(planned.id, {
-        before: result.before,
-        after: result.after,
-        rollback: result.rollback,
-        affectedResources:
-          result.affectedResources ?? adapter.affectedResources,
-        verification: {
-          attempted: true,
-          result: "passed",
-          method: result.verificationMethod ?? `${adapter.mutationType}_update`,
-        },
-      });
+      if (isPromiseLike(result)) {
+        throw new Error(
+          `${adapter.mutationClass} returned an async mutation result`
+        );
+      }
+      const mutation = this.recordAppliedResult(planned.id, adapter, result);
       return {
         assignment: this.assignments.getRequired(assignment.assignment.id),
         mutation,
@@ -297,6 +173,69 @@ export class AutonomousMutationExecutor {
         before: evidence.before,
         after: evidence.after,
         rollback: evidence.rollback,
+        affectedResources: evidence.affectedResources,
+        verification: {
+          attempted: true,
+          result: "failed",
+          method: `${adapter.mutationType}_update`,
+        },
+        errorMessage: message,
+      });
+      throw new AutonomousMutationExecutionError(400, message, failed);
+    }
+  }
+
+  async applyAsync(
+    input: ApplyAutonomousMutationInput
+  ): Promise<AutonomousMutationExecutionResult> {
+    const assignment = this.assignments.getRequired(input.assignmentId);
+    const requestedRiskClass = input.riskClass ?? "low";
+    const { adapter, riskClass } = this.assertAssignmentCanMutate(
+      assignment.assignment,
+      input,
+      requestedRiskClass
+    );
+    const planned = this.ledger.recordPlanned({
+      assignmentId: assignment.assignment.id,
+      runId: input.runId,
+      target: input.target,
+      mutationType: input.mutationType,
+      autonomyLevel: assignment.assignment.autonomyLevel,
+      authorizingPolicy: authorizingPolicy(
+        assignment.assignment.policy.selfEvolution,
+        input.actor,
+        adapter.mutationClass
+      ),
+      rationale: input.rationale,
+      riskClass,
+      affectedResources: adapter.affectedResources,
+      actor: input.actor,
+    });
+
+    try {
+      const result = await adapter.apply({
+        assignment: assignment.assignment,
+        mutationId: planned.id,
+        request: input,
+        proposedChange: input.proposedChange,
+      });
+      const mutation = this.recordAppliedResult(planned.id, adapter, result);
+      return {
+        assignment: this.assignments.getRequired(assignment.assignment.id),
+        mutation,
+      };
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Failed to apply autonomous mutation";
+      const evidence =
+        error instanceof AutonomousMutationApplyFailure ? error.evidence : {};
+      const failed = this.ledger.recordFailedOutcome(planned.id, {
+        before: evidence.before,
+        after: evidence.after,
+        rollback: evidence.rollback,
+        affectedResources: evidence.affectedResources,
         verification: {
           attempted: true,
           result: "failed",
@@ -338,13 +277,16 @@ export class AutonomousMutationExecutor {
         "Only applied autonomous mutations can be rolled back"
       );
     }
+    assertRollbackEvidenceSupportsScope(adapter, mutation);
     const newerMutation = this.ledger.findNewerApplied({
       assignmentId: mutation.assignmentId,
       target: mutation.target,
       mutationType: mutation.mutationType,
+      mutationTypes: adapter.rollbackConflictMutationTypes,
       appliedAt: mutation.appliedAt ?? mutation.updatedAt,
       id: mutation.id,
       scope: adapter.rollbackConflictScope ?? "assignment",
+      affectedResources: mutation.affectedResources,
     });
     if (newerMutation) {
       throw new AutonomousMutationExecutionError(
@@ -353,24 +295,30 @@ export class AutonomousMutationExecutor {
       );
     }
     try {
+      if (adapter.requiresAsync) {
+        throw new Error(
+          `${adapter.mutationClass} requires async autonomous mutation execution`
+        );
+      }
       const rollback = adapter.rollback({
         assignment: assignment.assignment,
         mutation,
         rollback: mutation.rollback,
         actor: input.actor,
       });
+      if (isPromiseLike(rollback)) {
+        throw new Error(
+          `${adapter.mutationClass} returned an async rollback result`
+        );
+      }
       return {
         assignment: this.assignments.getRequired(assignment.assignment.id),
-        mutation: this.ledger.recordRolledBack(mutation.id, {
-          actor: input.actor,
-          verification: {
-            attempted: true,
-            result: "passed",
-            method:
-              rollback?.verificationMethod ??
-              `${adapter.mutationType}_rollback`,
-          },
-        }),
+        mutation: this.recordRolledBackResult(
+          mutation.id,
+          adapter,
+          rollback,
+          input.actor
+        ),
       };
     } catch (error) {
       const message =
@@ -379,6 +327,113 @@ export class AutonomousMutationExecutor {
           : "Failed to roll back autonomous mutation";
       throw new AutonomousMutationExecutionError(400, message);
     }
+  }
+
+  async rollbackAsync(
+    input: RollbackAutonomousMutationInput
+  ): Promise<AutonomousMutationExecutionResult> {
+    const assignment = this.assignments.getRequired(input.assignmentId);
+    if (assignment.assignment.autonomyLevel !== "evolve") {
+      throw new AutonomousMutationExecutionError(
+        403,
+        "Assignment autonomyLevel must be evolve to roll back autonomous mutations"
+      );
+    }
+    const mutation = this.ledger.get(input.mutationId);
+    if (!mutation || mutation.assignmentId !== assignment.assignment.id) {
+      throw new AutonomousMutationExecutionError(
+        404,
+        "Autonomous mutation not found for assignment"
+      );
+    }
+    const adapter = this.resolveAdapter(mutation.target, mutation.mutationType);
+    if (!adapter) {
+      throw new AutonomousMutationExecutionError(
+        400,
+        "No autonomous mutation adapter is available for rollback"
+      );
+    }
+    if (mutation.status !== "applied") {
+      throw new AutonomousMutationExecutionError(
+        409,
+        "Only applied autonomous mutations can be rolled back"
+      );
+    }
+    assertRollbackEvidenceSupportsScope(adapter, mutation);
+    const newerMutation = this.ledger.findNewerApplied({
+      assignmentId: mutation.assignmentId,
+      target: mutation.target,
+      mutationType: mutation.mutationType,
+      mutationTypes: adapter.rollbackConflictMutationTypes,
+      appliedAt: mutation.appliedAt ?? mutation.updatedAt,
+      id: mutation.id,
+      scope: adapter.rollbackConflictScope ?? "assignment",
+      affectedResources: mutation.affectedResources,
+    });
+    if (newerMutation) {
+      throw new AutonomousMutationExecutionError(
+        409,
+        `Cannot roll back this autonomous mutation while a newer applied ${adapter.mutationClass} mutation exists`
+      );
+    }
+    try {
+      const rollback = await adapter.rollback({
+        assignment: assignment.assignment,
+        mutation,
+        rollback: mutation.rollback,
+        actor: input.actor,
+      });
+      return {
+        assignment: this.assignments.getRequired(assignment.assignment.id),
+        mutation: this.recordRolledBackResult(
+          mutation.id,
+          adapter,
+          rollback,
+          input.actor
+        ),
+      };
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Failed to roll back autonomous mutation";
+      throw new AutonomousMutationExecutionError(400, message);
+    }
+  }
+
+  private recordAppliedResult(
+    mutationId: string,
+    adapter: AutonomousMutationAdapter,
+    result: AutonomousMutationApplyResult
+  ): AutonomousMutationRecord {
+    return this.ledger.recordApplied(mutationId, {
+      before: result.before,
+      after: result.after,
+      rollback: result.rollback,
+      affectedResources: result.affectedResources ?? adapter.affectedResources,
+      verification: {
+        attempted: true,
+        result: "passed",
+        method: result.verificationMethod ?? `${adapter.mutationType}_update`,
+      },
+    });
+  }
+
+  private recordRolledBackResult(
+    mutationId: string,
+    adapter: AutonomousMutationAdapter,
+    result: AutonomousMutationRollbackResult,
+    actor?: string
+  ): AutonomousMutationRecord {
+    return this.ledger.recordRolledBack(mutationId, {
+      actor,
+      verification: {
+        attempted: true,
+        result: "passed",
+        method:
+          result?.verificationMethod ?? `${adapter.mutationType}_rollback`,
+      },
+    });
   }
 
   private assertAssignmentCanMutate(
@@ -504,672 +559,6 @@ export class AutonomousMutationExecutor {
   }
 }
 
-function createOperatorSettingsAutonomousMutationAdapter(
-  settings: OperatorSettingsMutationPort
-): AutonomousMutationAdapter {
-  const affectedResources = [{ type: "settings", id: "operator" }];
-  return {
-    target: "configuration",
-    mutationType: "operator_settings",
-    mutationClass: OPERATOR_SETTINGS_MUTATION_CLASS,
-    affectedResources,
-    apply(input) {
-      const proposedChange = asJsonObject(
-        input.proposedChange,
-        "proposedChange"
-      );
-      const result = applyOperatorSettingsMutation(
-        settings,
-        proposedChange.operatorSettings
-      );
-      return {
-        ...result,
-        affectedResources,
-        verificationMethod: "operator_settings_update",
-      };
-    },
-    rollback(input) {
-      rollbackOperatorSettingsMutation(settings, input.rollback);
-      return { verificationMethod: "operator_settings_rollback" };
-    },
-  };
-}
-
-function createAssignmentPolicyAutonomousMutationAdapter(
-  assignments: AutonomousAssignmentService
-): AutonomousMutationAdapter {
-  return {
-    target: "configuration",
-    mutationType: "assignment_policy",
-    mutationClass: ASSIGNMENT_POLICY_MUTATION_CLASS,
-    affectedResources: [{ type: "assignment_policy" }],
-    apply(input) {
-      const proposedChange = asJsonObject(
-        input.proposedChange,
-        "proposedChange"
-      );
-      const assignmentPolicy = asJsonObject(
-        proposedChange.assignmentPolicy,
-        "proposedChange.assignmentPolicy"
-      );
-      const policyPatch = toAssignmentPolicyPatch(assignmentPolicy, {
-        allowSelfEvolution: false,
-      });
-      const before = input.assignment.policy;
-      const updated = assignments.control(input.assignment.id, {
-        action: "change_policy",
-        actor: input.request.actor ?? "autonomous_mutation",
-        reason: input.request.rationale,
-        policy: policyPatch,
-      });
-      const affectedResources = [
-        { type: "assignment_policy", id: input.assignment.id },
-      ];
-      return {
-        before: before as unknown as JsonValue,
-        after: updated.assignment.policy as unknown as JsonValue,
-        rollback: { assignmentPolicy: before } as unknown as JsonValue,
-        affectedResources,
-        verificationMethod: "assignment_policy_update",
-      };
-    },
-    rollback(input) {
-      const rollback = asJsonObject(input.rollback, "rollback");
-      const assignmentPolicy = asJsonObject(
-        rollback.assignmentPolicy,
-        "rollback.assignmentPolicy"
-      );
-      const rollbackPolicy = toAssignmentPolicyPatch(
-        withoutSelfEvolution(assignmentPolicy),
-        { allowSelfEvolution: false }
-      );
-      assignments.control(input.assignment.id, {
-        action: "change_policy",
-        actor: input.actor ?? "autonomous_mutation_rollback",
-        reason: `Rollback autonomous mutation ${input.mutation.id}`,
-        policy: rollbackPolicy,
-      });
-      return { verificationMethod: "assignment_policy_rollback" };
-    },
-  };
-}
-
-function createToolBundleEnableAutonomousMutationAdapter(
-  toolBundles: ToolBundleLifecycleService
-): AutonomousMutationAdapter {
-  return {
-    target: "tool",
-    mutationType: "bundle_enable",
-    mutationClass: TOOL_BUNDLE_ENABLE_MUTATION_CLASS,
-    affectedResources: [{ type: "tool_bundle_import" }],
-    apply(input) {
-      const proposedChange = asJsonObject(
-        input.proposedChange,
-        "proposedChange"
-      );
-      const toolBundle = asJsonObject(
-        proposedChange.toolBundle,
-        "proposedChange.toolBundle"
-      );
-      const importId = requiredString(
-        toolBundle.importId,
-        "toolBundle.importId"
-      );
-      const before = toolBundles.get(importId);
-      if (!before) {
-        throw new Error("Tool bundle import not found");
-      }
-      const after = toolBundles.enable(
-        importId,
-        input.request.actor ?? "autonomous_mutation",
-        input.request.rationale
-      );
-      const affectedResources = [
-        { type: "tool_bundle_import", id: importId },
-        ...toolBundles.listToolIds(after).map((id) => ({ type: "tool", id })),
-      ];
-      return {
-        before: before as unknown as JsonValue,
-        after: after as unknown as JsonValue,
-        rollback: { toolBundle: { importId } },
-        affectedResources,
-        verificationMethod: "tool_bundle_enable_update",
-      };
-    },
-    rollback(input) {
-      const rollback = asJsonObject(input.rollback, "rollback");
-      const toolBundle = asJsonObject(
-        rollback.toolBundle,
-        "rollback.toolBundle"
-      );
-      const importId = requiredString(
-        toolBundle.importId,
-        "toolBundle.importId"
-      );
-      toolBundles.disable(
-        importId,
-        input.actor ?? "autonomous_mutation_rollback",
-        `Rollback autonomous mutation ${input.mutation.id}`
-      );
-      return { verificationMethod: "tool_bundle_enable_rollback" };
-    },
-  };
-}
-
-function createPromptRuntimeGuidanceAutonomousMutationAdapter(
-  promptGuidance: PromptRuntimeGuidanceStore
-): AutonomousMutationAdapter {
-  const affectedResources = [{ type: "prompt", id: "runtime_guidance" }];
-  return {
-    target: "prompt",
-    mutationType: "runtime_guidance",
-    mutationClass: PROMPT_RUNTIME_GUIDANCE_MUTATION_CLASS,
-    affectedResources,
-    rollbackConflictScope: "global",
-    apply(input) {
-      const proposedChange = asJsonObject(
-        input.proposedChange,
-        "proposedChange"
-      );
-      const runtimeGuidance = asJsonObject(
-        proposedChange.runtimeGuidance,
-        "proposedChange.runtimeGuidance"
-      );
-      const text = normalizeRuntimeGuidanceText(runtimeGuidance.text);
-      const before = promptGuidance.get();
-      const after = promptGuidance.update(
-        text,
-        input.request.actor ?? "autonomous_mutation"
-      );
-      return {
-        before: before as unknown as JsonValue,
-        after: after as unknown as JsonValue,
-        rollback: { runtimeGuidance: { text: before.text } },
-        affectedResources,
-        verificationMethod: "prompt_runtime_guidance_update",
-      };
-    },
-    rollback(input) {
-      const rollback = asJsonObject(input.rollback, "rollback");
-      const runtimeGuidance = asJsonObject(
-        rollback.runtimeGuidance,
-        "rollback.runtimeGuidance"
-      );
-      promptGuidance.update(
-        normalizeRuntimeGuidanceText(runtimeGuidance.text, {
-          allowEmpty: true,
-        }),
-        input.actor ?? "autonomous_mutation_rollback"
-      );
-      return { verificationMethod: "prompt_runtime_guidance_rollback" };
-    },
-  };
-}
-
-function createMemoryPolicyRuntimeBoundsAutonomousMutationAdapter(
-  memoryPolicy: MemoryPolicyStore
-): AutonomousMutationAdapter {
-  const affectedResources = [{ type: "memory_policy", id: "runtime_bounds" }];
-  return {
-    target: "memory_policy",
-    mutationType: "runtime_bounds",
-    mutationClass: MEMORY_POLICY_RUNTIME_BOUNDS_MUTATION_CLASS,
-    affectedResources,
-    rollbackConflictScope: "global",
-    apply(input) {
-      const proposedChange = asJsonObject(
-        input.proposedChange,
-        "proposedChange"
-      );
-      const memoryPolicyPatch = normalizeMemoryPolicyPatch(
-        asJsonObject(proposedChange.memoryPolicy, "proposedChange.memoryPolicy")
-      );
-      const before = memoryPolicyValues(memoryPolicy.get());
-      const after = memoryPolicyValues(
-        memoryPolicy.update(
-          memoryPolicyPatch,
-          input.request.actor ?? "autonomous_mutation"
-        )
-      );
-      return {
-        before: before as unknown as JsonValue,
-        after: after as unknown as JsonValue,
-        rollback: { memoryPolicy: before } as unknown as JsonValue,
-        affectedResources,
-        verificationMethod: "memory_policy_runtime_bounds_update",
-      };
-    },
-    rollback(input) {
-      const rollback = asJsonObject(input.rollback, "rollback");
-      const memoryPolicyRollback = normalizeMemoryPolicyPatch(
-        asJsonObject(rollback.memoryPolicy, "rollback.memoryPolicy")
-      );
-      memoryPolicy.update(
-        memoryPolicyRollback,
-        input.actor ?? "autonomous_mutation_rollback"
-      );
-      return { verificationMethod: "memory_policy_runtime_bounds_rollback" };
-    },
-  };
-}
-
-function createRuntimeConfigLimitsAutonomousMutationAdapter(
-  runtimeConfigLimits: RuntimeConfigLimitsStore
-): AutonomousMutationAdapter {
-  const affectedResources = [{ type: "runtime_config", id: "limits" }];
-  return {
-    target: "configuration",
-    mutationType: "runtime_limits",
-    mutationClass: RUNTIME_CONFIG_LIMITS_MUTATION_CLASS,
-    minimumRiskClass: "medium",
-    affectedResources,
-    rollbackConflictScope: "global",
-    apply(input) {
-      const proposedChange = asJsonObject(
-        input.proposedChange,
-        "proposedChange"
-      );
-      const runtimeLimitsPatch = normalizeRuntimeConfigLimitsPatch(
-        asJsonObject(
-          proposedChange.runtimeLimits,
-          "proposedChange.runtimeLimits"
-        )
-      );
-      const beforeSnapshot = runtimeConfigLimits.snapshot();
-      const before = beforeSnapshot.values;
-      const after = runtimeConfigLimitValues(
-        runtimeConfigLimits.update(
-          runtimeLimitsPatch,
-          input.request.actor ?? "autonomous_mutation"
-        )
-      );
-      return {
-        before: before as unknown as JsonValue,
-        after: after as unknown as JsonValue,
-        rollback: {
-          runtimeLimits: before,
-          runtimeLimitsOverlay: beforeSnapshot,
-        } as unknown as JsonValue,
-        affectedResources,
-        verificationMethod: "runtime_config_limits_update",
-      };
-    },
-    rollback(input) {
-      const rollback = asJsonObject(input.rollback, "rollback");
-      if (!("runtimeLimitsOverlay" in rollback)) {
-        runtimeConfigLimits.restoreLegacyValues(
-          rollback.runtimeLimits,
-          input.actor ?? "autonomous_mutation_rollback"
-        );
-        return { verificationMethod: "runtime_config_limits_rollback" };
-      }
-      const runtimeLimitsRollback = normalizeRuntimeConfigLimitsSnapshot(
-        rollback.runtimeLimitsOverlay
-      );
-      runtimeConfigLimits.restoreSnapshot(
-        runtimeLimitsRollback,
-        input.actor ?? "autonomous_mutation_rollback"
-      );
-      return { verificationMethod: "runtime_config_limits_rollback" };
-    },
-  };
-}
-
-function createRolePermissionPolicyAutonomousMutationAdapter(
-  rolePolicy: RolePolicyRuntimeStore
-): AutonomousMutationAdapter {
-  const affectedResources = [{ type: "role_policy", id: "runtime" }];
-  return {
-    target: "role",
-    mutationType: "permission_policy",
-    mutationClass: ROLE_PERMISSION_POLICY_MUTATION_CLASS,
-    affectedResources,
-    rollbackConflictScope: "global",
-    apply(input) {
-      const proposedChange = asJsonObject(
-        input.proposedChange,
-        "proposedChange"
-      );
-      const rolePolicyPatch = asJsonObject(
-        proposedChange.rolePolicy,
-        "proposedChange.rolePolicy"
-      );
-      const before = rolePolicyRuntimeSnapshot(rolePolicy.get());
-      const after = rolePolicyRuntimeSnapshot(
-        rolePolicy.update(
-          rolePolicyPatch as unknown as RolePolicyPatch,
-          input.request.actor ?? "autonomous_mutation"
-        )
-      );
-      return {
-        before: before as unknown as JsonValue,
-        after: after as unknown as JsonValue,
-        rollback: {
-          rolePolicy: { overrides: before.overrides },
-        } as unknown as JsonValue,
-        affectedResources,
-        verificationMethod: "role_permission_policy_update",
-      };
-    },
-    rollback(input) {
-      const rollback = asJsonObject(input.rollback, "rollback");
-      const rolePolicyRollback = asJsonObject(
-        rollback.rolePolicy,
-        "rollback.rolePolicy"
-      );
-      const overrides = asJsonObject(
-        rolePolicyRollback.overrides,
-        "rollback.rolePolicy.overrides"
-      );
-      rolePolicy.replaceOverrides(
-        overrides as unknown as RolePolicyOverrides,
-        input.actor ?? "autonomous_mutation_rollback"
-      );
-      return { verificationMethod: "role_permission_policy_rollback" };
-    },
-  };
-}
-
-function createProjectFileDraftAutonomousMutationAdapter(
-  projectFileDrafts: ProjectFileDraftStore
-): AutonomousMutationAdapter {
-  return {
-    target: "project_file",
-    mutationType: "draft",
-    mutationClass: PROJECT_FILE_DRAFT_MUTATION_CLASS,
-    affectedResources: [{ type: "project_file_draft" }],
-    apply(input) {
-      const proposedChange = asJsonObject(
-        input.proposedChange,
-        "proposedChange"
-      );
-      const projectFileDraft = asJsonObject(
-        proposedChange.projectFileDraft,
-        "proposedChange.projectFileDraft"
-      );
-      const draft = projectFileDrafts.create({
-        assignmentId: input.assignment.id,
-        runId: input.request.runId,
-        path: requiredString(projectFileDraft.path, "projectFileDraft.path"),
-        content:
-          typeof projectFileDraft.content === "string"
-            ? projectFileDraft.content
-            : requiredString(
-                projectFileDraft.content,
-                "projectFileDraft.content"
-              ),
-        contentType:
-          typeof projectFileDraft.contentType === "string"
-            ? projectFileDraft.contentType
-            : undefined,
-        metadata:
-          projectFileDraft.metadata === undefined
-            ? {
-                rationale: input.request.rationale,
-                actor: input.request.actor ?? null,
-              }
-            : projectFileDraft.metadata,
-      });
-      const summary = projectFileDraftSummary(draft);
-      const affectedResources = [
-        { type: "project_file_draft", id: draft.id, path: draft.path },
-      ];
-      return {
-        before: {
-          path: draft.path,
-          activeDrafts: projectFileDrafts
-            .listActiveSummariesForPath(draft.path)
-            .filter((item) => item.id !== draft.id),
-        } as unknown as JsonValue,
-        after: { draft: summary } as unknown as JsonValue,
-        rollback: { projectFileDraft: { id: draft.id } },
-        affectedResources,
-        verificationMethod: "project_file_draft_create",
-      };
-    },
-    rollback(input) {
-      const rollback = asJsonObject(input.rollback, "rollback");
-      const projectFileDraft = asJsonObject(
-        rollback.projectFileDraft,
-        "rollback.projectFileDraft"
-      );
-      const id = requiredString(projectFileDraft.id, "projectFileDraft.id");
-      projectFileDrafts.markRolledBack(id);
-      return { verificationMethod: "project_file_draft_rollback" };
-    },
-  };
-}
-
-function createProjectFileApplyDraftAutonomousMutationAdapter(
-  projectFileDrafts: ProjectFileDraftStore,
-  projectFileApply: ProjectFileApplyService
-): AutonomousMutationAdapter {
-  return {
-    target: "project_file",
-    mutationType: "apply_draft",
-    mutationClass: PROJECT_FILE_APPLY_DRAFT_MUTATION_CLASS,
-    minimumRiskClass: "high",
-    rollbackConflictScope: "global",
-    affectedResources: [{ type: "project_file" }],
-    apply(input) {
-      const proposedChange = asJsonObject(
-        input.proposedChange,
-        "proposedChange"
-      );
-      const projectFileApplyInput = asJsonObject(
-        proposedChange.projectFileApply,
-        "proposedChange.projectFileApply"
-      );
-      const draftId = requiredString(
-        projectFileApplyInput.draftId,
-        "projectFileApply.draftId"
-      );
-      const draft = projectFileDrafts.get(draftId);
-      if (!draft) {
-        throw new Error("Project file draft not found");
-      }
-      if (draft.assignmentId !== input.assignment.id) {
-        throw new Error("Project file draft does not belong to assignment");
-      }
-      if (draft.status !== "active") {
-        throw new Error("Project file draft is not active");
-      }
-      const result = projectFileApply.apply({
-        path: draft.path,
-        content: draft.content,
-      });
-      let appliedDraft;
-      try {
-        appliedDraft = projectFileDrafts.markApplied(draft.id, {
-          mutationId: input.mutationId,
-          sha256: result.after.sha256,
-        });
-      } catch (error) {
-        projectFileApply.rollback(result.before);
-        throw error;
-      }
-      const affectedResources = [
-        { type: "project_file", id: draft.path, path: draft.path },
-      ];
-      return {
-        before: result.before as unknown as JsonValue,
-        after: {
-          draft: projectFileDraftSummary(appliedDraft),
-          file: result.after,
-        } as unknown as JsonValue,
-        rollback: {
-          projectFileApply: {
-            draftId: draft.id,
-            path: draft.path,
-            beforeFile: result.before,
-          },
-        } as unknown as JsonValue,
-        affectedResources,
-        verificationMethod: "project_file_apply_draft_write",
-      };
-    },
-    rollback(input) {
-      const rollback = asJsonObject(input.rollback, "rollback");
-      const projectFileApplyRollback = asJsonObject(
-        rollback.projectFileApply,
-        "rollback.projectFileApply"
-      );
-      const draftId = requiredString(
-        projectFileApplyRollback.draftId,
-        "rollback.projectFileApply.draftId"
-      );
-      projectFileApply.rollback(
-        normalizeProjectFileApplyBeforeSnapshot(
-          projectFileApplyRollback.beforeFile
-        )
-      );
-      projectFileDrafts.markActiveAfterApplyRollback(draftId);
-      return { verificationMethod: "project_file_apply_draft_rollback" };
-    },
-  };
-}
-
-type ProjectFileBundleApplyItem = {
-  draftId: string;
-  path: string;
-  beforeFile: ProjectFileApplyBeforeSnapshot;
-  afterFile: {
-    path: string;
-    sizeBytes: number;
-    sha256: string;
-  };
-};
-
-function createProjectFileApplyBundleAutonomousMutationAdapter(
-  projectFileDrafts: ProjectFileDraftStore,
-  projectFileApply: ProjectFileApplyService
-): AutonomousMutationAdapter {
-  return {
-    target: "project_file",
-    mutationType: "apply_bundle",
-    mutationClass: PROJECT_FILE_APPLY_BUNDLE_MUTATION_CLASS,
-    minimumRiskClass: "high",
-    rollbackConflictScope: "global",
-    affectedResources: [{ type: "project_file_bundle" }],
-    apply(input) {
-      const proposedChange = asJsonObject(
-        input.proposedChange,
-        "proposedChange"
-      );
-      const projectFileBundle = asJsonObject(
-        proposedChange.projectFileBundle,
-        "proposedChange.projectFileBundle"
-      );
-      const draftIds = requireProjectFileBundleDraftIds(
-        projectFileBundle.draftIds
-      );
-      const drafts = draftIds.map((draftId) => {
-        const draft = projectFileDrafts.get(draftId);
-        if (!draft) {
-          throw new Error(`Project file draft not found: ${draftId}`);
-        }
-        if (draft.assignmentId !== input.assignment.id) {
-          throw new Error("Project file draft does not belong to assignment");
-        }
-        if (draft.status !== "active") {
-          throw new Error("Project file draft is not active");
-        }
-        return draft;
-      });
-      const paths = drafts.map((draft) => draft.path);
-      if (new Set(paths).size !== paths.length) {
-        throw new Error(
-          "projectFileBundle.draftIds cannot target duplicate paths"
-        );
-      }
-
-      const applied: ProjectFileBundleApplyItem[] = [];
-      const appliedDraftIds: string[] = [];
-      const appliedDraftSummaries = new Map<
-        string,
-        ReturnType<typeof projectFileDraftSummary>
-      >();
-      try {
-        for (const draft of drafts) {
-          const result = projectFileApply.apply({
-            path: draft.path,
-            content: draft.content,
-          });
-          applied.push({
-            draftId: draft.id,
-            path: draft.path,
-            beforeFile: result.before,
-            afterFile: result.after,
-          });
-          const appliedDraft = projectFileDrafts.markApplied(draft.id, {
-            mutationId: input.mutationId,
-            sha256: result.after.sha256,
-          });
-          appliedDraftIds.push(draft.id);
-          appliedDraftSummaries.set(
-            draft.id,
-            projectFileDraftSummary(appliedDraft)
-          );
-        }
-      } catch (error) {
-        for (const item of applied.slice().reverse()) {
-          projectFileApply.rollback(item.beforeFile);
-        }
-        for (const draftId of appliedDraftIds.reverse()) {
-          projectFileDrafts.markActiveAfterApplyRollback(draftId);
-        }
-        if (applied.length > 0) {
-          throw new AutonomousMutationApplyFailure(
-            error instanceof Error
-              ? error.message
-              : "Failed to apply autonomous mutation",
-            projectFileBundleApplyEvidence(applied, appliedDraftSummaries)
-          );
-        }
-        throw error;
-      }
-
-      const affectedResources = applied.map((item) => ({
-        type: "project_file",
-        id: item.path,
-        path: item.path,
-      }));
-      const evidence = projectFileBundleApplyEvidence(
-        applied,
-        appliedDraftSummaries
-      );
-      return {
-        before: evidence.before,
-        after: evidence.after,
-        rollback: evidence.rollback,
-        affectedResources,
-        verificationMethod: "project_file_apply_bundle_write",
-      };
-    },
-    rollback(input) {
-      const rollback = asJsonObject(input.rollback, "rollback");
-      const projectFileBundle = asJsonObject(
-        rollback.projectFileBundle,
-        "rollback.projectFileBundle"
-      );
-      if (!Array.isArray(projectFileBundle.items)) {
-        throw new Error("rollback.projectFileBundle.items must be an array");
-      }
-      const items = projectFileBundle.items.map((itemValue) =>
-        normalizeProjectFileBundleRollbackItem(itemValue)
-      );
-      for (const item of items) {
-        projectFileApply.assertRollbackSafe(item.beforeFile);
-      }
-      for (const item of items.slice().reverse()) {
-        projectFileApply.rollback(item.beforeFile);
-        projectFileDrafts.markActiveAfterApplyRollback(item.draftId);
-      }
-      return { verificationMethod: "project_file_apply_bundle_rollback" };
-    },
-  };
-}
-
 function authorizingPolicy(
   policy: AssignmentSelfEvolutionPolicy,
   actor?: string,
@@ -1207,6 +596,53 @@ function adapterKey(
   return `${target}:${mutationType}`;
 }
 
+function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "then" in value &&
+    typeof value.then === "function"
+  );
+}
+
+function assertRollbackEvidenceSupportsScope(
+  adapter: AutonomousMutationAdapter,
+  mutation: AutonomousMutationRecord
+): void {
+  if (adapter.rollbackConflictScope !== "affected_resources") {
+    return;
+  }
+  if (hasConcreteAffectedResource(mutation.affectedResources)) {
+    return;
+  }
+  throw new AutonomousMutationExecutionError(
+    409,
+    "Cannot roll back this autonomous mutation because affected resource evidence does not identify a concrete resource"
+  );
+}
+
+function hasConcreteAffectedResource(value: JsonValue): boolean {
+  if (!Array.isArray(value)) {
+    return false;
+  }
+  return value.some((item) => {
+    if (typeof item !== "object" || item === null || Array.isArray(item)) {
+      return false;
+    }
+    const resource = item as Record<string, JsonValue>;
+    return (
+      nonEmptyString(resource.id) !== undefined ||
+      nonEmptyString(resource.path) !== undefined
+    );
+  });
+}
+
+function nonEmptyString(value: JsonValue | undefined): string | undefined {
+  return typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : undefined;
+}
+
 function riskRank(riskClass: SelfEvolutionRiskClass): number {
   return RISK_ORDER.indexOf(riskClass);
 }
@@ -1216,339 +652,4 @@ function highestRiskClass(
   right: SelfEvolutionRiskClass
 ): SelfEvolutionRiskClass {
   return riskRank(left) >= riskRank(right) ? left : right;
-}
-
-function requireProjectFileBundleDraftIds(value: JsonValue): string[] {
-  if (!Array.isArray(value)) {
-    throw new Error("projectFileBundle.draftIds must be an array");
-  }
-  if (value.length < 1 || value.length > MAX_PROJECT_FILE_BUNDLE_DRAFTS) {
-    throw new Error(
-      `projectFileBundle.draftIds must contain 1 to ${MAX_PROJECT_FILE_BUNDLE_DRAFTS} draft ids`
-    );
-  }
-  const ids = value.map((item, index) =>
-    requiredString(item, `projectFileBundle.draftIds[${index}]`)
-  );
-  if (new Set(ids).size !== ids.length) {
-    throw new Error("projectFileBundle.draftIds must be unique");
-  }
-  return ids;
-}
-
-function projectFileBundleApplyEvidence(
-  applied: ProjectFileBundleApplyItem[],
-  appliedDraftSummaries: Map<string, ReturnType<typeof projectFileDraftSummary>>
-): Required<AutonomousMutationApplyFailureEvidence> {
-  return {
-    before: {
-      files: applied.map((item) => ({
-        draftId: item.draftId,
-        path: item.path,
-        beforeFile: item.beforeFile,
-      })),
-    } as unknown as JsonValue,
-    after: {
-      files: applied.map((item) => ({
-        draft: appliedDraftSummaries.get(item.draftId),
-        file: item.afterFile,
-      })),
-    } as unknown as JsonValue,
-    rollback: {
-      projectFileBundle: {
-        items: applied,
-      },
-    } as unknown as JsonValue,
-  };
-}
-
-function normalizeProjectFileBundleRollbackItem(
-  value: JsonValue
-): ProjectFileBundleApplyItem {
-  const item = asJsonObject(value, "rollback.projectFileBundle.items[]");
-  const draftId = requiredString(
-    item.draftId,
-    "rollback.projectFileBundle.item.draftId"
-  );
-  const path = requiredString(
-    item.path,
-    "rollback.projectFileBundle.item.path"
-  );
-  const afterFile = asJsonObject(
-    item.afterFile,
-    "rollback.projectFileBundle.item.afterFile"
-  );
-  if (typeof afterFile.sizeBytes !== "number") {
-    throw new Error(
-      "rollback.projectFileBundle.item.afterFile.sizeBytes must be a number"
-    );
-  }
-  return {
-    draftId,
-    path,
-    beforeFile: normalizeProjectFileApplyBeforeSnapshot(item.beforeFile),
-    afterFile: {
-      path: requiredString(
-        afterFile.path,
-        "rollback.projectFileBundle.item.afterFile.path"
-      ),
-      sizeBytes: afterFile.sizeBytes,
-      sha256: requiredString(
-        afterFile.sha256,
-        "rollback.projectFileBundle.item.afterFile.sha256"
-      ),
-    },
-  };
-}
-
-function normalizeProjectFileApplyBeforeSnapshot(
-  value: JsonValue
-): ProjectFileApplyBeforeSnapshot {
-  const snapshot = asJsonObject(value, "rollback.projectFileApply.beforeFile");
-  const path = requiredString(
-    snapshot.path,
-    "rollback.projectFileApply.beforeFile.path"
-  );
-  if (typeof snapshot.existed !== "boolean") {
-    throw new Error(
-      "rollback.projectFileApply.beforeFile.existed must be a boolean"
-    );
-  }
-  if (!snapshot.existed) {
-    return { path, existed: false };
-  }
-  if (
-    typeof snapshot.contentBase64 !== "string" &&
-    typeof snapshot.content !== "string"
-  ) {
-    throw new Error(
-      "rollback.projectFileApply.beforeFile.contentBase64 must be a string"
-    );
-  }
-  const before: ProjectFileApplyBeforeSnapshot = {
-    path,
-    existed: true,
-  };
-  if (typeof snapshot.contentBase64 === "string") {
-    before.contentBase64 = snapshot.contentBase64;
-  } else if (typeof snapshot.content === "string") {
-    before.content = snapshot.content;
-  }
-  if (typeof snapshot.sizeBytes === "number") {
-    before.sizeBytes = snapshot.sizeBytes;
-  }
-  if (typeof snapshot.sha256 === "string") {
-    before.sha256 = snapshot.sha256;
-  }
-  return before;
-}
-
-function asJsonObject(
-  value: JsonValue,
-  field: string
-): { [key: string]: JsonValue } {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`${field} must be a JSON object`);
-  }
-  return value;
-}
-
-function requiredString(value: JsonValue, field: string): string {
-  if (typeof value !== "string" || value.trim() === "") {
-    throw new Error(`${field} is required`);
-  }
-  return value.trim();
-}
-
-function toAssignmentPolicyPatch(
-  value: Record<string, JsonValue>,
-  options: { allowSelfEvolution: boolean }
-): AssignmentPolicyPatch {
-  const patch: Record<string, unknown> = {};
-  const allowedTopLevel = new Set([
-    "maxWakeups",
-    "maxTotalRuntimeMinutes",
-    "maxConsecutiveFailures",
-    "maxIdleHours",
-    "wakeupDelayMinMinutes",
-    "wakeupDelayMaxMinutes",
-    "notificationCadence",
-    "childAssignments",
-    ...(options.allowSelfEvolution ? ["selfEvolution"] : []),
-  ]);
-
-  for (const key of Object.keys(value)) {
-    if (key === "selfEvolution" && !options.allowSelfEvolution) {
-      throw new Error(
-        "assignmentPolicy.selfEvolution cannot be changed by autonomous assignment policy mutations"
-      );
-    }
-    if (!allowedTopLevel.has(key)) {
-      throw new Error(`assignmentPolicy.${key} is not supported`);
-    }
-  }
-
-  for (const key of [
-    "maxWakeups",
-    "maxTotalRuntimeMinutes",
-    "maxConsecutiveFailures",
-    "maxIdleHours",
-    "wakeupDelayMinMinutes",
-    "wakeupDelayMaxMinutes",
-  ]) {
-    if (value[key] !== undefined) {
-      patch[key] = value[key];
-    }
-  }
-
-  if (value.notificationCadence !== undefined) {
-    patch.notificationCadence = toNotificationCadencePatch(
-      asJsonObject(
-        value.notificationCadence,
-        "assignmentPolicy.notificationCadence"
-      )
-    );
-  }
-
-  if (value.childAssignments !== undefined) {
-    patch.childAssignments = toChildAssignmentPolicyPatch(
-      asJsonObject(value.childAssignments, "assignmentPolicy.childAssignments")
-    );
-  }
-
-  if (options.allowSelfEvolution && value.selfEvolution !== undefined) {
-    patch.selfEvolution = toSelfEvolutionPolicyPatch(
-      asJsonObject(value.selfEvolution, "assignmentPolicy.selfEvolution")
-    );
-  }
-
-  if (Object.keys(patch).length === 0) {
-    throw new Error(
-      "assignmentPolicy must contain at least one supported field"
-    );
-  }
-
-  return patch as AssignmentPolicyPatch;
-}
-
-function withoutSelfEvolution(
-  value: Record<string, JsonValue>
-): Record<string, JsonValue> {
-  return Object.fromEntries(
-    Object.entries(value).filter(([key]) => key !== "selfEvolution")
-  ) as Record<string, JsonValue>;
-}
-
-function toNotificationCadencePatch(
-  value: Record<string, JsonValue>
-): AssignmentPolicyPatch["notificationCadence"] {
-  const patch: Record<string, unknown> = {};
-  const booleanKeys = [
-    "onCreate",
-    "onWakeupStart",
-    "onMeaningfulProgress",
-    "onBlocked",
-    "onFailure",
-    "onCompletion",
-  ];
-  const allowedKeys = new Set([
-    ...booleanKeys,
-    "activeProgressIntervalMinutes",
-  ]);
-  for (const key of Object.keys(value)) {
-    if (!allowedKeys.has(key)) {
-      throw new Error(
-        `assignmentPolicy.notificationCadence.${key} is not supported`
-      );
-    }
-  }
-  for (const key of booleanKeys) {
-    if (value[key] !== undefined) {
-      if (typeof value[key] !== "boolean") {
-        throw new Error(
-          `assignmentPolicy.notificationCadence.${key} must be boolean`
-        );
-      }
-      patch[key] = value[key];
-    }
-  }
-  if (value.activeProgressIntervalMinutes !== undefined) {
-    patch.activeProgressIntervalMinutes = value.activeProgressIntervalMinutes;
-  }
-  if (Object.keys(patch).length === 0) {
-    throw new Error(
-      "assignmentPolicy.notificationCadence must contain at least one supported field"
-    );
-  }
-  return patch as AssignmentPolicyPatch["notificationCadence"];
-}
-
-function toChildAssignmentPolicyPatch(
-  value: Record<string, JsonValue>
-): AssignmentPolicyPatch["childAssignments"] {
-  const patch: Record<string, unknown> = {};
-  const allowedKeys = new Set(["maxDepth", "maxActiveChildren"]);
-  for (const key of Object.keys(value)) {
-    if (!allowedKeys.has(key)) {
-      throw new Error(
-        `assignmentPolicy.childAssignments.${key} is not supported`
-      );
-    }
-  }
-  if (value.maxDepth !== undefined) {
-    patch.maxDepth = value.maxDepth;
-  }
-  if (value.maxActiveChildren !== undefined) {
-    patch.maxActiveChildren = value.maxActiveChildren;
-  }
-  if (Object.keys(patch).length === 0) {
-    throw new Error(
-      "assignmentPolicy.childAssignments must contain at least one supported field"
-    );
-  }
-  return patch as AssignmentPolicyPatch["childAssignments"];
-}
-
-function toSelfEvolutionPolicyPatch(
-  value: Record<string, JsonValue>
-): AssignmentPolicy["selfEvolution"] {
-  const patch: Record<string, unknown> = {};
-  const allowedKeys = new Set([
-    "enabled",
-    "allowedMutationClasses",
-    "maxRiskClass",
-  ]);
-  for (const key of Object.keys(value)) {
-    if (!allowedKeys.has(key)) {
-      throw new Error(`assignmentPolicy.selfEvolution.${key} is not supported`);
-    }
-  }
-  if (value.enabled !== undefined) {
-    if (typeof value.enabled !== "boolean") {
-      throw new Error("assignmentPolicy.selfEvolution.enabled must be boolean");
-    }
-    patch.enabled = value.enabled;
-  }
-  if (value.allowedMutationClasses !== undefined) {
-    if (
-      !Array.isArray(value.allowedMutationClasses) ||
-      value.allowedMutationClasses.some(
-        (item) => typeof item !== "string" || item.trim() === ""
-      )
-    ) {
-      throw new Error(
-        "assignmentPolicy.selfEvolution.allowedMutationClasses must be non-empty strings"
-      );
-    }
-    patch.allowedMutationClasses = value.allowedMutationClasses;
-  }
-  if (value.maxRiskClass !== undefined) {
-    patch.maxRiskClass = value.maxRiskClass;
-  }
-  if (Object.keys(patch).length === 0) {
-    throw new Error(
-      "assignmentPolicy.selfEvolution must contain at least one supported field"
-    );
-  }
-  return patch as AssignmentPolicy["selfEvolution"];
 }

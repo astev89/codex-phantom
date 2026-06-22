@@ -41,13 +41,17 @@ import { AutonomousMutationLedger } from "./assignments/mutation-ledger.ts";
 import { AutonomousMutationExecutor } from "./assignments/autonomous-mutations.ts";
 import { CodexAdapter } from "./agent/codex-adapter.ts";
 import { AgentRuntime } from "./agent/runtime.ts";
-import { PromptRuntimeGuidanceStore } from "./prompts/runtime-guidance.ts";
+import {
+  PromptManagedFragmentStore,
+  PromptRuntimeGuidanceStore,
+} from "./prompts/runtime-guidance.ts";
 import { RunGraphStore } from "./orchestration/run-graph-store.ts";
 import { OrchestrationService } from "./orchestration/service.ts";
 import { loadRolePolicyConfig } from "./orchestration/role-config.ts";
 import { RolePolicyRuntimeStore } from "./orchestration/role-policy-runtime.ts";
 import { ProjectFileApplyService } from "./project-files/apply.ts";
 import { ProjectFileDraftStore } from "./project-files/drafts.ts";
+import { ProjectFilePatchDraftStore } from "./project-files/patches.ts";
 import { SchedulerService } from "./scheduler/service.ts";
 import { McpAuditStore } from "./mcp/audit.ts";
 import { McpServer } from "./mcp/server.ts";
@@ -65,6 +69,7 @@ const database = new AppDatabase(config.datastorePath);
 const runtimeConfigLimits = new RuntimeConfigLimitsStore(database, config);
 const sessions = new SessionStore(database);
 const channels = new ChannelRegistry(database, config);
+const runtimeChannels = new RuntimeChannelCapabilities();
 const channelDeliveries = new ChannelDeliveryStore(database);
 const channelInbound = new InboundChannelEventStore(database);
 const embeddings = new OpenAiEmbeddingService(config);
@@ -91,21 +96,28 @@ const assignments = new AutonomousAssignmentService(database);
 const assignmentMutations = new AutonomousMutationLedger(database, assignments);
 const operatorSettings = new OperatorSettingsStore(database);
 const promptGuidance = new PromptRuntimeGuidanceStore(database);
+const promptFragments = new PromptManagedFragmentStore(database);
 const loadedRolePolicy = loadRolePolicyConfig(config.roleConfigPath);
 const rolePolicy = new RolePolicyRuntimeStore(database, loadedRolePolicy);
 const projectFileDrafts = new ProjectFileDraftStore(database);
+const projectFilePatchDrafts = new ProjectFilePatchDraftStore(database);
 const projectFileApply = new ProjectFileApplyService({
   repoRoot: process.cwd(),
 });
 const assignmentMutationExecutor = new AutonomousMutationExecutor({
   assignments,
+  channels,
+  runtimeChannels,
+  database,
   ledger: assignmentMutations,
   settings: operatorSettings,
   memoryPolicy,
   runtimeConfigLimits,
   promptGuidance,
+  promptFragments,
   rolePolicy,
   projectFileDrafts,
+  projectFilePatchDrafts,
   projectFileApply,
   toolBundles: toolBundleLifecycle,
 });
@@ -159,7 +171,8 @@ const runtime = new AgentRuntime(
   sessions,
   memory,
   tools,
-  promptGuidance
+  promptGuidance,
+  promptFragments
 );
 const orchestration = new OrchestrationService(
   runtime,
@@ -235,7 +248,6 @@ const email = new EmailChannelService({
   logger,
   assignmentIntake,
 });
-const runtimeChannels = new RuntimeChannelCapabilities();
 runtimeChannels.registerLifecycle("email", email);
 const server = new HttpServer(
   config,
@@ -259,6 +271,7 @@ const server = new HttpServer(
   assignmentIntake,
   assignmentMutations,
   promptGuidance,
+  promptFragments,
   memoryPolicy,
   runtimeConfigLimits,
   rolePolicy,

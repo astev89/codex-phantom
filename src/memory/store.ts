@@ -16,6 +16,7 @@ import {
 } from "./policy.ts";
 import {
   dedupeStrings,
+  isActive,
   MEMORY_ROW_COLUMNS,
   type MemoryRow,
   normalizeText,
@@ -34,6 +35,8 @@ import type {
   VectorStore,
 } from "./types.ts";
 import { QdrantVectorStore, SQLiteVectorStore } from "./vector-store.ts";
+
+const MAX_KEYWORD_FALLBACK_QUERY_TOKENS = 24;
 
 export class MemoryStore {
   private readonly database: AppDatabase;
@@ -83,23 +86,48 @@ export class MemoryStore {
       : [];
 
     const ids = results.map((result) => result.id);
-    const rows =
+    const vectorRows =
       ids.length > 0
         ? this.database.all<MemoryRow>(
             `
-            SELECT ${MEMORY_ROW_COLUMNS}
-            FROM memory_entries
-            WHERE id IN (${ids.map(() => "?").join(",")})
-          `,
+              SELECT ${MEMORY_ROW_COLUMNS}
+              FROM memory_entries
+              WHERE id IN (${ids.map(() => "?").join(",")})
+            `,
             ...ids
           )
+        : [];
+    const activeVectorRows = vectorRows.filter((row) => isActive(row));
+    const queryTokens = boundedKeywordFallbackTokens(input);
+    const keywordRows =
+      queryEmbedding &&
+      activeVectorRows.length < policy.memoryTopK &&
+      queryTokens.length > 0
+        ? this.database.all<MemoryRow>(
+            `
+              SELECT ${MEMORY_ROW_COLUMNS}
+              FROM memory_entries
+              WHERE COALESCE(lifecycle_state, 'active') = 'active'
+                AND embedding_json IS NULL
+                AND (${queryTokens
+                  .map(() => "LOWER(content) LIKE ?")
+                  .join(" OR ")})
+              ORDER BY created_at DESC
+              LIMIT 240
+            `,
+            ...queryTokens.map((token) => `%${token}%`)
+          )
+        : [];
+    const rows =
+      queryEmbedding && (activeVectorRows.length > 0 || keywordRows.length > 0)
+        ? dedupeMemoryRows([...vectorRows, ...keywordRows])
         : this.database.all<MemoryRow>(
             `
-            SELECT ${MEMORY_ROW_COLUMNS}
-            FROM memory_entries
-            ORDER BY created_at DESC
-            LIMIT 240
-          `
+              SELECT ${MEMORY_ROW_COLUMNS}
+              FROM memory_entries
+              ORDER BY created_at DESC
+              LIMIT 240
+            `
           );
 
     const retrieval = buildMemoryRetrievalContext({
@@ -561,4 +589,30 @@ export class MemoryStore {
       return null;
     }
   }
+}
+
+function boundedKeywordFallbackTokens(input: string): string[] {
+  const tokens: string[] = [];
+  const seen = new Set<string>();
+  const tokenPattern = /[a-z0-9]{3,}/gi;
+  let match: RegExpExecArray | null;
+  while (
+    tokens.length < MAX_KEYWORD_FALLBACK_QUERY_TOKENS &&
+    (match = tokenPattern.exec(input)) !== null
+  ) {
+    const token = match[0].toLowerCase();
+    if (!seen.has(token)) {
+      tokens.push(token);
+      seen.add(token);
+    }
+  }
+  return tokens;
+}
+
+function dedupeMemoryRows(rows: MemoryRow[]): MemoryRow[] {
+  const byId = new Map<string, MemoryRow>();
+  for (const row of rows) {
+    byId.set(row.id, row);
+  }
+  return [...byId.values()];
 }

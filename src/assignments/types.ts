@@ -74,6 +74,8 @@ export type AssignmentChildPolicy = {
   maxActiveChildren: number;
 };
 
+export type AssignmentChildDependencyWaitMode = "all" | "any";
+
 export type AssignmentPolicy = {
   maxWakeups: number;
   maxTotalRuntimeMinutes: number;
@@ -198,6 +200,8 @@ export type PromoteChildAssignmentInput = {
   actor?: string;
   rationale: string;
   waitForChild?: boolean;
+  dependsOnChildIds?: string[];
+  waitForChildren?: AssignmentChildDependencyWaitMode;
 };
 
 export type PromoteChildAssignmentResult = {
@@ -219,6 +223,7 @@ export type AssignmentControlInput = {
   reason?: string;
   context?: JsonValue;
   policy?: AssignmentPolicyPatch;
+  resolveDependencies?: boolean;
 };
 
 export type LinkAssignmentRunInput = {
@@ -259,6 +264,7 @@ export type ApplyAssignmentWakeupDecisionInput = {
   decision: AssignmentWakeupDecision;
   reason: string;
   nextWakeupAt?: string;
+  resolveDependencies?: boolean;
 };
 
 export type AssignmentMutationMilestone =

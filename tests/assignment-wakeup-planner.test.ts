@@ -7,18 +7,23 @@ import { AutonomousAssignmentService } from "../src/assignments/service.ts";
 import { AutonomousMutationExecutor } from "../src/assignments/autonomous-mutations.ts";
 import { AutonomousMutationLedger } from "../src/assignments/mutation-ledger.ts";
 import { RuntimeConfigLimitsStore } from "../src/config/runtime-limits.ts";
+import { ChannelRegistry } from "../src/channels/registry.ts";
 import { MemoryPolicyStore } from "../src/memory/policy.ts";
 import { loadRolePolicyConfig } from "../src/orchestration/role-config.ts";
 import { RolePolicyRuntimeStore } from "../src/orchestration/role-policy-runtime.ts";
 import { ProjectFileDraftStore } from "../src/project-files/drafts.ts";
 import { ProjectFileApplyService } from "../src/project-files/apply.ts";
+import { ProjectFilePatchDraftStore } from "../src/project-files/patches.ts";
 import {
   ASSIGNMENT_WAKEUP_JOB_NAME,
   AssignmentWakeupPlanner,
 } from "../src/assignments/wakeup-planner.ts";
 import { RunGraphStore } from "../src/orchestration/run-graph-store.ts";
 import type { OrchestrationService } from "../src/orchestration/service.ts";
-import { PromptRuntimeGuidanceStore } from "../src/prompts/runtime-guidance.ts";
+import {
+  PromptManagedFragmentStore,
+  PromptRuntimeGuidanceStore,
+} from "../src/prompts/runtime-guidance.ts";
 import { OperatorSettingsStore } from "../src/server/settings.ts";
 import type { JobRecord } from "../src/scheduler/service.ts";
 import { ToolBundleImportStore } from "../src/tools/bundles.ts";
@@ -35,15 +40,19 @@ type CoordinatorInput = Parameters<OrchestrationService["runCoordinator"]>[0];
 
 function makeScheduler(now: string): {
   jobs: ScheduledJob[];
-  scheduler: {
-    schedule: (
-      name: string,
-      message: string,
-      options: { delayMs?: number; maxAttempts?: number }
-    ) => Promise<JobRecord>;
-    list: () => Promise<JobRecord[]>;
-  };
-} {
+    scheduler: {
+      schedule: (
+        name: string,
+        message: string,
+        options: { delayMs?: number; maxAttempts?: number }
+      ) => Promise<JobRecord>;
+      reschedule: (
+        jobId: string,
+        options: { message?: string; delayMs?: number; scheduledAt?: string }
+      ) => Promise<JobRecord>;
+      list: () => Promise<JobRecord[]>;
+    };
+  } {
   const jobs: ScheduledJob[] = [];
   return {
     jobs,
@@ -66,6 +75,18 @@ function makeScheduler(now: string): {
         };
         jobs.push(record);
         return record;
+      },
+      async reschedule(jobId, options) {
+        const job = jobs.find((item) => item.id === jobId);
+        if (!job || job.status !== "scheduled") {
+          throw new Error(`Cannot reschedule non-scheduled job ${jobId}`);
+        }
+        job.message = options.message ?? job.message;
+        job.scheduledAt = options.scheduledAt
+          ? new Date(options.scheduledAt).toISOString()
+          : new Date(Date.parse(now) + (options.delayMs ?? 0)).toISOString();
+        job.delayMs = options.delayMs;
+        return job;
       },
       async list() {
         return jobs;
@@ -213,6 +234,7 @@ test("AssignmentWakeupPlanner promotes child assignment markers and schedules ch
     source: "planner-marker",
     parentAssignmentId: parent.assignment.id,
     parentWaitsForChild: true,
+    childDependencyConfigValidated: false,
   });
   assert.equal(jobs.length, 2);
   assert.equal(jobs[0]?.name, ASSIGNMENT_WAKEUP_JOB_NAME);
@@ -309,6 +331,741 @@ test("AssignmentWakeupPlanner keeps waiting parents parked while waited-on child
     assignmentId: parent.assignment.id,
     reason: "Waiting for active child assignment",
   });
+});
+
+test("AssignmentWakeupPlanner activates dependent children after dependencies complete", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-06-16T12:30:00.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const database = new AppDatabase(":memory:");
+  t.after(() => database.close());
+  const assignments = new AutonomousAssignmentService(database);
+  const runs = new RunGraphStore(database);
+  const { scheduler, jobs } = makeScheduler(now);
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, ["ASSIGNMENT_STATUS: complete"]),
+  });
+  const parent = assignments.create({
+    objective: "Coordinate dependent child work",
+    autonomyLevel: "execute",
+    policy: {
+      maxWakeups: 10,
+      childAssignments: { maxDepth: 1, maxActiveChildren: 3 },
+    },
+  });
+  const prerequisite = assignments.promoteChild({
+    parentAssignmentId: parent.assignment.id,
+    objective: "Produce prerequisite evidence",
+    rationale: "Needed before the dependent child can run.",
+    waitForChild: true,
+    policy: { maxWakeups: 2 },
+  });
+  const dependent = assignments.promoteChild({
+    parentAssignmentId: parent.assignment.id,
+    objective: "Run dependent verification",
+    rationale: "Runs after prerequisite evidence exists.",
+    waitForChild: true,
+    dependsOnChildIds: [prerequisite.child.assignment.id],
+    waitForChildren: "all",
+    policy: { maxWakeups: 2 },
+  });
+
+  const parked = await planner.wakeNow({
+    assignmentId: dependent.child.assignment.id,
+    reason: "dependency check",
+  });
+  assert.equal(parked.status, "scheduled");
+  assert.equal(
+    assignments.getRequired(dependent.child.assignment.id).assignment
+      .wakeupCount,
+    0
+  );
+  assert.deepEqual(JSON.parse(jobs[0]?.message ?? "{}"), {
+    assignmentId: dependent.child.assignment.id,
+    reason: "Waiting for child assignment dependencies",
+  });
+
+  const result = await planner.wakeNow({
+    assignmentId: prerequisite.child.assignment.id,
+    reason: "finish prerequisite",
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(
+    assignments.getRequired(dependent.child.assignment.id).assignment
+      .lifecycleState,
+    "active"
+  );
+  assert.equal(jobs.length, 1);
+  assert.deepEqual(JSON.parse(jobs[0]?.message ?? "{}"), {
+    assignmentId: dependent.child.assignment.id,
+    reason: "Child assignment dependencies satisfied",
+  });
+});
+
+test("AssignmentWakeupPlanner schedules every child activated by the same dependency", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-06-16T12:35:00.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const database = new AppDatabase(":memory:");
+  t.after(() => database.close());
+  const assignments = new AutonomousAssignmentService(database);
+  const runs = new RunGraphStore(database);
+  const { scheduler, jobs } = makeScheduler(now);
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, ["ASSIGNMENT_STATUS: complete"]),
+  });
+  const parent = assignments.create({
+    objective: "Coordinate multiple dependent children",
+    autonomyLevel: "execute",
+    policy: {
+      maxWakeups: 10,
+      childAssignments: { maxDepth: 1, maxActiveChildren: 4 },
+    },
+  });
+  const prerequisite = assignments.promoteChild({
+    parentAssignmentId: parent.assignment.id,
+    objective: "Produce shared prerequisite evidence",
+    rationale: "Multiple children wait for this same dependency.",
+    waitForChild: true,
+    policy: { maxWakeups: 2 },
+  });
+  const firstDependent = assignments.promoteChild({
+    parentAssignmentId: parent.assignment.id,
+    objective: "Run first dependent verification",
+    rationale: "Runs after prerequisite evidence exists.",
+    waitForChild: true,
+    dependsOnChildIds: [prerequisite.child.assignment.id],
+    waitForChildren: "all",
+    policy: { maxWakeups: 2 },
+  });
+  const secondDependent = assignments.promoteChild({
+    parentAssignmentId: parent.assignment.id,
+    objective: "Run second dependent verification",
+    rationale: "Also runs after prerequisite evidence exists.",
+    waitForChild: true,
+    dependsOnChildIds: [prerequisite.child.assignment.id],
+    waitForChildren: "all",
+    policy: { maxWakeups: 2 },
+  });
+
+  const result = await planner.wakeNow({
+    assignmentId: prerequisite.child.assignment.id,
+    reason: "finish prerequisite",
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(
+    assignments.getRequired(firstDependent.child.assignment.id).assignment
+      .lifecycleState,
+    "active"
+  );
+  assert.equal(
+    assignments.getRequired(secondDependent.child.assignment.id).assignment
+      .lifecycleState,
+    "active"
+  );
+  assert.deepEqual(
+    jobs
+      .map((job) => JSON.parse(job.message) as { assignmentId: string })
+      .map((message) => message.assignmentId)
+      .sort(),
+    [
+      firstDependent.child.assignment.id,
+      secondDependent.child.assignment.id,
+    ].sort()
+  );
+});
+
+test("AssignmentWakeupPlanner does not requeue stale dependency continuation jobs", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-06-16T12:45:00.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const database = new AppDatabase(":memory:");
+  t.after(() => database.close());
+  const assignments = new AutonomousAssignmentService(database);
+  const runs = new RunGraphStore(database);
+  const { scheduler, jobs } = makeScheduler(now);
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, ["ASSIGNMENT_STATUS: complete"]),
+  });
+  const parent = assignments.create({
+    objective: "Coordinate stale dependency job handling",
+    autonomyLevel: "execute",
+    policy: {
+      maxWakeups: 10,
+      childAssignments: { maxDepth: 1, maxActiveChildren: 3 },
+    },
+  });
+  const prerequisite = assignments.promoteChild({
+    parentAssignmentId: parent.assignment.id,
+    objective: "Produce prerequisite evidence",
+    rationale: "Needed before the dependent child can run.",
+    waitForChild: true,
+    policy: { maxWakeups: 2 },
+  });
+  const dependent = assignments.promoteChild({
+    parentAssignmentId: parent.assignment.id,
+    objective: "Run dependent verification",
+    rationale: "Runs after prerequisite evidence exists.",
+    waitForChild: true,
+    dependsOnChildIds: [prerequisite.child.assignment.id],
+    waitForChildren: "all",
+    policy: { maxWakeups: 2 },
+  });
+
+  await planner.wakeNow({
+    assignmentId: dependent.child.assignment.id,
+    reason: "dependency check",
+  });
+  await planner.wakeNow({
+    assignmentId: prerequisite.child.assignment.id,
+    reason: "finish prerequisite",
+  });
+  assert.equal(jobs.length, 1);
+  assert.deepEqual(JSON.parse(jobs[0]?.message ?? "{}"), {
+    assignmentId: dependent.child.assignment.id,
+    reason: "Child assignment dependencies satisfied",
+  });
+
+  assignments.control(prerequisite.child.assignment.id, {
+    action: "reopen",
+    reason: "Prerequisite needs rework",
+  });
+  assert.equal(
+    assignments.getRequired(dependent.child.assignment.id).assignment
+      .lifecycleState,
+    "waiting"
+  );
+
+  const staleJob = jobs[0];
+  assert.ok(staleJob);
+  staleJob.status = "running";
+  await planner.handleScheduledWakeup({ ...staleJob });
+
+  assert.equal(
+    assignments.getRequired(dependent.child.assignment.id).assignment
+      .wakeupCount,
+    0
+  );
+  assert.equal(jobs.length, 1);
+});
+
+test("AssignmentWakeupPlanner blocks dependent children after required dependencies fail", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-06-16T13:00:00.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const database = new AppDatabase(":memory:");
+  t.after(() => database.close());
+  const assignments = new AutonomousAssignmentService(database);
+  const runs = new RunGraphStore(database);
+  const { scheduler, jobs } = makeScheduler(now);
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, ["ASSIGNMENT_STATUS: blocked"]),
+  });
+  const parent = assignments.create({
+    objective: "Coordinate failing dependent child work",
+    autonomyLevel: "execute",
+    policy: {
+      maxWakeups: 10,
+      childAssignments: { maxDepth: 1, maxActiveChildren: 3 },
+    },
+  });
+  const prerequisite = assignments.promoteChild({
+    parentAssignmentId: parent.assignment.id,
+    objective: "Produce prerequisite evidence",
+    rationale: "May fail before dependent child runs.",
+    waitForChild: true,
+    policy: { maxWakeups: 2 },
+  });
+  const dependent = assignments.promoteChild({
+    parentAssignmentId: parent.assignment.id,
+    objective: "Run dependent verification",
+    rationale: "Should block when its dependency blocks.",
+    waitForChild: true,
+    dependsOnChildIds: [prerequisite.child.assignment.id],
+    waitForChildren: "all",
+    policy: { maxWakeups: 2 },
+  });
+
+  const result = await planner.wakeNow({
+    assignmentId: prerequisite.child.assignment.id,
+    reason: "dependency blocks",
+  });
+
+  assert.equal(result.status, "blocked");
+  const blocked = assignments.getRequired(dependent.child.assignment.id);
+  assert.equal(blocked.assignment.lifecycleState, "blocked");
+  assert.equal(jobs.length, 1);
+  assert.deepEqual(JSON.parse(jobs[0]?.message ?? "{}"), {
+    assignmentId: parent.assignment.id,
+    reason: "Waited child assignments satisfied",
+  });
+  assert.ok(
+    assignments
+      .timeline(dependent.child.assignment.id)
+      .events.some(
+        (event) =>
+          event.type === "blocked" &&
+          typeof event.payload === "object" &&
+          event.payload !== null &&
+          !Array.isArray(event.payload) &&
+          event.payload.reason ===
+            "Required child assignment dependency failed"
+      )
+  );
+});
+
+test("AssignmentWakeupPlanner leaves parent scheduling unchanged after background child completion", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-06-16T13:30:00.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const database = new AppDatabase(":memory:");
+  t.after(() => database.close());
+  const assignments = new AutonomousAssignmentService(database);
+  const runs = new RunGraphStore(database);
+  const { scheduler, jobs } = makeScheduler(now);
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, ["ASSIGNMENT_STATUS: complete"]),
+  });
+  const parent = assignments.create({
+    objective: "Coordinate background child work",
+    autonomyLevel: "execute",
+    policy: {
+      maxWakeups: 10,
+      wakeupDelayMinMinutes: 1,
+      wakeupDelayMaxMinutes: 240,
+      childAssignments: { maxDepth: 1, maxActiveChildren: 3 },
+    },
+  });
+  const background = assignments.promoteChild({
+    parentAssignmentId: parent.assignment.id,
+    objective: "Run background verification",
+    rationale: "This child should not wake the parent when done.",
+    waitForChild: false,
+    policy: { maxWakeups: 2 },
+  });
+  await planner.scheduleNext({
+    assignmentId: parent.assignment.id,
+    reason: "normal parent cadence",
+    delayMinutes: 120,
+  });
+
+  const result = await planner.wakeNow({
+    assignmentId: background.child.assignment.id,
+    reason: "finish background child",
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0]?.delayMs, 120 * 60 * 1000);
+  assert.deepEqual(JSON.parse(jobs[0]?.message ?? "{}"), {
+    assignmentId: parent.assignment.id,
+    reason: "normal parent cadence",
+  });
+});
+
+test("AssignmentWakeupPlanner wakes waited parents with long prior timelines", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-06-16T13:45:00.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const database = new AppDatabase(":memory:");
+  t.after(() => database.close());
+  const assignments = new AutonomousAssignmentService(database);
+  const runs = new RunGraphStore(database);
+  const { scheduler, jobs } = makeScheduler(now);
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, ["ASSIGNMENT_STATUS: complete"]),
+  });
+  const parent = assignments.create({
+    objective: "Coordinate waited child after long history",
+    autonomyLevel: "execute",
+    policy: {
+      maxWakeups: 10,
+      childAssignments: { maxDepth: 1, maxActiveChildren: 1 },
+    },
+  });
+  for (let index = 0; index < 55; index += 1) {
+    assignments.control(parent.assignment.id, {
+      action: "add_context",
+      context: {
+        content: `prior event ${index}`,
+        importance: "low",
+      },
+    });
+  }
+  const child = assignments.promoteChild({
+    parentAssignmentId: parent.assignment.id,
+    objective: "Finish waited child",
+    rationale: "The parent should wake after this waited child completes.",
+    waitForChild: true,
+    policy: { maxWakeups: 2 },
+  });
+  assignments.applyWakeupDecision({
+    assignmentId: parent.assignment.id,
+    decision: "waiting",
+    reason: "Planner promoted child assignment",
+  });
+  for (let index = 0; index < 55; index += 1) {
+    assignments.control(parent.assignment.id, {
+      action: "add_context",
+      context: {
+        content: `later event ${index}`,
+        importance: "low",
+      },
+    });
+  }
+
+  const result = await planner.wakeNow({
+    assignmentId: child.child.assignment.id,
+    reason: "finish waited child",
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(jobs.length, 1);
+  assert.deepEqual(JSON.parse(jobs[0]?.message ?? "{}"), {
+    assignmentId: parent.assignment.id,
+    reason: "Waited child assignments satisfied",
+  });
+});
+
+test("AssignmentWakeupPlanner wakes tight-budget parents after waited children block", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-06-16T14:00:00.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const database = new AppDatabase(":memory:");
+  t.after(() => database.close());
+  const assignments = new AutonomousAssignmentService(database);
+  const runs = new RunGraphStore(database);
+  const { scheduler, jobs } = makeScheduler(now);
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, [
+      "ASSIGNMENT_STATUS: blocked",
+      "ASSIGNMENT_STATUS: complete",
+    ]),
+  });
+  const parent = assignments.create({
+    objective: "Coordinate tight-budget waited child work",
+    autonomyLevel: "execute",
+    policy: {
+      maxWakeups: 1,
+      childAssignments: { maxDepth: 1, maxActiveChildren: 1 },
+    },
+  });
+  const child = assignments.promoteChild({
+    parentAssignmentId: parent.assignment.id,
+    objective: "Waited child may block",
+    rationale: "The parent should wake after the child blocks.",
+    waitForChild: true,
+    policy: { maxWakeups: 1 },
+  });
+
+  const childResult = await planner.wakeNow({
+    assignmentId: child.child.assignment.id,
+    reason: "child blocks",
+  });
+  assert.equal(childResult.status, "blocked");
+  assert.deepEqual(JSON.parse(jobs[0]?.message ?? "{}"), {
+    assignmentId: parent.assignment.id,
+    reason: "Waited child assignments satisfied",
+  });
+
+  const parentResult = await planner.wakeNow({
+    assignmentId: parent.assignment.id,
+    reason: "inspect blocked child",
+  });
+  assert.equal(parentResult.status, "completed");
+});
+
+test("AssignmentWakeupPlanner does not wake operator-paused parents after waited children finish", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-06-16T14:15:00.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const database = new AppDatabase(":memory:");
+  t.after(() => database.close());
+  const assignments = new AutonomousAssignmentService(database);
+  const runs = new RunGraphStore(database);
+  const { scheduler, jobs } = makeScheduler(now);
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, ["ASSIGNMENT_STATUS: complete"]),
+  });
+  const parent = assignments.create({
+    objective: "Paused parent should stay paused",
+    policy: {
+      maxWakeups: 5,
+      childAssignments: { maxDepth: 1, maxActiveChildren: 1 },
+    },
+  });
+  const child = assignments.promoteChild({
+    parentAssignmentId: parent.assignment.id,
+    objective: "Waited child",
+    rationale: "Parent waits on this child.",
+    waitForChild: true,
+    policy: { maxWakeups: 1 },
+  });
+  const parkedParentJob = await planner.scheduleNext({
+    assignmentId: parent.assignment.id,
+    reason: "Waiting for child assignment",
+    delayMinutes: 120,
+  });
+  assignments.control(parent.assignment.id, {
+    action: "pause",
+    reason: "Operator pause",
+  });
+  assignments.applyWakeupDecision({
+    assignmentId: child.child.assignment.id,
+    decision: "completed",
+    reason: "Child completed",
+  });
+
+  await planner.scheduleDependencyContinuationsForAssignment(
+    child.child.assignment.id
+  );
+
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0]?.id, parkedParentJob.id);
+  assert.deepEqual(JSON.parse(jobs[0]?.message ?? "{}"), {
+    assignmentId: parent.assignment.id,
+    reason: "Waiting for child assignment",
+  });
+  assert.equal(
+    assignments.getRequired(parent.assignment.id).assignment.lifecycleState,
+    "waiting"
+  );
+});
+
+test("AssignmentWakeupPlanner does not schedule currently-running parents after waited children finish", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-06-16T14:17:00.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const database = new AppDatabase(":memory:");
+  t.after(() => database.close());
+  const assignments = new AutonomousAssignmentService(database);
+  const runs = new RunGraphStore(database);
+  const { scheduler, jobs } = makeScheduler(now);
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, ["ASSIGNMENT_STATUS: complete"]),
+  });
+  const parent = assignments.create({
+    objective: "Running parent should not be double-scheduled",
+    policy: {
+      maxWakeups: 5,
+      childAssignments: { maxDepth: 1, maxActiveChildren: 1 },
+    },
+  });
+  assignments.startWakeup({
+    assignmentId: parent.assignment.id,
+    reason: "Parent is already running",
+  });
+  const child = assignments.promoteChild({
+    parentAssignmentId: parent.assignment.id,
+    objective: "Waited child",
+    rationale: "Parent is still running while child finishes.",
+    waitForChild: true,
+    policy: { maxWakeups: 1 },
+  });
+  assignments.applyWakeupDecision({
+    assignmentId: child.child.assignment.id,
+    decision: "completed",
+    reason: "Child completed",
+  });
+
+  await planner.scheduleDependencyContinuationsForAssignment(
+    child.child.assignment.id
+  );
+
+  assert.equal(jobs.length, 0);
+  assert.equal(
+    assignments.getRequired(parent.assignment.id).assignment.lifecycleState,
+    "active"
+  );
+});
+
+test("AssignmentWakeupPlanner schedules resumed parents after waited children finish", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-06-16T14:18:00.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const database = new AppDatabase(":memory:");
+  t.after(() => database.close());
+  const assignments = new AutonomousAssignmentService(database);
+  const runs = new RunGraphStore(database);
+  const { scheduler, jobs } = makeScheduler(now);
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, ["ASSIGNMENT_STATUS: complete"]),
+  });
+  const parent = assignments.create({
+    objective: "Resumed parent should continue after child finishes",
+    policy: {
+      maxWakeups: 5,
+      childAssignments: { maxDepth: 1, maxActiveChildren: 1 },
+    },
+  });
+  assignments.startWakeup({
+    assignmentId: parent.assignment.id,
+    reason: "Parent previously ran",
+  });
+  assignments.failWakeup({
+    assignmentId: parent.assignment.id,
+    error: "Temporary coordinator failure",
+  });
+  assignments.applyWakeupDecision({
+    assignmentId: parent.assignment.id,
+    decision: "waiting",
+    reason: "Continue after recovery",
+  });
+  assignments.control(parent.assignment.id, {
+    action: "resume",
+    reason: "Operator resumes parent",
+  });
+  const child = assignments.promoteChild({
+    parentAssignmentId: parent.assignment.id,
+    objective: "Waited child",
+    rationale: "Resumed parent should wake after this child.",
+    waitForChild: true,
+    policy: { maxWakeups: 1 },
+  });
+  assignments.applyWakeupDecision({
+    assignmentId: child.child.assignment.id,
+    decision: "completed",
+    reason: "Child completed",
+  });
+
+  await planner.scheduleDependencyContinuationsForAssignment(
+    child.child.assignment.id
+  );
+
+  assert.equal(jobs.length, 1);
+  assert.deepEqual(JSON.parse(jobs[0]?.message ?? "{}"), {
+    assignmentId: parent.assignment.id,
+    reason: "Waited child assignments satisfied",
+  });
+});
+
+test("AssignmentWakeupPlanner does not schedule terminal parents after waited children finish", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-06-16T14:20:00.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const database = new AppDatabase(":memory:");
+  t.after(() => database.close());
+  const assignments = new AutonomousAssignmentService(database);
+  const runs = new RunGraphStore(database);
+  const { scheduler, jobs } = makeScheduler(now);
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, ["ASSIGNMENT_STATUS: complete"]),
+  });
+  const parent = assignments.create({
+    objective: "Terminal parent should stay terminal",
+    policy: {
+      maxWakeups: 5,
+      childAssignments: { maxDepth: 1, maxActiveChildren: 1 },
+    },
+  });
+  const child = assignments.promoteChild({
+    parentAssignmentId: parent.assignment.id,
+    objective: "Waited child",
+    rationale: "Parent would have waited on this child.",
+    waitForChild: true,
+    policy: { maxWakeups: 1 },
+  });
+  assignments.control(parent.assignment.id, {
+    action: "cancel",
+    reason: "Operator cancelled parent",
+  });
+  assignments.applyWakeupDecision({
+    assignmentId: child.child.assignment.id,
+    decision: "completed",
+    reason: "Child completed",
+  });
+
+  await planner.scheduleDependencyContinuationsForAssignment(
+    child.child.assignment.id
+  );
+
+  assert.equal(jobs.length, 0);
+  assert.equal(
+    assignments.getRequired(parent.assignment.id).assignment.lifecycleState,
+    "cancelled"
+  );
+});
+
+test("AssignmentWakeupPlanner does not schedule planner children born blocked", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-06-16T14:30:00.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const database = new AppDatabase(":memory:");
+  t.after(() => database.close());
+  const assignments = new AutonomousAssignmentService(database);
+  const runs = new RunGraphStore(database);
+  const { scheduler, jobs } = makeScheduler(now);
+  const parent = assignments.create({
+    objective: "Coordinate blocked planner child",
+    autonomyLevel: "execute",
+    policy: {
+      maxWakeups: 10,
+      childAssignments: { maxDepth: 1, maxActiveChildren: 3 },
+    },
+  });
+  const prerequisite = assignments.promoteChild({
+    parentAssignmentId: parent.assignment.id,
+    objective: "Prerequisite that already failed",
+    rationale: "Planner will create a child depending on it.",
+    waitForChild: true,
+    policy: { maxWakeups: 2 },
+  });
+  assignments.applyWakeupDecision({
+    assignmentId: prerequisite.child.assignment.id,
+    decision: "failed",
+    reason: "Prerequisite failed before planner marker",
+  });
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, [
+      `ASSIGNMENT_STATUS: continue\nASSIGNMENT_CHILD: {"objective":"Run impossible dependent child","rationale":"Should block immediately.","waitForChild":true,"dependsOnChildIds":["${prerequisite.child.assignment.id}"],"waitForChildren":"all"}`,
+    ]),
+  });
+
+  const result = await planner.wakeNow({
+    assignmentId: parent.assignment.id,
+    reason: "parent emits impossible child",
+  });
+
+  assert.equal(result.status, "scheduled");
+  assert.equal(jobs.length, 1);
+  assert.deepEqual(JSON.parse(jobs[0]?.message ?? "{}"), {
+    assignmentId: parent.assignment.id,
+    reason: "Waited child assignments satisfied",
+  });
+  const children = assignments.list({
+    parentAssignmentId: parent.assignment.id,
+    limit: 10,
+  });
+  const blockedChild = children.find(
+    (child) => child.objective === "Run impossible dependent child"
+  );
+  assert.equal(blockedChild?.lifecycleState, "blocked");
 });
 
 test("AssignmentWakeupPlanner applies allowed autonomous mutation markers through the executor", async (t) => {
@@ -505,6 +1262,68 @@ test("AssignmentWakeupPlanner applies explicitly allowed runtime config limit mu
   ]);
 });
 
+test("AssignmentWakeupPlanner applies explicitly allowed channel state mutation markers", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-06-16T12:36:00.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const database = new AppDatabase(":memory:");
+  t.after(() => database.close());
+  const config = makeConfig();
+  const assignments = new AutonomousAssignmentService(database);
+  const ledger = new AutonomousMutationLedger(database, assignments);
+  const settings = new OperatorSettingsStore(database);
+  const channels = new ChannelRegistry(database, config);
+  const executor = new AutonomousMutationExecutor({
+    assignments,
+    ledger,
+    settings,
+    channels,
+  });
+  const runs = new RunGraphStore(database);
+  const { scheduler } = makeScheduler(now);
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, [
+      [
+        "Paused webhook intake.",
+        'ASSIGNMENT_MUTATION: {"target":"configuration","mutationType":"channel_state","riskClass":"high","rationale":"Pause noisy webhook intake.","proposedChange":{"channelState":{"channelId":"webhook","enabled":false}}}',
+        "ASSIGNMENT_STATUS: continue",
+      ].join("\n"),
+    ]),
+    mutations: executor,
+  });
+  const assignment = assignments.create({
+    objective: "Planner should tune channel state",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "configuration.channel_state",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+
+  const result = await planner.wakeNow({
+    assignmentId: assignment.assignment.id,
+    actor: "scheduler",
+    reason: "scheduled wakeup",
+  });
+
+  assert.equal(result.status, "scheduled");
+  assert.equal(channels.get("webhook")?.enabled, false);
+  const mutations = ledger.list({ assignmentId: assignment.assignment.id });
+  assert.equal(mutations[0]?.status, "applied");
+  assert.equal(mutations[0]?.mutationType, "channel_state");
+  assert.equal(mutations[0]?.runId, "coord_wakeup_1");
+  assert.deepEqual(mutations[0]?.affectedResources, [
+    { type: "channel", id: "webhook" },
+  ]);
+});
+
 test("AssignmentWakeupPlanner applies explicitly allowed prompt runtime guidance mutation markers", async (t) => {
   t.mock.timers.enable({ apis: ["Date"] });
   const now = "2026-06-16T12:40:00.000Z";
@@ -577,6 +1396,80 @@ test("AssignmentWakeupPlanner applies explicitly allowed prompt runtime guidance
   });
 });
 
+test("AssignmentWakeupPlanner applies explicitly allowed managed prompt fragment mutation markers", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-06-16T12:41:00.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const database = new AppDatabase(":memory:");
+  t.after(() => database.close());
+  const assignments = new AutonomousAssignmentService(database);
+  const ledger = new AutonomousMutationLedger(database, assignments);
+  const settings = new OperatorSettingsStore(database);
+  const promptFragments = new PromptManagedFragmentStore(database);
+  const executor = new AutonomousMutationExecutor({
+    assignments,
+    ledger,
+    settings,
+    promptFragments,
+  });
+  const runs = new RunGraphStore(database);
+  const { scheduler } = makeScheduler(now);
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, [
+      [
+        "Tightened managed prompt fragment.",
+        'ASSIGNMENT_MUTATION: {"target":"prompt","mutationType":"managed_fragment","riskClass":"high","rationale":"Prefer evidence-first wakeup summaries.","proposedChange":{"promptFragment":{"id":"tone","mode":"upsert","text":"Prefer evidence-first wakeup summaries."}}}',
+        "ASSIGNMENT_STATUS: complete",
+      ].join("\n"),
+    ]),
+    mutations: executor,
+  });
+  const assignment = assignments.create({
+    objective: "Planner should tune managed prompt fragments",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "prompt.managed_fragment",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+
+  const result = await planner.wakeNow({
+    assignmentId: assignment.assignment.id,
+    actor: "scheduler",
+    reason: "scheduled wakeup",
+  });
+
+  assert.equal(result.status, "completed");
+  assert.deepEqual(promptFragments.get("tone"), {
+    id: "tone",
+    text: "Prefer evidence-first wakeup summaries.",
+    active: true,
+  });
+  const mutations = ledger.list({ assignmentId: assignment.assignment.id });
+  assert.equal(mutations.length, 1);
+  assert.equal(mutations[0]?.status, "applied");
+  assert.equal(mutations[0]?.target, "prompt");
+  assert.equal(mutations[0]?.mutationType, "managed_fragment");
+  assert.equal(mutations[0]?.runId, "coord_wakeup_1");
+  assert.deepEqual(mutations[0]?.authorizingPolicy, {
+    rule: "assignment.policy.selfEvolution",
+    maxRiskClass: "high",
+    allowedMutationClasses: [
+      "configuration.operator_settings",
+      "prompt.managed_fragment",
+    ],
+    mutationClass: "prompt.managed_fragment",
+    actor: "planner",
+  });
+});
+
 test("AssignmentWakeupPlanner applies explicitly allowed memory policy mutation markers", async (t) => {
   t.mock.timers.enable({ apis: ["Date"] });
   const now = "2026-06-16T12:42:00.000Z";
@@ -643,6 +1536,82 @@ test("AssignmentWakeupPlanner applies explicitly allowed memory policy mutation 
       "memory_policy.runtime_bounds",
     ],
     mutationClass: "memory_policy.runtime_bounds",
+    actor: "planner",
+  });
+});
+
+test("AssignmentWakeupPlanner applies explicitly allowed memory entry lifecycle mutation markers", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-06-16T12:42:00.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const database = new AppDatabase(":memory:");
+  t.after(() => database.close());
+  const assignments = new AutonomousAssignmentService(database);
+  const ledger = new AutonomousMutationLedger(database, assignments);
+  const settings = new OperatorSettingsStore(database);
+  const executor = new AutonomousMutationExecutor({
+    assignments,
+    database,
+    ledger,
+    settings,
+  });
+  const runs = new RunGraphStore(database);
+  const { scheduler } = makeScheduler(now);
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, [
+      [
+        "Captured durable operator memory.",
+        'ASSIGNMENT_MUTATION: {"target":"memory","mutationType":"entry_lifecycle","riskClass":"high","rationale":"Remember bounded operator preference.","proposedChange":{"memoryEntry":{"action":"create","category":"semantic","content":"Operator prefers compact wakeup summaries."}}}',
+        "ASSIGNMENT_STATUS: complete",
+      ].join("\n"),
+    ]),
+    mutations: executor,
+  });
+  const assignment = assignments.create({
+    objective: "Planner should create bounded memory",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "memory.entry_lifecycle",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+
+  const result = await planner.wakeNow({
+    assignmentId: assignment.assignment.id,
+    actor: "scheduler",
+    reason: "scheduled wakeup",
+  });
+
+  assert.equal(result.status, "completed");
+  const row = database.get<{ id: string; content: string }>(
+    "SELECT id, content FROM memory_entries WHERE content = ?",
+    "Operator prefers compact wakeup summaries."
+  );
+  assert.ok(row);
+  const mutations = ledger.list({ assignmentId: assignment.assignment.id });
+  assert.equal(mutations.length, 1);
+  assert.equal(mutations[0]?.status, "applied");
+  assert.equal(mutations[0]?.target, "memory");
+  assert.equal(mutations[0]?.mutationType, "entry_lifecycle");
+  assert.equal(mutations[0]?.runId, "coord_wakeup_1");
+  assert.deepEqual(mutations[0]?.affectedResources, [
+    { type: "memory", id: row.id },
+  ]);
+  assert.deepEqual(mutations[0]?.authorizingPolicy, {
+    rule: "assignment.policy.selfEvolution",
+    maxRiskClass: "high",
+    allowedMutationClasses: [
+      "configuration.operator_settings",
+      "memory.entry_lifecycle",
+    ],
+    mutationClass: "memory.entry_lifecycle",
     actor: "planner",
   });
 });
@@ -882,6 +1851,154 @@ test("AssignmentWakeupPlanner applies explicitly allowed project file apply draf
     mutationClass: "project_file.apply_draft",
     actor: "planner",
   });
+});
+
+test("AssignmentWakeupPlanner applies explicitly allowed project file patch draft mutation markers", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-06-16T12:44:35.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const database = new AppDatabase(":memory:");
+  t.after(() => database.close());
+  const assignments = new AutonomousAssignmentService(database);
+  const ledger = new AutonomousMutationLedger(database, assignments);
+  const settings = new OperatorSettingsStore(database);
+  const projectFilePatchDrafts = new ProjectFilePatchDraftStore(database);
+  const executor = new AutonomousMutationExecutor({
+    assignments,
+    ledger,
+    settings,
+    projectFilePatchDrafts,
+  });
+  const runs = new RunGraphStore(database);
+  const { scheduler } = makeScheduler(now);
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, [
+      [
+        "Drafted a project file patch for operator review.",
+        'ASSIGNMENT_MUTATION: {"target":"project_file","mutationType":"patch_draft","riskClass":"high","rationale":"Draft patch for review without filesystem writes.","proposedChange":{"projectFilePatchDraft":{"patch":"diff --git a/docs/planner-project-file-patch.md b/docs/planner-project-file-patch.md\\n--- /dev/null\\n+++ b/docs/planner-project-file-patch.md\\n@@ -0,0 +1,1 @@\\n+# Planner Patch\\n"}}}',
+        "ASSIGNMENT_STATUS: complete",
+      ].join("\n"),
+    ]),
+    mutations: executor,
+  });
+  const assignment = assignments.create({
+    objective: "Planner should draft project file patch",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "project_file.patch_draft",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+
+  const result = await planner.wakeNow({
+    assignmentId: assignment.assignment.id,
+    actor: "scheduler",
+    reason: "scheduled wakeup",
+  });
+
+  assert.equal(result.status, "completed");
+  const drafts = projectFilePatchDrafts.list({
+    assignmentId: assignment.assignment.id,
+  });
+  assert.equal(drafts.length, 1);
+  assert.deepEqual(drafts[0]?.filePaths, [
+    "docs/planner-project-file-patch.md",
+  ]);
+  const mutations = ledger.list({ assignmentId: assignment.assignment.id });
+  assert.equal(mutations.length, 1);
+  assert.equal(mutations[0]?.status, "applied");
+  assert.equal(mutations[0]?.target, "project_file");
+  assert.equal(mutations[0]?.mutationType, "patch_draft");
+  assert.equal(mutations[0]?.runId, "coord_wakeup_1");
+});
+
+test("AssignmentWakeupPlanner applies explicitly allowed project file apply patch mutation markers", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-06-16T12:44:40.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const targetPath = join(process.cwd(), "docs/planner-project-file-patch.md");
+  const database = new AppDatabase(":memory:");
+  t.after(() => {
+    if (existsSync(targetPath)) {
+      unlinkSync(targetPath);
+    }
+    database.close();
+  });
+  const assignments = new AutonomousAssignmentService(database);
+  const ledger = new AutonomousMutationLedger(database, assignments);
+  const settings = new OperatorSettingsStore(database);
+  const projectFilePatchDrafts = new ProjectFilePatchDraftStore(database);
+  const projectFileApply = new ProjectFileApplyService({
+    repoRoot: process.cwd(),
+  });
+  const executor = new AutonomousMutationExecutor({
+    assignments,
+    ledger,
+    settings,
+    projectFilePatchDrafts,
+    projectFileApply,
+  });
+  const runs = new RunGraphStore(database);
+  const { scheduler } = makeScheduler(now);
+  const assignment = assignments.create({
+    objective: "Planner should apply a project file patch",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "project_file.apply_patch",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+  const draft = projectFilePatchDrafts.create({
+    assignmentId: assignment.assignment.id,
+    patch: [
+      "diff --git a/docs/planner-project-file-patch.md b/docs/planner-project-file-patch.md",
+      "--- /dev/null",
+      "+++ b/docs/planner-project-file-patch.md",
+      "@@ -0,0 +1,1 @@",
+      "+# Planner Patch",
+      "",
+    ].join("\n"),
+  });
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, [
+      [
+        "Applied a reviewed project file patch.",
+        `ASSIGNMENT_MUTATION: {"target":"project_file","mutationType":"apply_patch","riskClass":"high","rationale":"Apply reviewed project file patch.","proposedChange":{"projectFilePatchApply":{"draftId":"${draft.id}"}}}`,
+        "ASSIGNMENT_STATUS: complete",
+      ].join("\n"),
+    ]),
+    mutations: executor,
+  });
+
+  const result = await planner.wakeNow({
+    assignmentId: assignment.assignment.id,
+    actor: "scheduler",
+    reason: "scheduled wakeup",
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(readFileSync(targetPath, "utf8"), "# Planner Patch\n");
+  assert.equal(projectFilePatchDrafts.get(draft.id)?.status, "applied");
+  const mutations = ledger.list({ assignmentId: assignment.assignment.id });
+  assert.equal(mutations.length, 1);
+  assert.equal(mutations[0]?.status, "applied");
+  assert.equal(mutations[0]?.target, "project_file");
+  assert.equal(mutations[0]?.mutationType, "apply_patch");
+  assert.equal(mutations[0]?.runId, "coord_wakeup_1");
 });
 
 test("AssignmentWakeupPlanner applies explicitly allowed project file apply bundle mutation markers", async (t) => {
@@ -1385,6 +2502,159 @@ test("AssignmentWakeupPlanner ignores malformed child assignment markers without
   );
 });
 
+test("AssignmentWakeupPlanner rejects malformed child dependency markers without creating children", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-06-16T15:40:00.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const database = new AppDatabase(":memory:");
+  t.after(() => database.close());
+  const assignments = new AutonomousAssignmentService(database);
+  const runs = new RunGraphStore(database);
+  const { scheduler, jobs } = makeScheduler(now);
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, [
+      [
+        "Malformed dependency marker.",
+        'ASSIGNMENT_CHILD: {"objective":"Dependent work","rationale":"Invalid dependency shape should fail closed.","waitForChild":true,"dependsOnChildIds":"not-an-array"}',
+        "ASSIGNMENT_STATUS: continue",
+        "NEXT_WAKEUP_MINUTES: 6",
+      ].join("\n"),
+    ]),
+  });
+  const assignment = assignments.create({
+    objective: "Planner should reject malformed dependency marker",
+    autonomyLevel: "execute",
+    policy: { wakeupDelayMinMinutes: 5, wakeupDelayMaxMinutes: 60 },
+  });
+
+  const result = await planner.wakeNow({
+    assignmentId: assignment.assignment.id,
+    reason: "scheduled wakeup",
+  });
+
+  assert.equal(result.status, "scheduled");
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0]?.delayMs, 6 * 60_000);
+  assert.deepEqual(
+    assignments.list({ parentAssignmentId: assignment.assignment.id }),
+    []
+  );
+  assert.equal(
+    assignments
+      .timeline(assignment.assignment.id)
+      .events.some((event) => event.type === "child_assignment_failed"),
+    false
+  );
+});
+
+test("AssignmentWakeupPlanner treats empty child dependency arrays as no dependencies", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-06-16T15:41:00.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const database = new AppDatabase(":memory:");
+  t.after(() => database.close());
+  const assignments = new AutonomousAssignmentService(database);
+  const runs = new RunGraphStore(database);
+  const { scheduler, jobs } = makeScheduler(now);
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, [
+      [
+        "Empty dependency marker.",
+        'ASSIGNMENT_CHILD: {"objective":"Independent child","rationale":"Empty dependencies mean no dependency wait.","waitForChild":true,"dependsOnChildIds":[]}',
+        "ASSIGNMENT_STATUS: continue",
+        "NEXT_WAKEUP_MINUTES: 6",
+      ].join("\n"),
+    ]),
+  });
+  const assignment = assignments.create({
+    objective: "Planner should accept empty dependency arrays",
+    autonomyLevel: "execute",
+    policy: { wakeupDelayMinMinutes: 5, wakeupDelayMaxMinutes: 60 },
+  });
+
+  const result = await planner.wakeNow({
+    assignmentId: assignment.assignment.id,
+    reason: "scheduled wakeup",
+  });
+
+  assert.equal(result.status, "scheduled");
+  assert.equal(jobs.length, 2);
+  const children = assignments.list({
+    parentAssignmentId: assignment.assignment.id,
+  });
+  assert.equal(children.length, 1);
+  assert.equal(children[0]?.objective, "Independent child");
+  assert.equal(children[0]?.lifecycleState, "active");
+  assert.deepEqual(children[0]?.metadata, {
+    childDependencyConfigValidated: false,
+    parentAssignmentId: assignment.assignment.id,
+    parentWaitsForChild: true,
+  });
+});
+
+test("AssignmentWakeupPlanner rejects child markers with unknown dependencies without failing the wakeup", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-06-16T15:42:00.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const database = new AppDatabase(":memory:");
+  t.after(() => database.close());
+  const assignments = new AutonomousAssignmentService(database);
+  const runs = new RunGraphStore(database);
+  const { scheduler, jobs } = makeScheduler(now);
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, [
+      [
+        "Unknown dependency marker.",
+        'ASSIGNMENT_CHILD: {"objective":"Dependent work","rationale":"Unknown dependency should fail closed.","waitForChild":true,"dependsOnChildIds":["asgn_missing"]}',
+        "ASSIGNMENT_STATUS: continue",
+        "NEXT_WAKEUP_MINUTES: 6",
+      ].join("\n"),
+    ]),
+  });
+  const assignment = assignments.create({
+    objective: "Planner should reject unknown dependency marker",
+    autonomyLevel: "execute",
+    policy: { wakeupDelayMinMinutes: 5, wakeupDelayMaxMinutes: 60 },
+  });
+
+  const result = await planner.wakeNow({
+    assignmentId: assignment.assignment.id,
+    reason: "scheduled wakeup",
+  });
+
+  assert.equal(result.status, "scheduled");
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0]?.delayMs, 6 * 60_000);
+  assert.deepEqual(
+    assignments.list({ parentAssignmentId: assignment.assignment.id }),
+    []
+  );
+  assert.ok(
+    assignments
+      .timeline(assignment.assignment.id)
+      .events.some(
+        (event) =>
+          event.type === "child_assignment_failed" &&
+          typeof event.payload === "object" &&
+          event.payload !== null &&
+          !Array.isArray(event.payload) &&
+          String(event.payload.errorMessage).includes("not found")
+      )
+  );
+  assert.equal(
+    assignments
+      .timeline(assignment.assignment.id)
+      .events.some((event) => event.type === "wakeup_failed"),
+    false
+  );
+});
+
 test("AssignmentWakeupPlanner records rejected child assignment markers without failing the wakeup", async (t) => {
   t.mock.timers.enable({ apis: ["Date"] });
   const now = "2026-06-16T15:45:00.000Z";
@@ -1444,6 +2714,87 @@ test("AssignmentWakeupPlanner records rejected child assignment markers without 
     errorMessage:
       "Parent assignment active child assignment limit has been reached",
   });
+});
+
+test("AssignmentWakeupPlanner can replace blocked children at active child limit", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const now = "2026-06-16T16:15:00.000Z";
+  t.mock.timers.setTime(Date.parse(now));
+  const database = new AppDatabase(":memory:");
+  t.after(() => database.close());
+  const assignments = new AutonomousAssignmentService(database);
+  const runs = new RunGraphStore(database);
+  const { scheduler, jobs } = makeScheduler(now);
+  const planner = new AssignmentWakeupPlanner({
+    assignments,
+    scheduler,
+    orchestration: makeOrchestration(runs, [
+      [
+        "Replace the blocked child.",
+        'ASSIGNMENT_CHILD: {"objective":"Replacement child","rationale":"Blocked child released the active slot.","waitForChild":true}',
+        "ASSIGNMENT_STATUS: continue",
+        "NEXT_WAKEUP_MINUTES: 6",
+      ].join("\n"),
+    ]),
+  });
+  const assignment = assignments.create({
+    objective: "Planner should replace blocked child",
+    autonomyLevel: "execute",
+    policy: {
+      wakeupDelayMinMinutes: 5,
+      wakeupDelayMaxMinutes: 60,
+      childAssignments: { maxDepth: 2, maxActiveChildren: 1 },
+    },
+  });
+  const child = assignments.promoteChild({
+    parentAssignmentId: assignment.assignment.id,
+    objective: "Blocked child",
+    rationale: "This child frees the active slot once blocked.",
+    waitForChild: true,
+    policy: { maxWakeups: 1 },
+  });
+  assignments.applyWakeupDecision({
+    assignmentId: child.child.assignment.id,
+    decision: "blocked",
+    reason: "Child is blocked",
+  });
+
+  const result = await planner.wakeNow({
+    assignmentId: assignment.assignment.id,
+    reason: "scheduled wakeup",
+  });
+
+  assert.equal(result.status, "scheduled");
+  assert.equal(jobs.length, 2);
+  const children = assignments.list({ parentAssignmentId: assignment.assignment.id });
+  const replacement = children.find(
+    (item) => item.objective === "Replacement child"
+  );
+  assert.ok(replacement);
+  assert.deepEqual(
+    jobs.map((job) => JSON.parse(job.message) as Record<string, string>),
+    [
+      {
+        assignmentId: replacement.id,
+        reason: "Planner promoted child assignment",
+      },
+      {
+        assignmentId: assignment.assignment.id,
+        reason: "Waiting for child assignment",
+      },
+    ]
+  );
+  assert.equal(children.length, 2);
+  assert.equal(
+    replacement.lifecycleState,
+    "active"
+  );
+  assert.equal(
+    assignments
+      .timeline(assignment.assignment.id)
+      .events.some((event) => event.type === "child_assignment_failed"),
+    false
+  );
 });
 
 test("AssignmentWakeupPlanner completes or blocks assignments without scheduling another wakeup", async (t) => {
@@ -1761,11 +3112,11 @@ test("AssignmentWakeupPlanner reuses pending wakeup jobs for the same assignment
   assert.equal(jobs.length, 1);
   assert.deepEqual(JSON.parse(jobs[0]?.message ?? "{}"), {
     assignmentId: assignment.assignment.id,
-    reason: "first",
+    reason: "second",
   });
 });
 
-test("AssignmentWakeupPlanner force wakeups do not reuse later scheduled jobs", async (t) => {
+test("AssignmentWakeupPlanner force wakeups reschedule later scheduled jobs", async (t) => {
   t.mock.timers.enable({ apis: ["Date"] });
   const now = "2026-04-28T15:30:00.000Z";
   t.mock.timers.setTime(Date.parse(now));
@@ -1796,11 +3147,10 @@ test("AssignmentWakeupPlanner force wakeups do not reuse later scheduled jobs", 
     force: true,
   });
 
-  assert.notEqual(future.id, forced.id);
-  assert.equal(jobs.length, 2);
-  assert.equal(jobs[0]?.delayMs, 120 * 60_000);
-  assert.equal(jobs[1]?.delayMs, 0);
-  assert.deepEqual(JSON.parse(jobs[1]?.message ?? "{}"), {
+  assert.equal(future.id, forced.id);
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0]?.delayMs, 0);
+  assert.deepEqual(JSON.parse(jobs[0]?.message ?? "{}"), {
     assignmentId: assignment.assignment.id,
     reason: "force",
   });

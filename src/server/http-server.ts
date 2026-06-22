@@ -57,6 +57,7 @@ import { loadRolePolicyConfig } from "../orchestration/role-config.ts";
 import { RolePolicyRuntimeStore } from "../orchestration/role-policy-runtime.ts";
 import { ProjectFileApplyService } from "../project-files/apply.ts";
 import { ProjectFileDraftStore } from "../project-files/drafts.ts";
+import { ProjectFilePatchDraftStore } from "../project-files/patches.ts";
 import { RuntimeConfigLimitsStore } from "../config/runtime-limits.ts";
 import { AppDatabase } from "../platform/database.ts";
 import { Logger } from "../platform/logger.ts";
@@ -72,7 +73,10 @@ import {
   ToolBundleLifecycleService,
 } from "../tools/bundle-lifecycle.ts";
 import { SelfEvolutionProposalStore } from "../self-evolution/proposals.ts";
-import { PromptRuntimeGuidanceStore } from "../prompts/runtime-guidance.ts";
+import {
+  PromptManagedFragmentStore,
+  PromptRuntimeGuidanceStore,
+} from "../prompts/runtime-guidance.ts";
 import {
   SelfEvolutionMutationError,
   SelfEvolutionMutationService,
@@ -175,8 +179,10 @@ export class HttpServer {
   private readonly memoryPolicy: MemoryPolicyStore;
   private readonly runtimeConfigLimits: RuntimeConfigLimitsStore;
   private readonly promptGuidance: PromptRuntimeGuidanceStore;
+  private readonly promptFragments: PromptManagedFragmentStore;
   private readonly rolePolicy: RolePolicyRuntimeStore;
   private readonly projectFileDrafts: ProjectFileDraftStore;
+  private readonly projectFilePatchDrafts: ProjectFilePatchDraftStore;
   private readonly projectFileApply: ProjectFileApplyService;
   private readonly slack: SlackChannel;
   private readonly settings: OperatorSettingsStore;
@@ -210,11 +216,13 @@ export class HttpServer {
     assignmentIntake?: AssignmentIntakeService,
     assignmentMutations?: AutonomousMutationLedger,
     promptGuidance?: PromptRuntimeGuidanceStore,
+    promptFragments?: PromptManagedFragmentStore,
     memoryPolicy?: MemoryPolicyStore,
     runtimeConfigLimits?: RuntimeConfigLimitsStore,
     rolePolicy?: RolePolicyRuntimeStore,
     projectFileDrafts?: ProjectFileDraftStore,
-    projectFileApply?: ProjectFileApplyService
+    projectFileApply?: ProjectFileApplyService,
+    projectFilePatchDrafts?: ProjectFilePatchDraftStore
   ) {
     if (!assignments) {
       throw new Error("AutonomousAssignmentService is required");
@@ -260,6 +268,8 @@ export class HttpServer {
       runtimeConfigLimits ?? new RuntimeConfigLimitsStore(database, config);
     this.promptGuidance =
       promptGuidance ?? new PromptRuntimeGuidanceStore(database);
+    this.promptFragments =
+      promptFragments ?? new PromptManagedFragmentStore(database);
     this.rolePolicy =
       rolePolicy ??
       new RolePolicyRuntimeStore(
@@ -268,6 +278,8 @@ export class HttpServer {
       );
     this.projectFileDrafts =
       projectFileDrafts ?? new ProjectFileDraftStore(database);
+    this.projectFilePatchDrafts =
+      projectFilePatchDrafts ?? new ProjectFilePatchDraftStore(database);
     this.projectFileApply =
       projectFileApply ??
       new ProjectFileApplyService({ repoRoot: process.cwd() });
@@ -296,13 +308,18 @@ export class HttpServer {
       new AutonomousMutationLedger(database, assignments);
     this.assignmentMutationExecutor = new AutonomousMutationExecutor({
       assignments,
+      database,
       ledger: this.assignmentMutations,
       settings: this.settings,
+      channels: this.channels,
+      runtimeChannels,
       memoryPolicy: this.memoryPolicy,
       runtimeConfigLimits: this.runtimeConfigLimits,
       promptGuidance: this.promptGuidance,
+      promptFragments: this.promptFragments,
       rolePolicy: this.rolePolicy,
       projectFileDrafts: this.projectFileDrafts,
+      projectFilePatchDrafts: this.projectFilePatchDrafts,
       projectFileApply: this.projectFileApply,
       toolBundles: this.toolBundleLifecycle,
     });
@@ -817,7 +834,7 @@ export class HttpServer {
         const body = validateAutonomousMutationApplyBody(
           parseJsonBody(await readTextBody(req))
         );
-        const result = this.assignmentMutationExecutor.apply({
+        const result = await this.assignmentMutationExecutor.applyAsync({
           assignmentId,
           ...body,
           actor: body.actor ?? "operator",
@@ -838,7 +855,7 @@ export class HttpServer {
         const body = validateAutonomousMutationRollbackBody(
           parseJsonBody(await readTextBody(req))
         );
-        const result = this.assignmentMutationExecutor.rollback({
+        const result = await this.assignmentMutationExecutor.rollbackAsync({
           assignmentId,
           mutationId,
           actor: body.actor ?? "operator",
@@ -953,14 +970,20 @@ export class HttpServer {
         let wakeupScheduleWarning:
           | { message: string; error: string }
           | undefined;
-        if (body.action === "force_wakeup" && this.assignmentWakeups) {
+        if (this.assignmentWakeups) {
           try {
-            await this.assignmentWakeups.scheduleNext({
-              assignmentId,
-              reason: body.reason ?? "Operator forced wakeup",
-              delayMinutes: 0,
-              force: true,
-            });
+            if (body.action === "force_wakeup") {
+              await this.assignmentWakeups.scheduleNext({
+                assignmentId,
+                reason: body.reason ?? "Operator forced wakeup",
+                delayMinutes: 0,
+                force: true,
+              });
+            } else {
+              await this.assignmentWakeups.scheduleDependencyContinuationsForAssignment(
+                assignment.assignment.id
+              );
+            }
           } catch (error) {
             const errorMessage =
               error instanceof Error
@@ -1539,6 +1562,10 @@ export class HttpServer {
           req.headers["idempotency-key"],
           requestId
         );
+        const webhookRuntimeChannel = this.channels.get("webhook");
+        if (!webhookRuntimeChannel || !webhookRuntimeChannel.enabled) {
+          throw new HttpError(409, "webhook channel is not enabled");
+        }
         const intake = await this.assignmentIntake.handle({
           channelId: "webhook",
           providerEventId: webhookProviderEventId,

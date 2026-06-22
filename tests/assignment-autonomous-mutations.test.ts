@@ -18,11 +18,14 @@ import {
 } from "../src/assignments/autonomous-mutations.ts";
 import { AutonomousMutationLedger } from "../src/assignments/mutation-ledger.ts";
 import { AutonomousAssignmentService } from "../src/assignments/service.ts";
+import { RuntimeChannelCapabilities } from "../src/channels/capabilities.ts";
 import {
   RuntimeConfigLimitsStore,
   runtimeConfigLimitValues,
 } from "../src/config/runtime-limits.ts";
+import { ChannelRegistry } from "../src/channels/registry.ts";
 import { MemoryPolicyStore, memoryPolicyValues } from "../src/memory/policy.ts";
+import { MemoryStore } from "../src/memory/store.ts";
 import { loadRolePolicyConfig } from "../src/orchestration/role-config.ts";
 import {
   RolePolicyRuntimeStore,
@@ -31,14 +34,23 @@ import {
 import { AppDatabase } from "../src/platform/database.ts";
 import { ProjectFileApplyService } from "../src/project-files/apply.ts";
 import { ProjectFileDraftStore } from "../src/project-files/drafts.ts";
-import { PromptRuntimeGuidanceStore } from "../src/prompts/runtime-guidance.ts";
+import { ProjectFilePatchDraftStore } from "../src/project-files/patches.ts";
+import {
+  PromptManagedFragmentStore,
+  PromptRuntimeGuidanceStore,
+} from "../src/prompts/runtime-guidance.ts";
 import { OperatorSettingsStore } from "../src/server/settings.ts";
 import { ToolBundleImportStore } from "../src/tools/bundles.ts";
 import { ToolBundleLifecycleService } from "../src/tools/bundle-lifecycle.ts";
 import { DynamicToolRegistry } from "../src/tools/dynamic-registry.ts";
 import { ToolRegistry } from "../src/tools/registry.ts";
 import type { JsonValue } from "../src/shared/types.ts";
-import { makeConfig } from "./helpers.ts";
+import {
+  makeConfig,
+  makeDisabledEmbeddings,
+  makeFakeEmbeddings,
+  makeFakeVectorStore,
+} from "./helpers.ts";
 
 function createHarness() {
   const database = new AppDatabase(":memory:");
@@ -89,13 +101,23 @@ function createPromptGuidanceHarness() {
   const ledger = new AutonomousMutationLedger(database, assignments);
   const settings = new OperatorSettingsStore(database);
   const promptGuidance = new PromptRuntimeGuidanceStore(database);
+  const promptFragments = new PromptManagedFragmentStore(database);
   const executor = new AutonomousMutationExecutor({
     assignments,
     ledger,
     settings,
     promptGuidance,
+    promptFragments,
   });
-  return { assignments, database, executor, ledger, promptGuidance, settings };
+  return {
+    assignments,
+    database,
+    executor,
+    ledger,
+    promptFragments,
+    promptGuidance,
+    settings,
+  };
 }
 
 function createMemoryPolicyHarness() {
@@ -111,6 +133,37 @@ function createMemoryPolicyHarness() {
     memoryPolicy,
   });
   return { assignments, database, executor, ledger, memoryPolicy, settings };
+}
+
+function createMemoryEntryLifecycleHarness(
+  options: { semanticRetrievalEnabled?: boolean } = {}
+) {
+  const database = new AppDatabase(":memory:");
+  const assignments = new AutonomousAssignmentService(database);
+  const ledger = new AutonomousMutationLedger(database, assignments);
+  const settings = new OperatorSettingsStore(database);
+  const config = makeConfig();
+  const semanticRetrievalEnabled = options.semanticRetrievalEnabled === true;
+  const memory = new MemoryStore(
+    database,
+    config,
+    semanticRetrievalEnabled
+      ? makeFakeEmbeddings({})
+      : makeDisabledEmbeddings(),
+    makeFakeVectorStore({
+      backend: "qdrant",
+      available: semanticRetrievalEnabled,
+      configured: semanticRetrievalEnabled,
+    }),
+    makeFakeVectorStore({ backend: "sqlite_fallback", available: true })
+  );
+  const executor = new AutonomousMutationExecutor({
+    assignments,
+    database,
+    ledger,
+    settings,
+  });
+  return { assignments, database, executor, ledger, memory, settings };
 }
 
 function createRolePolicyHarness() {
@@ -137,6 +190,7 @@ function createProjectFileDraftHarness() {
   const ledger = new AutonomousMutationLedger(database, assignments);
   const settings = new OperatorSettingsStore(database);
   const projectFileDrafts = new ProjectFileDraftStore(database);
+  const projectFilePatchDrafts = new ProjectFilePatchDraftStore(database);
   const projectFileApply = new ProjectFileApplyService({
     repoRoot: process.cwd(),
   });
@@ -146,6 +200,7 @@ function createProjectFileDraftHarness() {
     settings,
     projectFileApply,
     projectFileDrafts,
+    projectFilePatchDrafts,
   });
   return {
     assignments,
@@ -153,6 +208,7 @@ function createProjectFileDraftHarness() {
     executor,
     ledger,
     projectFileDrafts,
+    projectFilePatchDrafts,
     settings,
   };
 }
@@ -167,6 +223,29 @@ function unlinkIfPresent(path: string): void {
     throw error;
   }
   unlinkSync(path);
+}
+
+function unifiedPatch(
+  path: string,
+  hunkLines: string[],
+  input: { oldPath?: string } = {}
+): string {
+  const oldPath = input.oldPath ?? `a/${path}`;
+  const newPath = `b/${path}`;
+  const oldCount = hunkLines.filter(
+    (line) => line.startsWith(" ") || line.startsWith("-")
+  ).length;
+  const newCount = hunkLines.filter(
+    (line) => line.startsWith(" ") || line.startsWith("+")
+  ).length;
+  return [
+    `diff --git a/${path} b/${path}`,
+    `--- ${oldPath}`,
+    `+++ ${newPath}`,
+    `@@ -1,${oldCount} +1,${newCount} @@`,
+    ...hunkLines,
+    "",
+  ].join("\n");
 }
 
 function createRuntimeConfigLimitsHarness() {
@@ -189,6 +268,50 @@ function createRuntimeConfigLimitsHarness() {
     executor,
     ledger,
     runtimeConfigLimits,
+    settings,
+  };
+}
+
+function createChannelStateHarness() {
+  const database = new AppDatabase(":memory:");
+  const config = makeConfig();
+  const assignments = new AutonomousAssignmentService(database);
+  const ledger = new AutonomousMutationLedger(database, assignments);
+  const settings = new OperatorSettingsStore(database);
+  const channels = new ChannelRegistry(database, config);
+  const lifecycleCalls = { starts: 0, stops: 0 };
+  const lifecycleFailure = { fail: false };
+  const runtimeChannels = new RuntimeChannelCapabilities();
+  runtimeChannels.registerLifecycle("webhook", {
+    async start() {
+      lifecycleCalls.starts += 1;
+      if (lifecycleFailure.fail) {
+        throw new Error("runtime channel transition failed");
+      }
+    },
+    async stop() {
+      lifecycleCalls.stops += 1;
+      if (lifecycleFailure.fail) {
+        throw new Error("runtime channel transition failed");
+      }
+    },
+  });
+  const executor = new AutonomousMutationExecutor({
+    assignments,
+    ledger,
+    settings,
+    channels,
+    runtimeChannels,
+  });
+  return {
+    assignments,
+    channels,
+    config,
+    database,
+    executor,
+    ledger,
+    lifecycleCalls,
+    lifecycleFailure,
     settings,
   };
 }
@@ -408,6 +531,350 @@ test("AutonomousMutationExecutor applies explicit runtime config limit mutations
     [{ id: result.mutation.id, status: "applied" }]
   );
 
+  database.close();
+});
+
+test("AutonomousMutationExecutor applies explicit channel state mutations", async () => {
+  const { assignments, channels, database, executor, lifecycleCalls } =
+    createChannelStateHarness();
+  const assignment = assignments.create({
+    objective: "Disable webhook channel temporarily",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        enabled: true,
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "configuration.channel_state",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+
+  assert.equal(channels.get("webhook")?.enabled, true);
+  assert.equal(channels.summary().enabled, 3);
+  const result = await executor.applyAsync({
+    assignmentId: assignment.assignment.id,
+    runId: "coord_channel_state",
+    target: "configuration",
+    mutationType: "channel_state",
+    rationale: "Pause webhook intake while external integration is noisy.",
+    riskClass: "high",
+    proposedChange: {
+      channelState: {
+        channelId: "webhook",
+        enabled: false,
+      },
+    },
+  });
+
+  assert.equal(channels.get("webhook")?.enabled, false);
+  assert.equal(channels.summary().enabled, 2);
+  assert.deepEqual(lifecycleCalls, { starts: 0, stops: 1 });
+  assert.equal(result.mutation.status, "applied");
+  assert.equal(result.mutation.riskClass, "high");
+  assert.deepEqual(result.mutation.before, {
+    channel: {
+      id: "webhook",
+      enabled: true,
+      secretPresent: true,
+    },
+  });
+  assert.deepEqual(result.mutation.after, {
+    channel: {
+      id: "webhook",
+      enabled: false,
+      secretPresent: true,
+    },
+  });
+  assert.deepEqual(result.mutation.rollback, {
+    channelState: {
+      channelId: "webhook",
+      enabled: true,
+    },
+  });
+
+  const rollback = await executor.rollbackAsync({
+    assignmentId: assignment.assignment.id,
+    mutationId: result.mutation.id,
+  });
+  assert.equal(rollback.mutation.status, "rolled_back");
+  assert.equal(channels.get("webhook")?.enabled, true);
+  assert.equal(channels.summary().enabled, 3);
+  assert.deepEqual(lifecycleCalls, { starts: 1, stops: 1 });
+  database.close();
+});
+
+test("AutonomousMutationExecutor audits failed channel lifecycle transitions without changing channel state", async () => {
+  const {
+    assignments,
+    channels,
+    database,
+    executor,
+    ledger,
+    lifecycleFailure,
+  } = createChannelStateHarness();
+  const assignment = assignments.create({
+    objective: "Protect channel lifecycle consistency",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        enabled: true,
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "configuration.channel_state",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+
+  lifecycleFailure.fail = true;
+  await assert.rejects(
+    async () =>
+      executor.applyAsync({
+        assignmentId: assignment.assignment.id,
+        target: "configuration",
+        mutationType: "channel_state",
+        rationale: "Pause webhook intake.",
+        riskClass: "high",
+        proposedChange: {
+          channelState: {
+            channelId: "webhook",
+            enabled: false,
+          },
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 400);
+      assert.match(error.message, /runtime channel transition failed/);
+      assert.equal(error.mutation?.status, "failed");
+      return true;
+    }
+  );
+  assert.equal(channels.get("webhook")?.enabled, true);
+  const failedChannelMutations = ledger
+    .list({ assignmentId: assignment.assignment.id, status: "failed" })
+    .filter((mutation) => mutation.mutationType === "channel_state");
+  assert.equal(failedChannelMutations.length, 1);
+  assert.deepEqual(failedChannelMutations[0]?.before, {
+    channel: {
+      id: "webhook",
+      enabled: true,
+      secretPresent: true,
+    },
+  });
+  assert.deepEqual(failedChannelMutations[0]?.after, {
+    channel: {
+      id: "webhook",
+      enabled: true,
+      secretPresent: true,
+    },
+    attempted: {
+      enabled: false,
+    },
+  });
+  assert.deepEqual(failedChannelMutations[0]?.rollback, {
+    channelState: {
+      channelId: "webhook",
+      enabled: true,
+    },
+  });
+  assert.deepEqual(
+    failedChannelMutations[0]?.affectedResources,
+    [{ type: "channel", id: "webhook" }]
+  );
+
+  lifecycleFailure.fail = false;
+  const applied = await executor.applyAsync({
+    assignmentId: assignment.assignment.id,
+    target: "configuration",
+    mutationType: "channel_state",
+    rationale: "Pause webhook intake after recovery.",
+    riskClass: "high",
+    proposedChange: {
+      channelState: {
+        channelId: "webhook",
+        enabled: false,
+      },
+    },
+  });
+  assert.equal(channels.get("webhook")?.enabled, false);
+
+  lifecycleFailure.fail = true;
+  await assert.rejects(
+    async () =>
+      executor.rollbackAsync({
+        assignmentId: assignment.assignment.id,
+        mutationId: applied.mutation.id,
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 400);
+      assert.match(error.message, /runtime channel transition failed/);
+      return true;
+    }
+  );
+  assert.equal(channels.get("webhook")?.enabled, false);
+  assert.equal(ledger.get(applied.mutation.id)?.status, "applied");
+  database.close();
+});
+
+test("AutonomousMutationExecutor fails closed for sync channel state execution", () => {
+  const { assignments, channels, database, executor, ledger } =
+    createChannelStateHarness();
+  const assignment = assignments.create({
+    objective: "Reject sync channel state execution",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        enabled: true,
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "configuration.channel_state",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+
+  assert.throws(
+    () =>
+      executor.apply({
+        assignmentId: assignment.assignment.id,
+        target: "configuration",
+        mutationType: "channel_state",
+        rationale: "Sync path must not run async channel lifecycle hooks.",
+        riskClass: "high",
+        proposedChange: {
+          channelState: {
+            channelId: "webhook",
+            enabled: false,
+          },
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 400);
+      assert.match(
+        error.message,
+        /configuration\.channel_state requires async autonomous mutation execution/
+      );
+      assert.equal(error.mutation?.status, "failed");
+      return true;
+    }
+  );
+  assert.equal(channels.get("webhook")?.enabled, true);
+  assert.equal(
+    ledger
+      .list({ assignmentId: assignment.assignment.id, status: "failed" })
+      .filter((mutation) => mutation.mutationType === "channel_state").length,
+    1
+  );
+  database.close();
+});
+
+test("AutonomousMutationExecutor rejects unsafe channel state mutations", async () => {
+  const { assignments, channels, database, executor, ledger } =
+    createChannelStateHarness();
+  const defaultAssignment = assignments.create({
+    objective: "Attempt default channel mutation",
+    autonomyLevel: "evolve",
+  });
+  await assert.rejects(
+    async () =>
+      executor.applyAsync({
+        assignmentId: defaultAssignment.assignment.id,
+        target: "configuration",
+        mutationType: "channel_state",
+        rationale: "Default policy should not mutate channels.",
+        riskClass: "high",
+        proposedChange: {
+          channelState: {
+            channelId: "webhook",
+            enabled: false,
+          },
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 403);
+      return true;
+    }
+  );
+  assert.equal(channels.get("webhook")?.enabled, true);
+
+  const assignment = assignments.create({
+    objective: "Reject unsafe channel state changes",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        enabled: true,
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "configuration.channel_state",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+  const unsafeChannelChanges: JsonValue[] = [
+    {
+      channelState: {
+        channelId: "slack",
+        enabled: true,
+      },
+    },
+    {
+      channelState: {
+        channelId: "telegram",
+        enabled: true,
+      },
+    },
+    {
+      channelState: {
+        channelId: "webhook",
+        enabled: false,
+        secretEnvVar: "NOT_ALLOWED",
+      },
+    },
+    {
+      channelState: {
+        channelId: "webhook",
+        enabled: false,
+        config: { transport: "other" },
+      },
+    },
+  ];
+  for (const proposedChange of unsafeChannelChanges) {
+    await assert.rejects(
+      async () =>
+        executor.applyAsync({
+          assignmentId: assignment.assignment.id,
+          target: "configuration",
+          mutationType: "channel_state",
+          rationale: "Unsafe channel state change should fail.",
+          riskClass: "high",
+          proposedChange,
+        }),
+      (error) => {
+        assert.ok(error instanceof AutonomousMutationExecutionError);
+        assert.equal(error.status, 400);
+        return true;
+      }
+    );
+  }
+
+  assert.equal(channels.get("webhook")?.enabled, true);
+  assert.equal(channels.get("slack")?.enabled, false);
+  assert.equal(
+    ledger
+      .list({ assignmentId: assignment.assignment.id, status: "failed" })
+      .filter((mutation) => mutation.mutationType === "channel_state").length,
+    4
+  );
   database.close();
 });
 
@@ -1609,6 +2076,531 @@ test("AutonomousMutationExecutor rolls back first prompt runtime guidance mutati
   database.close();
 });
 
+test("AutonomousMutationExecutor applies managed prompt fragment mutations", () => {
+  const { assignments, database, executor, promptFragments } =
+    createPromptGuidanceHarness();
+  promptFragments.upsert("tone", "Prefer concise summaries.", "operator");
+  const assignment = assignments.create({
+    objective: "Tune managed runtime prompt fragments",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "prompt.managed_fragment",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+
+  const applied = executor.apply({
+    assignmentId: assignment.assignment.id,
+    runId: "coord_prompt_fragment",
+    target: "prompt",
+    mutationType: "managed_fragment",
+    rationale: "Prefer evidence-first summaries.",
+    actor: "alice",
+    riskClass: "high",
+    proposedChange: {
+      promptFragment: {
+        id: "tone",
+        mode: "upsert",
+        text: "Prefer evidence-first summaries.",
+      },
+    },
+  });
+
+  assert.equal(promptFragments.get("tone")?.text, "Prefer evidence-first summaries.");
+  assert.equal(applied.mutation.status, "applied");
+  assert.equal(applied.mutation.target, "prompt");
+  assert.equal(applied.mutation.mutationType, "managed_fragment");
+  assert.deepEqual(applied.mutation.authorizingPolicy, {
+    rule: "assignment.policy.selfEvolution",
+    maxRiskClass: "high",
+    allowedMutationClasses: [
+      "configuration.operator_settings",
+      "prompt.managed_fragment",
+    ],
+    mutationClass: "prompt.managed_fragment",
+    actor: "alice",
+  });
+  assert.deepEqual(applied.mutation.before, {
+    id: "tone",
+    text: "Prefer concise summaries.",
+    active: true,
+    exists: true,
+  });
+  assert.deepEqual(applied.mutation.after, {
+    id: "tone",
+    text: "Prefer evidence-first summaries.",
+    active: true,
+    exists: true,
+  });
+  assert.deepEqual(applied.mutation.rollback, {
+    promptFragment: {
+      id: "tone",
+      mode: "upsert",
+      text: "Prefer concise summaries.",
+    },
+  });
+  assert.deepEqual(applied.mutation.affectedResources, [
+    { type: "prompt", id: "fragment:tone" },
+  ]);
+  assert.deepEqual(applied.mutation.verification, {
+    attempted: true,
+    result: "passed",
+    method: "prompt_managed_fragment_update",
+  });
+
+  const rolledBack = executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: applied.mutation.id,
+    actor: "bob",
+  });
+
+  assert.equal(promptFragments.get("tone")?.text, "Prefer concise summaries.");
+  assert.equal(rolledBack.mutation.status, "rolled_back");
+  assert.deepEqual(rolledBack.mutation.verification, {
+    attempted: true,
+    result: "passed",
+    method: "prompt_managed_fragment_rollback",
+  });
+  database.close();
+});
+
+test("AutonomousMutationExecutor clears managed prompt fragments with rollback", () => {
+  const { assignments, database, executor, promptFragments } =
+    createPromptGuidanceHarness();
+  promptFragments.upsert("handoff", "Always mention blocker evidence.", "operator");
+  const assignment = assignments.create({
+    objective: "Clear managed runtime prompt fragments",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "prompt.managed_fragment",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+
+  const applied = executor.apply({
+    assignmentId: assignment.assignment.id,
+    target: "prompt",
+    mutationType: "managed_fragment",
+    rationale: "Remove stale fragment.",
+    riskClass: "high",
+    proposedChange: {
+      promptFragment: {
+        id: "handoff",
+        mode: "clear",
+      },
+    },
+  });
+
+  assert.equal(promptFragments.get("handoff")?.active, false);
+  assert.equal(promptFragments.get("handoff")?.text, "");
+  assert.deepEqual(applied.mutation.rollback, {
+    promptFragment: {
+      id: "handoff",
+      mode: "upsert",
+      text: "Always mention blocker evidence.",
+    },
+  });
+
+  executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: applied.mutation.id,
+  });
+
+  assert.deepEqual(promptFragments.get("handoff"), {
+    id: "handoff",
+    text: "Always mention blocker evidence.",
+    active: true,
+  });
+  database.close();
+});
+
+test("AutonomousMutationExecutor restores inactive and absent managed prompt fragment baselines", () => {
+  const { assignments, database, executor, promptFragments } =
+    createPromptGuidanceHarness();
+  promptFragments.upsert("tone", "Dormant tone.", "operator");
+  promptFragments.clear("tone", "operator");
+  const assignment = assignments.create({
+    objective: "Restore inactive and absent prompt fragments",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "prompt.managed_fragment",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+
+  const inactiveApply = executor.apply({
+    assignmentId: assignment.assignment.id,
+    target: "prompt",
+    mutationType: "managed_fragment",
+    rationale: "Temporarily revive inactive fragment.",
+    riskClass: "high",
+    proposedChange: {
+      promptFragment: {
+        id: "tone",
+        mode: "upsert",
+        text: "Active tone.",
+      },
+    },
+  });
+  const absentClear = executor.apply({
+    assignmentId: assignment.assignment.id,
+    target: "prompt",
+    mutationType: "managed_fragment",
+    rationale: "Clear an absent fragment.",
+    riskClass: "high",
+    proposedChange: {
+      promptFragment: {
+        id: "absent",
+        mode: "clear",
+      },
+    },
+  });
+
+  executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: absentClear.mutation.id,
+  });
+  assert.equal(promptFragments.get("absent"), null);
+
+  executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: inactiveApply.mutation.id,
+  });
+  assert.deepEqual(promptFragments.get("tone"), {
+    id: "tone",
+    text: "",
+    active: false,
+  });
+  database.close();
+});
+
+test("AutonomousMutationExecutor rolls back over inactive managed prompt tombstones", () => {
+  const { assignments, database, executor, promptFragments } =
+    createPromptGuidanceHarness();
+  const assignment = assignments.create({
+    objective: "Restore prompt fragment tombstones",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "prompt.managed_fragment",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+
+  const absentClear = executor.apply({
+    assignmentId: assignment.assignment.id,
+    target: "prompt",
+    mutationType: "managed_fragment",
+    rationale: "Clear an absent fragment.",
+    riskClass: "high",
+    proposedChange: {
+      promptFragment: {
+        id: "drafting",
+        mode: "clear",
+      },
+    },
+  });
+  assert.deepEqual(absentClear.mutation.before, {
+    id: "drafting",
+    text: "",
+    active: false,
+    exists: false,
+  });
+  assert.deepEqual(absentClear.mutation.after, {
+    id: "drafting",
+    text: "",
+    active: false,
+    exists: true,
+  });
+
+  const upsert = executor.apply({
+    assignmentId: assignment.assignment.id,
+    target: "prompt",
+    mutationType: "managed_fragment",
+    rationale: "Temporarily activate a tombstoned fragment.",
+    riskClass: "high",
+    proposedChange: {
+      promptFragment: {
+        id: "drafting",
+        mode: "upsert",
+        text: "Favor terse drafts.",
+      },
+    },
+  });
+  assert.deepEqual(upsert.mutation.before, {
+    id: "drafting",
+    text: "",
+    active: false,
+    exists: true,
+  });
+  assert.deepEqual(upsert.mutation.rollback, {
+    promptFragment: {
+      id: "drafting",
+      mode: "restore_inactive",
+      text: "",
+    },
+  });
+
+  executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: upsert.mutation.id,
+  });
+
+  assert.deepEqual(promptFragments.get("drafting"), {
+    id: "drafting",
+    text: "",
+    active: false,
+  });
+  database.close();
+});
+
+test("AutonomousMutationExecutor treats managed prompt fragments as high risk", () => {
+  const { assignments, database, executor, promptFragments } =
+    createPromptGuidanceHarness();
+  const assignment = assignments.create({
+    objective: "Block understated managed prompt fragment risk",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "prompt.managed_fragment",
+        ],
+        maxRiskClass: "low",
+      },
+    },
+  });
+
+  assert.throws(
+    () =>
+      executor.apply({
+        assignmentId: assignment.assignment.id,
+        target: "prompt",
+        mutationType: "managed_fragment",
+        rationale: "Understate managed fragment risk.",
+        proposedChange: {
+          promptFragment: {
+            id: "tone",
+            mode: "upsert",
+            text: "Prefer shorter replies.",
+          },
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 403);
+      assert.equal(error.mutation?.status, "failed");
+      assert.equal(error.mutation?.riskClass, "high");
+      assert.match(error.message, /risk exceeds/);
+      return true;
+    }
+  );
+
+  assert.equal(promptFragments.get("tone"), null);
+  database.close();
+});
+
+test("AutonomousMutationExecutor scopes managed prompt fragment rollback conflicts by fragment", () => {
+  const { assignments, database, executor, promptFragments } =
+    createPromptGuidanceHarness();
+  promptFragments.upsert("tone", "Initial tone.", "operator");
+  const assignment = assignments.create({
+    objective: "Scope managed fragment rollback conflicts",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "prompt.managed_fragment",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+
+  const tone = executor.apply({
+    assignmentId: assignment.assignment.id,
+    target: "prompt",
+    mutationType: "managed_fragment",
+    rationale: "Tune tone fragment.",
+    riskClass: "high",
+    proposedChange: {
+      promptFragment: {
+        id: "tone",
+        mode: "upsert",
+        text: "Temporary tone.",
+      },
+    },
+  });
+  executor.apply({
+    assignmentId: assignment.assignment.id,
+    target: "prompt",
+    mutationType: "managed_fragment",
+    rationale: "Tune independent handoff fragment.",
+    riskClass: "high",
+    proposedChange: {
+      promptFragment: {
+        id: "handoff",
+        mode: "upsert",
+        text: "Independent handoff.",
+      },
+    },
+  });
+
+  executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: tone.mutation.id,
+  });
+  assert.equal(promptFragments.get("tone")?.text, "Initial tone.");
+  assert.equal(promptFragments.get("handoff")?.text, "Independent handoff.");
+
+  const secondTone = executor.apply({
+    assignmentId: assignment.assignment.id,
+    target: "prompt",
+    mutationType: "managed_fragment",
+    rationale: "Retune tone fragment.",
+    riskClass: "high",
+    proposedChange: {
+      promptFragment: {
+        id: "tone",
+        mode: "upsert",
+        text: "Second tone.",
+      },
+    },
+  });
+  executor.apply({
+    assignmentId: assignment.assignment.id,
+    target: "prompt",
+    mutationType: "managed_fragment",
+    rationale: "Create a newer tone mutation.",
+    riskClass: "high",
+    proposedChange: {
+      promptFragment: {
+        id: "tone",
+        mode: "upsert",
+        text: "Third tone.",
+      },
+    },
+  });
+
+  assert.throws(
+    () =>
+      executor.rollback({
+        assignmentId: assignment.assignment.id,
+        mutationId: secondTone.mutation.id,
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 409);
+      assert.match(error.message, /newer applied prompt\.managed_fragment/);
+      return true;
+    }
+  );
+  assert.equal(promptFragments.get("tone")?.text, "Third tone.");
+  database.close();
+});
+
+test("AutonomousMutationExecutor rolls back legacy unsafe managed prompt fragment ids", () => {
+  const { assignments, database, executor, ledger } = createPromptGuidanceHarness();
+  const legacyId = "tone\n## injected";
+  const now = new Date().toISOString();
+  database.run(
+    `
+      INSERT INTO prompt_managed_fragments
+        (id, fragment_text, active, updated_by, created_at, updated_at)
+      VALUES (?, ?, 1, ?, ?, ?)
+    `,
+    legacyId,
+    "Unsafe current tone.",
+    "legacy",
+    now,
+    now
+  );
+  const assignment = assignments.create({
+    objective: "Rollback a legacy managed fragment",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "prompt.managed_fragment",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+  const planned = ledger.recordPlanned({
+    assignmentId: assignment.assignment.id,
+    target: "prompt",
+    mutationType: "managed_fragment",
+    autonomyLevel: "evolve",
+    authorizingPolicy: { rule: "legacy_import" },
+    rationale: "Legacy unsafe fragment id mutation.",
+    riskClass: "high",
+    affectedResources: [{ type: "prompt", id: `fragment:${legacyId}` }],
+  });
+  const applied = ledger.recordApplied(planned.id, {
+    before: {
+      id: legacyId,
+      text: "Legacy baseline tone.",
+      active: true,
+      exists: true,
+    },
+    after: {
+      id: legacyId,
+      text: "Unsafe current tone.",
+      active: true,
+      exists: true,
+    },
+    rollback: {
+      promptFragment: {
+        id: legacyId,
+        mode: "upsert",
+        text: "Legacy baseline tone.",
+      },
+    },
+    affectedResources: [{ type: "prompt", id: `fragment:${legacyId}` }],
+    verification: {
+      attempted: true,
+      result: "passed",
+      method: "prompt_managed_fragment_update",
+    },
+  });
+
+  const rolledBack = executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: applied.id,
+  });
+
+  const row = database.get<{ fragment_text: string; active: number }>(
+    "SELECT fragment_text, active FROM prompt_managed_fragments WHERE id = ?",
+    legacyId
+  );
+  assert.equal(row?.fragment_text, "Legacy baseline tone.");
+  assert.equal(row?.active, 1);
+  assert.equal(rolledBack.mutation.status, "rolled_back");
+  database.close();
+});
+
 test("AutonomousMutationExecutor applies explicit memory policy runtime bounds mutations", () => {
   const { assignments, database, executor, ledger, memoryPolicy } =
     createMemoryPolicyHarness();
@@ -1914,6 +2906,776 @@ test("AutonomousMutationExecutor blocks stale memory policy rollback across assi
   );
   assert.equal(memoryPolicy.get().memorySummaryLimit, 2);
 
+  database.close();
+});
+
+test("AutonomousMutationExecutor creates memory entries with rollback", async () => {
+  const { assignments, database, executor, memory } =
+    createMemoryEntryLifecycleHarness();
+  const assignment = assignments.create({
+    objective: "Create bounded memory evidence",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "memory.entry_lifecycle",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+
+  const applied = executor.apply({
+    assignmentId: assignment.assignment.id,
+    runId: "coord_memory_entry_create",
+    target: "memory",
+    mutationType: "entry_lifecycle",
+    rationale: "Remember the operator preference.",
+    actor: "alice",
+    riskClass: "high",
+    proposedChange: {
+      memoryEntry: {
+        action: "create",
+        category: "semantic",
+        content: "Operator prefers concise rollout summaries.",
+        importance: 0.74,
+      },
+    },
+  });
+  const createdId = (
+    applied.mutation.after as {
+      entry: { id: string };
+    }
+  ).entry.id;
+
+  assert.equal(applied.mutation.status, "applied");
+  assert.equal(applied.mutation.target, "memory");
+  assert.equal(applied.mutation.mutationType, "entry_lifecycle");
+  assert.deepEqual(applied.mutation.authorizingPolicy, {
+    rule: "assignment.policy.selfEvolution",
+    maxRiskClass: "high",
+    allowedMutationClasses: [
+      "configuration.operator_settings",
+      "memory.entry_lifecycle",
+    ],
+    mutationClass: "memory.entry_lifecycle",
+    actor: "alice",
+  });
+  assert.deepEqual(applied.mutation.affectedResources, [
+    { type: "memory", id: createdId },
+  ]);
+  assert.deepEqual(applied.mutation.verification, {
+    attempted: true,
+    result: "passed",
+    method: "memory_entry_lifecycle_update",
+  });
+  assert.equal(
+    (await memory.getEntry(createdId))?.content,
+    "Operator prefers concise rollout summaries."
+  );
+  assert.ok(
+    (await memory.query("concise summaries")).semantic.some(
+      (entry) => entry.id === createdId
+    )
+  );
+
+  const rolledBack = executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: applied.mutation.id,
+    actor: "bob",
+  });
+
+  assert.equal(rolledBack.mutation.status, "rolled_back");
+  assert.equal(await memory.getEntry(createdId), null);
+  assert.ok(
+    !(await memory.query("concise summaries")).semantic.some(
+      (entry) => entry.id === createdId
+    )
+  );
+  database.close();
+});
+
+test("AutonomousMutationExecutor retrieves lifecycle-created memories when semantic search is enabled", async () => {
+  const { assignments, database, executor, memory } =
+    createMemoryEntryLifecycleHarness({ semanticRetrievalEnabled: true });
+  await memory.storeEntry({
+    category: "semantic",
+    content: "Deploy reminders should mention staging first.",
+    sourceType: "semantic_fact",
+    importance: 0.8,
+    isFact: true,
+  });
+  const assignment = assignments.create({
+    objective: "Create retrievable memory evidence",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "memory.entry_lifecycle",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+
+  const applied = executor.apply({
+    assignmentId: assignment.assignment.id,
+    target: "memory",
+    mutationType: "entry_lifecycle",
+    rationale: "Remember the email rollout preference.",
+    riskClass: "high",
+    proposedChange: {
+      memoryEntry: {
+        action: "create",
+        category: "semantic",
+        content: "Email rollout notes should mention mailbox smoke status.",
+        importance: 0.78,
+      },
+    },
+  });
+  const createdId = (
+    applied.mutation.after as {
+      entry: { id: string };
+    }
+  ).entry.id;
+
+  assert.ok(
+    (await memory.query("mailbox smoke status")).semantic.some(
+      (entry) => entry.id === createdId
+    )
+  );
+  database.close();
+});
+
+test("AutonomousMutationExecutor deactivates and supersedes memory entries with rollback", async () => {
+  const { assignments, database, executor, memory } =
+    createMemoryEntryLifecycleHarness();
+  const original = await memory.storeEntry({
+    category: "semantic",
+    content: "Release train leaves on Friday.",
+    sourceType: "semantic_fact",
+    importance: 0.8,
+    isFact: true,
+  });
+  const assignment = assignments.create({
+    objective: "Mutate memory lifecycle state",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "memory.entry_lifecycle",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+
+  const deactivated = executor.apply({
+    assignmentId: assignment.assignment.id,
+    target: "memory",
+    mutationType: "entry_lifecycle",
+    rationale: "Retire stale release memory.",
+    riskClass: "high",
+    proposedChange: {
+      memoryEntry: {
+        action: "deactivate",
+        memoryId: original.id,
+        reason: "No longer reliable.",
+      },
+    },
+  });
+  assert.equal((await memory.getEntry(original.id))?.lifecycleState, "deactivated");
+  assert.ok(
+    !(await memory.query("release train")).semantic.some(
+      (entry) => entry.id === original.id
+    )
+  );
+
+  executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: deactivated.mutation.id,
+  });
+  assert.equal((await memory.getEntry(original.id))?.lifecycleState, "active");
+  assert.ok(
+    (await memory.query("release train")).semantic.some(
+      (entry) => entry.id === original.id
+    )
+  );
+
+  const superseded = executor.apply({
+    assignmentId: assignment.assignment.id,
+    target: "memory",
+    mutationType: "entry_lifecycle",
+    rationale: "Replace stale release memory.",
+    riskClass: "high",
+    proposedChange: {
+      memoryEntry: {
+        action: "supersede",
+        memoryId: original.id,
+        category: "semantic",
+        content: "Release train leaves on Monday.",
+        importance: 0.82,
+        reason: "Operator corrected release timing.",
+      },
+    },
+  });
+  const replacementId = (
+    superseded.mutation.after as {
+      entry: { id: string };
+    }
+  ).entry.id;
+  assert.equal((await memory.getEntry(original.id))?.lifecycleState, "superseded");
+  assert.equal(
+    (await memory.getEntry(original.id))?.supersededByMemoryId,
+    replacementId
+  );
+  assert.ok(
+    !(await memory.query("release train")).semantic.some(
+      (entry) => entry.id === original.id
+    )
+  );
+  assert.ok(
+    (await memory.query("release train")).semantic.some(
+      (entry) => entry.id === replacementId
+    )
+  );
+
+  executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: superseded.mutation.id,
+  });
+  assert.equal(await memory.getEntry(replacementId), null);
+  assert.equal((await memory.getEntry(original.id))?.lifecycleState, "active");
+  assert.ok(
+    (await memory.query("release train")).semantic.some(
+      (entry) => entry.id === original.id
+    )
+  );
+  database.close();
+});
+
+test("AutonomousMutationExecutor preserves memory supersede atomicity when lifecycle link insert fails", async () => {
+  const { assignments, database, executor, memory } =
+    createMemoryEntryLifecycleHarness();
+  const original = await memory.storeEntry({
+    category: "semantic",
+    content: "Release train leaves on Friday.",
+    sourceType: "semantic_fact",
+    importance: 0.8,
+    isFact: true,
+  });
+  database.exec(`
+    CREATE TRIGGER fail_autonomous_supersede_link
+    BEFORE INSERT ON memory_lifecycle_links
+    WHEN NEW.relationship = 'supersedes'
+    BEGIN
+      SELECT RAISE(ABORT, 'injected lifecycle link failure');
+    END
+  `);
+  const assignment = assignments.create({
+    objective: "Protect memory supersede atomicity",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "memory.entry_lifecycle",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+
+  assert.throws(
+    () =>
+      executor.apply({
+        assignmentId: assignment.assignment.id,
+        target: "memory",
+        mutationType: "entry_lifecycle",
+        rationale: "Replace stale release memory.",
+        riskClass: "high",
+        proposedChange: {
+          memoryEntry: {
+            action: "supersede",
+            memoryId: original.id,
+            category: "semantic",
+            content: "Release train leaves on Monday.",
+          },
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 400);
+      assert.equal(error.mutation?.status, "failed");
+      assert.match(error.message, /injected lifecycle link failure/);
+      return true;
+    }
+  );
+
+  assert.equal((await memory.getEntry(original.id))?.lifecycleState, "active");
+  assert.equal(
+    database.get<{ count: number }>(
+      "SELECT COUNT(*) AS count FROM memory_entries WHERE content = ?",
+      "Release train leaves on Monday."
+    )?.count,
+    0
+  );
+  database.close();
+});
+
+test("AutonomousMutationExecutor rolls back memory entries after unrelated lifecycle mutations", async () => {
+  const { assignments, database, executor, memory } =
+    createMemoryEntryLifecycleHarness();
+  const policy = {
+    selfEvolution: {
+      allowedMutationClasses: [
+        "configuration.operator_settings",
+        "memory.entry_lifecycle",
+      ],
+      maxRiskClass: "high" as const,
+    },
+  };
+  const firstAssignment = assignments.create({
+    objective: "Create first memory entry",
+    autonomyLevel: "evolve",
+    policy,
+  });
+  const secondAssignment = assignments.create({
+    objective: "Create unrelated memory entry",
+    autonomyLevel: "evolve",
+    policy,
+  });
+
+  const first = executor.apply({
+    assignmentId: firstAssignment.assignment.id,
+    target: "memory",
+    mutationType: "entry_lifecycle",
+    rationale: "Remember the release handoff.",
+    riskClass: "high",
+    proposedChange: {
+      memoryEntry: {
+        action: "create",
+        category: "semantic",
+        content: "Release handoff notes belong in the operator report.",
+      },
+    },
+  });
+  const firstMemoryId = (
+    first.mutation.after as {
+      entry: { id: string };
+    }
+  ).entry.id;
+  const second = executor.apply({
+    assignmentId: secondAssignment.assignment.id,
+    target: "memory",
+    mutationType: "entry_lifecycle",
+    rationale: "Remember the mailbox handoff.",
+    riskClass: "high",
+    proposedChange: {
+      memoryEntry: {
+        action: "create",
+        category: "semantic",
+        content: "Mailbox handoff notes belong in the channel report.",
+      },
+    },
+  });
+  const secondMemoryId = (
+    second.mutation.after as {
+      entry: { id: string };
+    }
+  ).entry.id;
+
+  executor.rollback({
+    assignmentId: firstAssignment.assignment.id,
+    mutationId: first.mutation.id,
+  });
+
+  assert.equal(await memory.getEntry(firstMemoryId), null);
+  assert.equal((await memory.getEntry(secondMemoryId))?.lifecycleState, "active");
+  database.close();
+});
+
+test("AutonomousMutationExecutor blocks memory create rollback after later same-resource lifecycle mutation", async () => {
+  const { assignments, database, executor, memory } =
+    createMemoryEntryLifecycleHarness();
+  const policy = {
+    selfEvolution: {
+      allowedMutationClasses: [
+        "configuration.operator_settings",
+        "memory.entry_lifecycle",
+      ],
+      maxRiskClass: "high" as const,
+    },
+  };
+  const createAssignment = assignments.create({
+    objective: "Create memory entry",
+    autonomyLevel: "evolve",
+    policy,
+  });
+  const updateAssignment = assignments.create({
+    objective: "Deactivate created memory entry",
+    autonomyLevel: "evolve",
+    policy,
+  });
+
+  const created = executor.apply({
+    assignmentId: createAssignment.assignment.id,
+    target: "memory",
+    mutationType: "entry_lifecycle",
+    rationale: "Remember transient release notes.",
+    riskClass: "high",
+    proposedChange: {
+      memoryEntry: {
+        action: "create",
+        category: "semantic",
+        content: "Transient release notes should be pruned later.",
+      },
+    },
+  });
+  const memoryId = (
+    created.mutation.after as {
+      entry: { id: string };
+    }
+  ).entry.id;
+  executor.apply({
+    assignmentId: updateAssignment.assignment.id,
+    target: "memory",
+    mutationType: "entry_lifecycle",
+    rationale: "Retire transient release notes.",
+    riskClass: "high",
+    proposedChange: {
+      memoryEntry: {
+        action: "deactivate",
+        memoryId,
+      },
+    },
+  });
+
+  assert.throws(
+    () =>
+      executor.rollback({
+        assignmentId: createAssignment.assignment.id,
+        mutationId: created.mutation.id,
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 409);
+      assert.match(error.message, /newer applied memory.entry_lifecycle/);
+      return true;
+    }
+  );
+  assert.equal((await memory.getEntry(memoryId))?.lifecycleState, "deactivated");
+  database.close();
+});
+
+test("AutonomousMutationExecutor blocks memory supersede rollback after later lifecycle links", async () => {
+  const { assignments, database, executor, memory } =
+    createMemoryEntryLifecycleHarness();
+  const original = await memory.storeEntry({
+    category: "semantic",
+    content: "Release train leaves on Friday.",
+    sourceType: "semantic_fact",
+    importance: 0.8,
+    isFact: true,
+  });
+  const assignment = assignments.create({
+    objective: "Protect later memory lifecycle history",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "memory.entry_lifecycle",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+  const superseded = executor.apply({
+    assignmentId: assignment.assignment.id,
+    target: "memory",
+    mutationType: "entry_lifecycle",
+    rationale: "Replace stale release memory.",
+    riskClass: "high",
+    proposedChange: {
+      memoryEntry: {
+        action: "supersede",
+        memoryId: original.id,
+        category: "semantic",
+        content: "Release train leaves on Monday.",
+      },
+    },
+  });
+  const replacementId = (
+    superseded.mutation.after as {
+      entry: { id: string };
+    }
+  ).entry.id;
+
+  const newer = await memory.storeEntry({
+    category: "semantic",
+    content: "Release train leaves after mailbox smoke completes.",
+    sourceType: "semantic_fact",
+    importance: 0.85,
+    isFact: true,
+    supersedesMemoryIds: [replacementId],
+    lifecycleReason: "Later operator correction.",
+  });
+
+  assert.throws(
+    () =>
+      executor.rollback({
+        assignmentId: assignment.assignment.id,
+        mutationId: superseded.mutation.id,
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 400);
+      assert.match(error.message, /newer memory lifecycle links/);
+      return true;
+    }
+  );
+  assert.equal(
+    (await memory.getEntry(replacementId))?.supersededByMemoryId,
+    newer.id
+  );
+  assert.equal((await memory.getEntry(newer.id))?.lifecycleState, "active");
+  assert.equal(
+    (await memory.getEntry(original.id))?.supersededByMemoryId,
+    replacementId
+  );
+  database.close();
+});
+
+test("AutonomousMutationExecutor blocks memory rollback after later target lifecycle links", async () => {
+  const { assignments, database, executor, memory } =
+    createMemoryEntryLifecycleHarness();
+  const original = await memory.storeEntry({
+    category: "semantic",
+    content: "Incident notes should mention paging.",
+    sourceType: "semantic_fact",
+    importance: 0.8,
+    isFact: true,
+  });
+  const deactivationTarget = await memory.storeEntry({
+    category: "semantic",
+    content: "Handoff notes should mention paging.",
+    sourceType: "semantic_fact",
+    importance: 0.8,
+    isFact: true,
+  });
+  const assignment = assignments.create({
+    objective: "Protect target lifecycle history",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "memory.entry_lifecycle",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+
+  const superseded = executor.apply({
+    assignmentId: assignment.assignment.id,
+    target: "memory",
+    mutationType: "entry_lifecycle",
+    rationale: "Replace stale incident memory.",
+    riskClass: "high",
+    proposedChange: {
+      memoryEntry: {
+        action: "supersede",
+        memoryId: original.id,
+        category: "semantic",
+        content: "Incident notes should mention escalation.",
+      },
+    },
+  });
+  const laterOriginal = await memory.storeEntry({
+    category: "semantic",
+    content: "Incident notes should mention manager escalation.",
+    sourceType: "semantic_fact",
+    importance: 0.85,
+    isFact: true,
+    supersedesMemoryIds: [original.id],
+    lifecycleReason: "Later correction of the original row.",
+  });
+
+  assert.throws(
+    () =>
+      executor.rollback({
+        assignmentId: assignment.assignment.id,
+        mutationId: superseded.mutation.id,
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 400);
+      assert.match(error.message, /newer memory lifecycle links/);
+      return true;
+    }
+  );
+  assert.equal((await memory.getEntry(laterOriginal.id))?.lifecycleState, "active");
+  assert.equal(
+    (await memory.getEntry(original.id))?.supersededByMemoryId,
+    laterOriginal.id
+  );
+
+  const deactivated = executor.apply({
+    assignmentId: assignment.assignment.id,
+    target: "memory",
+    mutationType: "entry_lifecycle",
+    rationale: "Deactivate stale handoff memory.",
+    riskClass: "high",
+    proposedChange: {
+      memoryEntry: {
+        action: "deactivate",
+        memoryId: deactivationTarget.id,
+      },
+    },
+  });
+  const laterDeactivationTarget = await memory.storeEntry({
+    category: "semantic",
+    content: "Handoff notes should mention incident commander paging.",
+    sourceType: "semantic_fact",
+    importance: 0.85,
+    isFact: true,
+    supersedesMemoryIds: [deactivationTarget.id],
+    lifecycleReason: "Later correction of deactivated row.",
+  });
+
+  assert.throws(
+    () =>
+      executor.rollback({
+        assignmentId: assignment.assignment.id,
+        mutationId: deactivated.mutation.id,
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 400);
+      assert.match(error.message, /newer memory lifecycle links/);
+      return true;
+    }
+  );
+  assert.equal(
+    (await memory.getEntry(deactivationTarget.id))?.supersededByMemoryId,
+    laterDeactivationTarget.id
+  );
+  database.close();
+});
+
+test("AutonomousMutationExecutor rejects unsafe memory entry lifecycle mutations", async () => {
+  const { assignments, database, executor, ledger, memory } =
+    createMemoryEntryLifecycleHarness();
+  const original = await memory.storeEntry({
+    category: "semantic",
+    content: "Keep this memory stable.",
+    sourceType: "semantic_fact",
+    importance: 0.7,
+    isFact: true,
+  });
+  const defaultAssignment = assignments.create({
+    objective: "Default policy should not mutate memory entries",
+    autonomyLevel: "evolve",
+  });
+
+  assert.throws(
+    () =>
+      executor.apply({
+        assignmentId: defaultAssignment.assignment.id,
+        target: "memory",
+        mutationType: "entry_lifecycle",
+        rationale: "Try memory lifecycle mutation without opt-in.",
+        riskClass: "high",
+        proposedChange: {
+          memoryEntry: {
+            action: "deactivate",
+            memoryId: original.id,
+          },
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 403);
+      assert.equal(error.mutation?.status, "failed");
+      assert.match(error.message, /does not allow memory\.entry_lifecycle/);
+      return true;
+    }
+  );
+
+  const assignment = assignments.create({
+    objective: "Reject malformed memory lifecycle changes",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "memory.entry_lifecycle",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+  const malformedChanges: JsonValue[] = [
+    { memoryEntry: { action: "create", category: "secret", content: "x" } },
+    {
+      memoryEntry: {
+        action: "create",
+        category: "semantic",
+        content: "x".repeat(2001),
+      },
+    },
+    { memoryEntry: { action: "deactivate", memoryId: "missing" } },
+    {
+      memoryEntry: {
+        action: "supersede",
+        memoryId: original.id,
+        category: "semantic",
+        content: " ",
+      },
+    },
+  ];
+
+  for (const proposedChange of malformedChanges) {
+    assert.throws(
+      () =>
+        executor.apply({
+          assignmentId: assignment.assignment.id,
+          target: "memory",
+          mutationType: "entry_lifecycle",
+          rationale: "Try malformed memory lifecycle mutation.",
+          riskClass: "high",
+          proposedChange,
+        }),
+      (error) => {
+        assert.ok(error instanceof AutonomousMutationExecutionError);
+        assert.equal(error.status, 400);
+        assert.equal(error.mutation?.status, "failed");
+        return true;
+      }
+    );
+  }
+
+  assert.equal((await memory.getEntry(original.id))?.lifecycleState, "active");
+  assert.deepEqual(
+    ledger
+      .list({ assignmentId: assignment.assignment.id })
+      .map((mutation) => ({
+        target: mutation.target,
+        mutationType: mutation.mutationType,
+        status: mutation.status,
+      })),
+    [
+      { target: "memory", mutationType: "entry_lifecycle", status: "failed" },
+      { target: "memory", mutationType: "entry_lifecycle", status: "failed" },
+      { target: "memory", mutationType: "entry_lifecycle", status: "failed" },
+      { target: "memory", mutationType: "entry_lifecycle", status: "failed" },
+    ]
+  );
   database.close();
 });
 
@@ -2467,6 +4229,1019 @@ test("AutonomousMutationExecutor applies an existing project file draft to the r
       "mutation_applied",
     ]
   );
+});
+
+test("AutonomousMutationExecutor creates and applies project file patch drafts", (t) => {
+  const {
+    assignments,
+    database,
+    executor,
+    projectFilePatchDrafts,
+  } = createProjectFileDraftHarness();
+  const relativePath = "docs/autonomous-project-file-patch-test.md";
+  const absolutePath = join(process.cwd(), relativePath);
+  const priorExists = existsSync(absolutePath);
+  const priorContent = priorExists ? readFileSync(absolutePath, "utf8") : "";
+  t.after(() => {
+    if (priorExists) {
+      writeFileSync(absolutePath, priorContent, "utf8");
+    } else if (existsSync(absolutePath)) {
+      unlinkSync(absolutePath);
+    }
+    database.close();
+  });
+  writeFileSync(absolutePath, "alpha\n-- marker\nbravo\ncharlie\n", "utf8");
+  const assignment = assignments.create({
+    objective: "Apply docs patch",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "project_file.patch_draft",
+          "project_file.apply_patch",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+  const patch = [
+    "diff --git a/docs/autonomous-project-file-patch-test.md b/docs/autonomous-project-file-patch-test.md",
+    "index 1111111..2222222 100644",
+    "--- a/docs/autonomous-project-file-patch-test.md",
+    "+++ b/docs/autonomous-project-file-patch-test.md",
+    "@@ -1,4 +1,4 @@",
+    " alpha",
+    "--- marker",
+    "-bravo",
+    "+bravo updated",
+    " charlie",
+    "+delta",
+    "",
+  ].join("\n");
+
+  const draft = executor.apply({
+    assignmentId: assignment.assignment.id,
+    runId: "coord_project_file_patch_draft",
+    target: "project_file",
+    mutationType: "patch_draft",
+    rationale: "Create an auditable patch draft.",
+    riskClass: "high",
+    proposedChange: {
+      projectFilePatchDraft: {
+        patch,
+        metadata: { source: "test" },
+      },
+    },
+  });
+  const draftId = (
+    draft.mutation.rollback as { projectFilePatchDraft: { id: string } }
+  ).projectFilePatchDraft.id;
+  assert.equal(
+    readFileSync(absolutePath, "utf8"),
+    "alpha\n-- marker\nbravo\ncharlie\n"
+  );
+  assert.equal(projectFilePatchDrafts.get(draftId)?.status, "active");
+  assert.deepEqual(draft.mutation.affectedResources, [
+    {
+      type: "project_file_patch_draft",
+      id: draftId,
+      paths: [relativePath],
+    },
+  ]);
+
+  const applied = executor.apply({
+    assignmentId: assignment.assignment.id,
+    runId: "coord_project_file_apply_patch",
+    target: "project_file",
+    mutationType: "apply_patch",
+    rationale: "Apply the audited patch draft.",
+    riskClass: "high",
+    proposedChange: {
+      projectFilePatchApply: { draftId },
+    },
+  });
+
+  assert.equal(
+    readFileSync(absolutePath, "utf8"),
+    "alpha\nbravo updated\ncharlie\ndelta\n"
+  );
+  assert.equal(projectFilePatchDrafts.get(draftId)?.status, "applied");
+  assert.deepEqual(applied.mutation.affectedResources, [
+    {
+      type: "project_file",
+      id: relativePath,
+      path: relativePath,
+    },
+  ]);
+  const beforeFiles = (
+    applied.mutation.before as {
+      files: Array<{
+        path: string;
+        beforeFile: {
+          existed: boolean;
+          sizeBytes?: number;
+          contentBase64?: string;
+        };
+      }>;
+    }
+  ).files;
+  assert.equal(beforeFiles[0]?.path, relativePath);
+  assert.equal(beforeFiles[0]?.beforeFile.existed, true);
+  assert.equal(beforeFiles[0]?.beforeFile.sizeBytes, 30);
+  assert.equal(
+    Buffer.from(beforeFiles[0]?.beforeFile.contentBase64 ?? "", "base64").toString(
+      "utf8"
+    ),
+    "alpha\n-- marker\nbravo\ncharlie\n"
+  );
+  assert.equal(
+    (applied.mutation.after as { files: Array<{ path: string }> }).files[0]
+      ?.path,
+    relativePath
+  );
+  assert.ok(applied.mutation.rollback);
+
+  const rollback = executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: applied.mutation.id,
+  });
+  assert.equal(rollback.mutation.status, "rolled_back");
+  assert.equal(
+    readFileSync(absolutePath, "utf8"),
+    "alpha\n-- marker\nbravo\ncharlie\n"
+  );
+  assert.equal(projectFilePatchDrafts.get(draftId)?.status, "active");
+});
+
+test("AutonomousMutationExecutor preserves newline-terminated patch coordinates", (t) => {
+  const {
+    assignments,
+    database,
+    executor,
+    projectFilePatchDrafts,
+  } = createProjectFileDraftHarness();
+  const relativePath = "docs/autonomous-project-file-patch-newline-test.md";
+  const absolutePath = join(process.cwd(), relativePath);
+  const priorExists = existsSync(absolutePath);
+  const priorContent = priorExists ? readFileSync(absolutePath, "utf8") : "";
+  t.after(() => {
+    if (priorExists) {
+      writeFileSync(absolutePath, priorContent, "utf8");
+    } else if (existsSync(absolutePath)) {
+      unlinkSync(absolutePath);
+    }
+    database.close();
+  });
+  writeFileSync(absolutePath, "alpha\nbravo\ncharlie\n", "utf8");
+  const assignment = assignments.create({
+    objective: "Apply newline-terminated docs patch",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "project_file.patch_draft",
+          "project_file.apply_patch",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+  const patch = [
+    `diff --git a/${relativePath} b/${relativePath}`,
+    "index 1111111..2222222 100644",
+    `--- a/${relativePath}`,
+    `+++ b/${relativePath}`,
+    "@@ -2,1 +2,1 @@",
+    "-bravo",
+    "+bravo updated",
+    "",
+  ].join("\n");
+
+  const draft = executor.apply({
+    assignmentId: assignment.assignment.id,
+    runId: "coord_project_file_patch_newline_draft",
+    target: "project_file",
+    mutationType: "patch_draft",
+    rationale: "Create an auditable newline patch draft.",
+    riskClass: "high",
+    proposedChange: {
+      projectFilePatchDraft: {
+        patch,
+        metadata: { source: "test" },
+      },
+    },
+  });
+  const draftId = (
+    draft.mutation.rollback as { projectFilePatchDraft: { id: string } }
+  ).projectFilePatchDraft.id;
+
+  const applied = executor.apply({
+    assignmentId: assignment.assignment.id,
+    runId: "coord_project_file_apply_newline_patch",
+    target: "project_file",
+    mutationType: "apply_patch",
+    rationale: "Apply the audited newline patch draft.",
+    riskClass: "high",
+    proposedChange: {
+      projectFilePatchApply: { draftId },
+    },
+  });
+
+  assert.equal(
+    readFileSync(absolutePath, "utf8"),
+    "alpha\nbravo updated\ncharlie\n"
+  );
+  assert.equal(projectFilePatchDrafts.get(draftId)?.status, "applied");
+  assert.equal(applied.mutation.status, "applied");
+
+  executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: applied.mutation.id,
+  });
+  assert.equal(readFileSync(absolutePath, "utf8"), "alpha\nbravo\ncharlie\n");
+});
+
+test("AutonomousMutationExecutor applies patches to CRLF project files", (t) => {
+  const {
+    assignments,
+    database,
+    executor,
+    projectFilePatchDrafts,
+  } = createProjectFileDraftHarness();
+  const relativePath = "docs/autonomous-project-file-patch-crlf-test.md";
+  const absolutePath = join(process.cwd(), relativePath);
+  const priorExists = existsSync(absolutePath);
+  const priorContent = priorExists ? readFileSync(absolutePath) : Buffer.alloc(0);
+  t.after(() => {
+    if (priorExists) {
+      writeFileSync(absolutePath, priorContent);
+    } else if (existsSync(absolutePath)) {
+      unlinkSync(absolutePath);
+    }
+    database.close();
+  });
+  writeFileSync(absolutePath, "alpha\r\nbravo\r\ncharlie\r\n", "utf8");
+  const assignment = assignments.create({
+    objective: "Apply CRLF docs patch",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "project_file.patch_draft",
+          "project_file.apply_patch",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+  const patch = [
+    `diff --git a/${relativePath} b/${relativePath}`,
+    "index 1111111..2222222 100644",
+    `--- a/${relativePath}`,
+    `+++ b/${relativePath}`,
+    "@@ -2,1 +2,1 @@",
+    "-bravo",
+    "+bravo updated",
+    "",
+  ].join("\n");
+
+  const draft = executor.apply({
+    assignmentId: assignment.assignment.id,
+    runId: "coord_project_file_patch_crlf_draft",
+    target: "project_file",
+    mutationType: "patch_draft",
+    rationale: "Create an auditable CRLF patch draft.",
+    riskClass: "high",
+    proposedChange: {
+      projectFilePatchDraft: {
+        patch,
+        metadata: { source: "test" },
+      },
+    },
+  });
+  const draftId = (
+    draft.mutation.rollback as { projectFilePatchDraft: { id: string } }
+  ).projectFilePatchDraft.id;
+
+  const applied = executor.apply({
+    assignmentId: assignment.assignment.id,
+    runId: "coord_project_file_apply_crlf_patch",
+    target: "project_file",
+    mutationType: "apply_patch",
+    rationale: "Apply the audited CRLF patch draft.",
+    riskClass: "high",
+    proposedChange: {
+      projectFilePatchApply: { draftId },
+    },
+  });
+
+  assert.equal(
+    readFileSync(absolutePath, "utf8"),
+    "alpha\nbravo updated\ncharlie\n"
+  );
+  assert.equal(projectFilePatchDrafts.get(draftId)?.status, "applied");
+  assert.equal(applied.mutation.status, "applied");
+
+  executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: applied.mutation.id,
+  });
+  assert.equal(
+    readFileSync(absolutePath, "utf8"),
+    "alpha\r\nbravo\r\ncharlie\r\n"
+  );
+});
+
+test("AutonomousMutationExecutor preserves single blank line patch output", (t) => {
+  const {
+    assignments,
+    database,
+    executor,
+    projectFilePatchDrafts,
+  } = createProjectFileDraftHarness();
+  const relativePath = "docs/autonomous-project-file-patch-blank-line-test.md";
+  const absolutePath = join(process.cwd(), relativePath);
+  const priorExists = existsSync(absolutePath);
+  const priorContent = priorExists ? readFileSync(absolutePath) : Buffer.alloc(0);
+  t.after(() => {
+    if (priorExists) {
+      writeFileSync(absolutePath, priorContent);
+    } else if (existsSync(absolutePath)) {
+      unlinkSync(absolutePath);
+    }
+    database.close();
+  });
+  writeFileSync(absolutePath, "alpha\n", "utf8");
+  const assignment = assignments.create({
+    objective: "Apply blank line docs patch",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "project_file.patch_draft",
+          "project_file.apply_patch",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+  const patch = [
+    `diff --git a/${relativePath} b/${relativePath}`,
+    "index 1111111..2222222 100644",
+    `--- a/${relativePath}`,
+    `+++ b/${relativePath}`,
+    "@@ -1,1 +1,1 @@",
+    "-alpha",
+    "+",
+    "",
+  ].join("\n");
+
+  const draft = executor.apply({
+    assignmentId: assignment.assignment.id,
+    runId: "coord_project_file_patch_blank_line_draft",
+    target: "project_file",
+    mutationType: "patch_draft",
+    rationale: "Create an auditable blank-line patch draft.",
+    riskClass: "high",
+    proposedChange: {
+      projectFilePatchDraft: {
+        patch,
+        metadata: { source: "test" },
+      },
+    },
+  });
+  const draftId = (
+    draft.mutation.rollback as { projectFilePatchDraft: { id: string } }
+  ).projectFilePatchDraft.id;
+
+  const applied = executor.apply({
+    assignmentId: assignment.assignment.id,
+    runId: "coord_project_file_apply_blank_line_patch",
+    target: "project_file",
+    mutationType: "apply_patch",
+    rationale: "Apply the audited blank-line patch draft.",
+    riskClass: "high",
+    proposedChange: {
+      projectFilePatchApply: { draftId },
+    },
+  });
+
+  assert.equal(readFileSync(absolutePath, "utf8"), "\n");
+  assert.equal(projectFilePatchDrafts.get(draftId)?.status, "applied");
+  assert.equal(applied.mutation.status, "applied");
+
+  executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: applied.mutation.id,
+  });
+  assert.equal(readFileSync(absolutePath, "utf8"), "alpha\n");
+});
+
+test("AutonomousMutationExecutor preserves empty patch output", (t) => {
+  const {
+    assignments,
+    database,
+    executor,
+    projectFilePatchDrafts,
+  } = createProjectFileDraftHarness();
+  const relativePath = "docs/autonomous-project-file-patch-empty-test.md";
+  const absolutePath = join(process.cwd(), relativePath);
+  const priorExists = existsSync(absolutePath);
+  const priorContent = priorExists ? readFileSync(absolutePath) : Buffer.alloc(0);
+  t.after(() => {
+    if (priorExists) {
+      writeFileSync(absolutePath, priorContent);
+    } else if (existsSync(absolutePath)) {
+      unlinkSync(absolutePath);
+    }
+    database.close();
+  });
+  writeFileSync(absolutePath, "alpha\n", "utf8");
+  const assignment = assignments.create({
+    objective: "Apply empty docs patch",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "project_file.patch_draft",
+          "project_file.apply_patch",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+  const patch = [
+    `diff --git a/${relativePath} b/${relativePath}`,
+    "index 1111111..2222222 100644",
+    `--- a/${relativePath}`,
+    `+++ b/${relativePath}`,
+    "@@ -1,1 +0,0 @@",
+    "-alpha",
+    "",
+  ].join("\n");
+
+  const draft = executor.apply({
+    assignmentId: assignment.assignment.id,
+    runId: "coord_project_file_patch_empty_draft",
+    target: "project_file",
+    mutationType: "patch_draft",
+    rationale: "Create an auditable empty-output patch draft.",
+    riskClass: "high",
+    proposedChange: {
+      projectFilePatchDraft: {
+        patch,
+        metadata: { source: "test" },
+      },
+    },
+  });
+  const draftId = (
+    draft.mutation.rollback as { projectFilePatchDraft: { id: string } }
+  ).projectFilePatchDraft.id;
+
+  const applied = executor.apply({
+    assignmentId: assignment.assignment.id,
+    runId: "coord_project_file_apply_empty_patch",
+    target: "project_file",
+    mutationType: "apply_patch",
+    rationale: "Apply the audited empty-output patch draft.",
+    riskClass: "high",
+    proposedChange: {
+      projectFilePatchApply: { draftId },
+    },
+  });
+
+  assert.equal(readFileSync(absolutePath, "utf8"), "");
+  assert.equal(projectFilePatchDrafts.get(draftId)?.status, "applied");
+  assert.equal(applied.mutation.status, "applied");
+
+  executor.rollback({
+    assignmentId: assignment.assignment.id,
+    mutationId: applied.mutation.id,
+  });
+  assert.equal(readFileSync(absolutePath, "utf8"), "alpha\n");
+});
+
+test("AutonomousMutationExecutor rejects unsafe project file patch mutations without writing files", (t) => {
+  const {
+    assignments,
+    database,
+    executor,
+    ledger,
+    projectFilePatchDrafts,
+  } = createProjectFileDraftHarness();
+  const relativePath = "docs/autonomous-project-file-patch-reject.md";
+  const absolutePath = join(process.cwd(), relativePath);
+  const symlinkPath = join(
+    process.cwd(),
+    "docs/autonomous-project-file-patch-symlink.md"
+  );
+  const priorExists = existsSync(absolutePath);
+  const priorContent = priorExists ? readFileSync(absolutePath, "utf8") : "";
+  t.after(() => {
+    if (existsSync(symlinkPath)) {
+      unlinkSync(symlinkPath);
+    }
+    if (priorExists) {
+      writeFileSync(absolutePath, priorContent, "utf8");
+    } else if (existsSync(absolutePath)) {
+      unlinkSync(absolutePath);
+    }
+    database.close();
+  });
+  writeFileSync(absolutePath, "one\ntwo\nthree\n", "utf8");
+
+  const defaultAssignment = assignments.create({
+    objective: "Default patch policy must fail closed",
+    autonomyLevel: "evolve",
+  });
+  assert.throws(
+    () =>
+      executor.apply({
+        assignmentId: defaultAssignment.assignment.id,
+        target: "project_file",
+        mutationType: "patch_draft",
+        rationale: "Default policy should not create patch drafts.",
+        proposedChange: {
+          projectFilePatchDraft: {
+            patch: unifiedPatch(relativePath, [" one", "-two", "+TWO", " three"]),
+          },
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 403);
+      return true;
+    }
+  );
+
+  const mediumRiskAssignment = assignments.create({
+    objective: "Patch drafts are high risk",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "project_file.patch_draft",
+        ],
+        maxRiskClass: "medium",
+      },
+    },
+  });
+  assert.throws(
+    () =>
+      executor.apply({
+        assignmentId: mediumRiskAssignment.assignment.id,
+        target: "project_file",
+        mutationType: "patch_draft",
+        rationale: "Patch drafts should remain high risk.",
+        proposedChange: {
+          projectFilePatchDraft: {
+            patch: unifiedPatch(relativePath, [" one", "-two", "+TWO", " three"]),
+          },
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 403);
+      assert.match(error.message, /risk exceeds assignment self-evolution policy/);
+      return true;
+    }
+  );
+
+  const assignment = assignments.create({
+    objective: "Reject unsafe patch writes",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "project_file.patch_draft",
+          "project_file.apply_patch",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+
+  const unsafePatchDrafts = [
+    [
+      "duplicate paths",
+      [
+        unifiedPatch(relativePath, [" one", "-two", "+TWO", " three"]).trimEnd(),
+        unifiedPatch(relativePath, [" one", "-two", "+TWO", " three"]).trimEnd(),
+        "",
+      ].join("\n"),
+    ],
+    [
+      "protected path",
+      unifiedPatch(".env", ["+SECRET=value"], { oldPath: "/dev/null" }),
+    ],
+    ["oversized patch", "x".repeat(200_001)],
+  ] as const;
+  for (const [, patch] of unsafePatchDrafts) {
+    assert.throws(
+      () =>
+        executor.apply({
+          assignmentId: assignment.assignment.id,
+          target: "project_file",
+          mutationType: "patch_draft",
+          rationale: "Unsafe patch draft should fail.",
+          riskClass: "high",
+          proposedChange: {
+            projectFilePatchDraft: { patch },
+          },
+        }),
+      (error) => {
+        assert.ok(error instanceof AutonomousMutationExecutionError);
+        assert.equal(error.status, 400);
+        return true;
+      }
+    );
+  }
+  assert.equal(projectFilePatchDrafts.list({ assignmentId: assignment.assignment.id }).length, 0);
+
+  const mismatchDraft = projectFilePatchDrafts.create({
+    assignmentId: assignment.assignment.id,
+    patch: unifiedPatch(relativePath, [
+      " one",
+      "-not-two",
+      "+TWO",
+      " three",
+    ]),
+  });
+  assert.throws(
+    () =>
+      executor.apply({
+        assignmentId: assignment.assignment.id,
+        target: "project_file",
+        mutationType: "apply_patch",
+        rationale: "Context mismatch must fail before writing.",
+        riskClass: "high",
+        proposedChange: {
+          projectFilePatchApply: { draftId: mismatchDraft.id },
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 400);
+      assert.match(error.message, /context does not match/);
+      return true;
+    }
+  );
+  assert.equal(readFileSync(absolutePath, "utf8"), "one\ntwo\nthree\n");
+  assert.equal(projectFilePatchDrafts.get(mismatchDraft.id)?.status, "active");
+
+  const createOverExistingDraft = projectFilePatchDrafts.create({
+    assignmentId: assignment.assignment.id,
+    patch: [
+      `diff --git a/${relativePath} b/${relativePath}`,
+      "--- /dev/null",
+      `+++ b/${relativePath}`,
+      "@@ -0,0 +1,1 @@",
+      "+replacement",
+      "",
+    ].join("\n"),
+  });
+  assert.throws(
+    () =>
+      executor.apply({
+        assignmentId: assignment.assignment.id,
+        target: "project_file",
+        mutationType: "apply_patch",
+        rationale: "Creation patches must not overwrite existing files.",
+        riskClass: "high",
+        proposedChange: {
+          projectFilePatchApply: { draftId: createOverExistingDraft.id },
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 400);
+      assert.equal(error.mutation?.status, "failed");
+      assert.match(error.message, /creation patch cannot target existing file/);
+      return true;
+    }
+  );
+  assert.equal(readFileSync(absolutePath, "utf8"), "one\ntwo\nthree\n");
+  assert.equal(
+    projectFilePatchDrafts.get(createOverExistingDraft.id)?.status,
+    "active"
+  );
+  assert.deepEqual(
+    ledger
+      .list({ assignmentId: assignment.assignment.id })
+      .filter(
+        (mutation) =>
+          mutation.mutationType === "apply_patch" &&
+          mutation.errorMessage?.includes(
+            "creation patch cannot target existing file"
+          )
+      )
+      .map((mutation) => ({
+        status: mutation.status,
+        mutationType: mutation.mutationType,
+        errorMessage: mutation.errorMessage,
+      })),
+    [
+      {
+        status: "failed",
+        mutationType: "apply_patch",
+        errorMessage: `projectFilePatch.creation patch cannot target existing file: ${relativePath}`,
+      },
+    ]
+  );
+
+  if (existsSync(symlinkPath)) {
+    unlinkSync(symlinkPath);
+  }
+  symlinkSync(absolutePath, symlinkPath);
+  const symlinkRelativePath = "docs/autonomous-project-file-patch-symlink.md";
+  const symlinkDraft = projectFilePatchDrafts.create({
+    assignmentId: assignment.assignment.id,
+    patch: unifiedPatch(symlinkRelativePath, [" one", "-two", "+TWO", " three"]),
+  });
+  assert.throws(
+    () =>
+      executor.apply({
+        assignmentId: assignment.assignment.id,
+        target: "project_file",
+        mutationType: "apply_patch",
+        rationale: "Symlink patch targets must fail.",
+        riskClass: "high",
+        proposedChange: {
+          projectFilePatchApply: { draftId: symlinkDraft.id },
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 400);
+      assert.match(error.message, /symlinked paths/);
+      return true;
+    }
+  );
+  assert.equal(readFileSync(absolutePath, "utf8"), "one\ntwo\nthree\n");
+  assert.equal(projectFilePatchDrafts.get(symlinkDraft.id)?.status, "active");
+  assert.ok(
+    ledger
+      .list({ assignmentId: assignment.assignment.id, status: "failed" })
+      .some((mutation) => mutation.mutationType === "apply_patch")
+  );
+});
+
+test("AutonomousMutationExecutor scopes project file patch rollback conflicts by file", (t) => {
+  const {
+    assignments,
+    database,
+    executor,
+    projectFileDrafts,
+    projectFilePatchDrafts,
+  } =
+    createProjectFileDraftHarness();
+  const firstRelativePath = "docs/project-file-patch-conflict-a.md";
+  const secondRelativePath = "docs/project-file-patch-conflict-b.md";
+  const firstPath = join(process.cwd(), firstRelativePath);
+  const secondPath = join(process.cwd(), secondRelativePath);
+  t.after(() => {
+    unlinkIfPresent(firstPath);
+    unlinkIfPresent(secondPath);
+    database.close();
+  });
+  writeFileSync(firstPath, "first\n", "utf8");
+  writeFileSync(secondPath, "second\n", "utf8");
+  const selfEvolution = {
+    allowedMutationClasses: [
+      "configuration.operator_settings",
+      "project_file.apply_draft",
+      "project_file.apply_patch",
+    ],
+    maxRiskClass: "high" as const,
+  };
+  const firstAssignment = assignments.create({
+    objective: "First patch apply",
+    autonomyLevel: "evolve",
+    policy: { selfEvolution },
+  });
+  const secondAssignment = assignments.create({
+    objective: "Second patch apply",
+    autonomyLevel: "evolve",
+    policy: { selfEvolution },
+  });
+
+  const firstDraft = projectFilePatchDrafts.create({
+    assignmentId: firstAssignment.assignment.id,
+    patch: unifiedPatch(firstRelativePath, ["-first", "+first updated"]),
+  });
+  const firstApply = executor.apply({
+    assignmentId: firstAssignment.assignment.id,
+    target: "project_file",
+    mutationType: "apply_patch",
+    riskClass: "high",
+    rationale: "Apply first patch.",
+    proposedChange: { projectFilePatchApply: { draftId: firstDraft.id } },
+  });
+  const secondDraft = projectFilePatchDrafts.create({
+    assignmentId: secondAssignment.assignment.id,
+    patch: unifiedPatch(secondRelativePath, ["-second", "+second updated"]),
+  });
+  executor.apply({
+    assignmentId: secondAssignment.assignment.id,
+    target: "project_file",
+    mutationType: "apply_patch",
+    riskClass: "high",
+    rationale: "Apply unrelated patch.",
+    proposedChange: { projectFilePatchApply: { draftId: secondDraft.id } },
+  });
+
+  executor.rollback({
+    assignmentId: firstAssignment.assignment.id,
+    mutationId: firstApply.mutation.id,
+  });
+  assert.equal(readFileSync(firstPath, "utf8"), "first\n");
+  assert.equal(readFileSync(secondPath, "utf8"), "second updated\n");
+
+  const patchBeforeDraft = projectFilePatchDrafts.create({
+    assignmentId: firstAssignment.assignment.id,
+    patch: unifiedPatch(firstRelativePath, ["-first", "+first via patch"]),
+  });
+  const patchBeforeDraftApply = executor.apply({
+    assignmentId: firstAssignment.assignment.id,
+    target: "project_file",
+    mutationType: "apply_patch",
+    riskClass: "high",
+    rationale: "Apply patch before a later draft.",
+    proposedChange: {
+      projectFilePatchApply: { draftId: patchBeforeDraft.id },
+    },
+  });
+  const laterDraft = projectFileDrafts.create({
+    assignmentId: secondAssignment.assignment.id,
+    path: firstRelativePath,
+    content: "first via draft\n",
+  });
+  executor.apply({
+    assignmentId: secondAssignment.assignment.id,
+    target: "project_file",
+    mutationType: "apply_draft",
+    riskClass: "high",
+    rationale: "Apply a later draft to the same file.",
+    proposedChange: { projectFileApply: { draftId: laterDraft.id } },
+  });
+  assert.throws(
+    () =>
+      executor.rollback({
+        assignmentId: firstAssignment.assignment.id,
+        mutationId: patchBeforeDraftApply.mutation.id,
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 409);
+      assert.match(error.message, /newer applied project_file\.apply_patch/);
+      return true;
+    }
+  );
+  assert.equal(readFileSync(firstPath, "utf8"), "first via draft\n");
+
+  const thirdDraft = projectFilePatchDrafts.create({
+    assignmentId: firstAssignment.assignment.id,
+    patch: unifiedPatch(firstRelativePath, [
+      "-first via draft",
+      "+first again",
+    ]),
+  });
+  const thirdApply = executor.apply({
+    assignmentId: firstAssignment.assignment.id,
+    target: "project_file",
+    mutationType: "apply_patch",
+    riskClass: "high",
+    rationale: "Apply same file again.",
+    proposedChange: { projectFilePatchApply: { draftId: thirdDraft.id } },
+  });
+  const fourthDraft = projectFilePatchDrafts.create({
+    assignmentId: secondAssignment.assignment.id,
+    patch: unifiedPatch(firstRelativePath, ["-first again", "+first later"]),
+  });
+  executor.apply({
+    assignmentId: secondAssignment.assignment.id,
+    target: "project_file",
+    mutationType: "apply_patch",
+    riskClass: "high",
+    rationale: "Apply same file later.",
+    proposedChange: { projectFilePatchApply: { draftId: fourthDraft.id } },
+  });
+
+  assert.throws(
+    () =>
+      executor.rollback({
+        assignmentId: firstAssignment.assignment.id,
+        mutationId: thirdApply.mutation.id,
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 409);
+      assert.match(error.message, /newer applied project_file\.apply_patch/);
+      return true;
+    }
+  );
+  assert.equal(readFileSync(firstPath, "utf8"), "first later\n");
+});
+
+test("AutonomousMutationExecutor blocks rollback with ambiguous affected-resource evidence", () => {
+  const database = new AppDatabase(":memory:");
+  const assignments = new AutonomousAssignmentService(database);
+  const ledger = new AutonomousMutationLedger(database, assignments);
+  const settings = new OperatorSettingsStore(database);
+  let rollbackCalled = false;
+  const adapter: AutonomousMutationAdapter = {
+    target: "project_file",
+    mutationType: "apply_patch",
+    mutationClass: "project_file.apply_patch",
+    affectedResources: [{ type: "project_file_patch" }],
+    minimumRiskClass: "high",
+    rollbackConflictScope: "affected_resources",
+    rollbackConflictMutationTypes: ["apply_patch", "apply_draft", "apply_bundle"],
+    apply() {
+      return {
+        before: { file: "before" },
+        after: { file: "after" },
+        rollback: { file: "before" },
+      };
+    },
+    rollback() {
+      rollbackCalled = true;
+      return { verificationMethod: "test_rollback" };
+    },
+  };
+  const executor = new AutonomousMutationExecutor({
+    assignments,
+    ledger,
+    settings,
+    adapters: [adapter],
+  });
+  try {
+    const assignment = assignments.create({
+      objective: "Reject ambiguous rollback evidence",
+      autonomyLevel: "evolve",
+    });
+    const current = ledger.recordApplied(
+      ledger.recordPlanned({
+        assignmentId: assignment.assignment.id,
+        target: "project_file",
+        mutationType: "apply_patch",
+        autonomyLevel: "evolve",
+        authorizingPolicy: { rule: "test" },
+        rationale: "Apply legacy patch evidence.",
+        riskClass: "high",
+        affectedResources: [{ type: "project_file_patch" }],
+      }).id,
+      {
+        before: { file: "before" },
+        after: { file: "after" },
+        rollback: { file: "before" },
+        affectedResources: [{ type: "project_file_patch" }],
+      }
+    );
+    ledger.recordApplied(
+      ledger.recordPlanned({
+        assignmentId: assignment.assignment.id,
+        target: "project_file",
+        mutationType: "apply_patch",
+        autonomyLevel: "evolve",
+        authorizingPolicy: { rule: "test" },
+        rationale: "Apply newer patch on the same file.",
+        riskClass: "high",
+        affectedResources: [{ type: "file", path: "docs/same.md" }],
+      }).id,
+      {
+        before: { file: "after" },
+        after: { file: "newer" },
+        rollback: { file: "after" },
+        affectedResources: [{ type: "file", path: "docs/same.md" }],
+      }
+    );
+
+    assert.throws(
+      () =>
+        executor.rollback({
+          assignmentId: assignment.assignment.id,
+          mutationId: current.id,
+        }),
+      (error) => {
+        assert.ok(error instanceof AutonomousMutationExecutionError);
+        assert.equal(error.status, 409);
+        assert.match(error.message, /affected resource evidence/);
+        return true;
+      }
+    );
+    assert.equal(rollbackCalled, false);
+    assert.equal(ledger.get(current.id)?.status, "applied");
+  } finally {
+    database.close();
+  }
 });
 
 test("AutonomousMutationExecutor atomically applies a project file draft bundle", (t) => {
@@ -4192,6 +6967,43 @@ test("AutonomousMutationExecutor keeps prompt runtime guidance mutations opt-in"
   database.close();
 });
 
+test("AutonomousMutationExecutor keeps managed prompt fragments opt-in", () => {
+  const { assignments, database, executor, promptFragments } =
+    createPromptGuidanceHarness();
+  const assignment = assignments.create({
+    objective: "Default policy should not mutate managed prompt fragments",
+    autonomyLevel: "evolve",
+  });
+
+  assert.throws(
+    () =>
+      executor.apply({
+        assignmentId: assignment.assignment.id,
+        target: "prompt",
+        mutationType: "managed_fragment",
+        rationale: "Try managed prompt fragment mutation without opt-in.",
+        riskClass: "high",
+        proposedChange: {
+          promptFragment: {
+            id: "tone",
+            mode: "upsert",
+            text: "Prefer shorter replies.",
+          },
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof AutonomousMutationExecutionError);
+      assert.equal(error.status, 403);
+      assert.equal(error.mutation?.status, "failed");
+      assert.match(error.message, /does not allow prompt\.managed_fragment/);
+      return true;
+    }
+  );
+
+  assert.deepEqual(promptFragments.listActive(), []);
+  database.close();
+});
+
 test("AutonomousMutationExecutor rejects malformed prompt runtime guidance mutations", () => {
   const { assignments, database, executor, ledger, promptGuidance } =
     createPromptGuidanceHarness();
@@ -4269,6 +7081,97 @@ test("AutonomousMutationExecutor rejects malformed prompt runtime guidance mutat
     ]
   );
 
+  database.close();
+});
+
+test("AutonomousMutationExecutor rejects malformed managed prompt fragments", () => {
+  const { assignments, database, executor, ledger, promptFragments } =
+    createPromptGuidanceHarness();
+  promptFragments.upsert("tone", "Keep initial tone.", "operator");
+  const assignment = assignments.create({
+    objective: "Reject unsafe managed prompt fragment changes",
+    autonomyLevel: "evolve",
+    policy: {
+      selfEvolution: {
+        allowedMutationClasses: [
+          "configuration.operator_settings",
+          "prompt.managed_fragment",
+        ],
+        maxRiskClass: "high",
+      },
+    },
+  });
+
+  const malformedChanges: JsonValue[] = [
+    { promptFragment: { id: "   ", mode: "upsert", text: "Valid text." } },
+    {
+      promptFragment: {
+        id: "tone\n## injected",
+        mode: "upsert",
+        text: "Valid text.",
+      },
+    },
+    {
+      promptFragment: {
+        id: "tone\tinjected",
+        mode: "upsert",
+        text: "Valid text.",
+      },
+    },
+    {
+      promptFragment: {
+        id: "x".repeat(81),
+        mode: "upsert",
+        text: "Valid text.",
+      },
+    },
+    { promptFragment: { id: "tone", mode: "upsert", text: "   " } },
+    {
+      promptFragment: {
+        id: "tone",
+        mode: "upsert",
+        text: "x".repeat(2001),
+      },
+    },
+    { promptFragment: { id: "tone", mode: "replace", text: "Nope." } },
+    { promptFragment: { id: "tone", mode: "delete" } },
+    {
+      promptFragment: {
+        id: "tone",
+        mode: "restore_inactive",
+        text: "Rollback-only mode.",
+      },
+    },
+    { promptFragment: { id: "tone", mode: "clear", text: "No text here." } },
+  ];
+  for (const proposedChange of malformedChanges) {
+    assert.throws(
+      () =>
+        executor.apply({
+          assignmentId: assignment.assignment.id,
+          target: "prompt",
+          mutationType: "managed_fragment",
+          rationale: "Try malformed managed prompt fragment.",
+          riskClass: "high",
+          proposedChange,
+        }),
+      (error) => {
+        assert.ok(error instanceof AutonomousMutationExecutionError);
+        assert.equal(error.status, 400);
+        assert.equal(error.mutation?.status, "failed");
+        return true;
+      }
+    );
+  }
+
+  assert.equal(promptFragments.get("tone")?.text, "Keep initial tone.");
+  assert.equal(promptFragments.get("tone")?.active, true);
+  assert.deepEqual(
+    ledger
+      .list({ assignmentId: assignment.assignment.id })
+      .map((mutation) => mutation.mutationType),
+    malformedChanges.map(() => "managed_fragment")
+  );
   database.close();
 });
 
@@ -4842,7 +7745,7 @@ test("AutonomousMutationExecutor audits unsupported and malformed autonomous mut
         mutationType: "tool_bundle_enable",
         status: "failed",
         errorMessage:
-          "Only configuration.operator_settings, configuration.assignment_policy, configuration.runtime_limits, tool.bundle_enable, prompt.runtime_guidance, memory_policy.runtime_bounds, role.permission_policy, project_file.draft, project_file.apply_draft, and project_file.apply_bundle autonomous mutations are supported in this slice",
+          "Only configuration.operator_settings, configuration.assignment_policy, configuration.runtime_limits, configuration.channel_state, tool.bundle_enable, prompt.runtime_guidance, prompt.managed_fragment, memory.entry_lifecycle, memory_policy.runtime_bounds, role.permission_policy, project_file.draft, project_file.apply_draft, project_file.apply_bundle, project_file.patch_draft, and project_file.apply_patch autonomous mutations are supported in this slice",
       },
     ]
   );

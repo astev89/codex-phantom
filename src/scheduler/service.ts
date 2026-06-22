@@ -151,6 +151,34 @@ export class SchedulerService {
       .map((row) => toJobRecord(row));
   }
 
+  async reschedule(
+    jobId: string,
+    options: {
+      message?: string;
+      delayMs?: number;
+      scheduledAt?: string;
+    }
+  ): Promise<JobRecord> {
+    const job = await this.get(jobId);
+    if (!job || job.status !== "scheduled") {
+      throw new Error(`Cannot reschedule non-scheduled job ${jobId}`);
+    }
+    const now = new Date();
+    const scheduledAt = options.scheduledAt
+      ? normalizeRescheduleTimestamp(options.scheduledAt)
+      : new Date(now.getTime() + (options.delayMs ?? 0)).toISOString();
+    const updated: JobRecord = {
+      ...job,
+      message: options.message ?? job.message,
+      scheduledAt,
+    };
+    await this.update(updated);
+    if (this.running) {
+      this.arm(updated);
+    }
+    return updated;
+  }
+
   private async recoverStaleRunningJobs(): Promise<void> {
     const jobs = await this.list();
     const recoveredAt = new Date().toISOString();
@@ -301,6 +329,14 @@ function retryDelayMs(attemptCount: number): number {
     60_000,
     1_000 * Math.max(1, 2 ** Math.max(0, attemptCount - 1))
   );
+}
+
+function normalizeRescheduleTimestamp(value: string): string {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error("Invalid scheduledAt timestamp");
+  }
+  return parsed.toISOString();
 }
 
 function toJobRecord(row: JobRow): JobRecord {
