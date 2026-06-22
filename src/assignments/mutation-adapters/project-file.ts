@@ -303,12 +303,7 @@ export function createProjectFileApplyPatchAutonomousMutationAdapter(
         throw new Error("Project file patch draft is not active");
       }
 
-      let result: { files: ProjectFilePatchApplyItem[] };
-      try {
-        result = projectFileApply.applyPatch({ patch: draft.patch });
-      } catch (error) {
-        throw error;
-      }
+      const result = projectFileApply.applyPatch({ patch: draft.patch });
 
       let appliedDraft;
       try {

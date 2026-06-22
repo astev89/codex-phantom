@@ -343,7 +343,7 @@ curl -X POST http://localhost:3210/admin/assignments/asgn_123/mutations/apply \
     "rationale": "Apply the reviewed bounded patch draft.",
     "proposedChange": {
       "projectFilePatchApply": {
-        "draftId": "pfp_123"
+        "draftId": "pfpatch_123"
       }
     }
   }'
