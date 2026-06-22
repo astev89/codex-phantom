@@ -157,6 +157,32 @@ test("semantic query narrows unembedded keyword fallback rows by query tokens", 
   database.close();
 });
 
+test("semantic query bounds unembedded keyword fallback tokens", async () => {
+  const database = new AppDatabase(":memory:");
+  const qdrant = makeFakeVectorStore({ backend: "qdrant", available: true });
+  const memory = new MemoryStore(
+    database,
+    makeConfig(),
+    makeFakeEmbeddings({}),
+    qdrant,
+    makeFakeVectorStore({ backend: "sqlite_fallback", available: true })
+  );
+  await memory.storeEntry({
+    category: "semantic",
+    content: "Release checklist exists",
+    sourceType: "semantic_fact",
+    importance: 0.8,
+    isFact: true,
+  });
+  const longQuery = Array.from(
+    { length: 40_000 },
+    (_, index) => `token${index}`
+  ).join(" ");
+
+  await assert.doesNotReject(() => memory.query(longQuery));
+  database.close();
+});
+
 test("backfills existing sqlite memories into qdrant", async () => {
   const database = new AppDatabase(":memory:");
   const qdrant = makeFakeVectorStore({ backend: "qdrant", available: true });

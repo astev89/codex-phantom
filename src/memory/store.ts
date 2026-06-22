@@ -36,6 +36,8 @@ import type {
 } from "./types.ts";
 import { QdrantVectorStore, SQLiteVectorStore } from "./vector-store.ts";
 
+const MAX_KEYWORD_FALLBACK_QUERY_TOKENS = 24;
+
 export class MemoryStore {
   private readonly database: AppDatabase;
   private readonly config: AppConfig;
@@ -95,7 +97,7 @@ export class MemoryStore {
             ...ids
           )
         : [];
-    const queryTokens = tokenize(input);
+    const queryTokens = boundedKeywordFallbackTokens(input);
     const keywordRows =
       ids.length > 0 && queryEmbedding && queryTokens.length > 0
         ? this.database.all<MemoryRow>(
@@ -584,6 +586,13 @@ export class MemoryStore {
       return null;
     }
   }
+}
+
+function boundedKeywordFallbackTokens(input: string): string[] {
+  return [...new Set(tokenize(input))].slice(
+    0,
+    MAX_KEYWORD_FALLBACK_QUERY_TOKENS
+  );
 }
 
 function dedupeMemoryRows(rows: MemoryRow[]): MemoryRow[] {

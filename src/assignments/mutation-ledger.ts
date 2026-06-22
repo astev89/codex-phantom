@@ -532,12 +532,6 @@ export class AutonomousMutationLedger {
       ...values,
       1
     );
-    if (scope !== "affected_resources") {
-      return rows[0] ? toAutonomousMutationRecord(rows[0]) : null;
-    }
-    if (resourcePairs.length === 0) {
-      return rows[0] ? toAutonomousMutationRecord(rows[0]) : null;
-    }
     return rows[0] ? toAutonomousMutationRecord(rows[0]) : null;
   }
 
