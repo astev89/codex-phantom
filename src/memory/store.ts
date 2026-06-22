@@ -20,6 +20,7 @@ import {
   type MemoryRow,
   normalizeText,
   toMemoryEntry,
+  tokenize,
   trimLine,
   vectorPointForRow,
 } from "./records.ts";
@@ -94,17 +95,22 @@ export class MemoryStore {
             ...ids
           )
         : [];
+    const queryTokens = tokenize(input);
     const keywordRows =
-      ids.length > 0 && queryEmbedding
+      ids.length > 0 && queryEmbedding && queryTokens.length > 0
         ? this.database.all<MemoryRow>(
             `
               SELECT ${MEMORY_ROW_COLUMNS}
               FROM memory_entries
               WHERE COALESCE(lifecycle_state, 'active') = 'active'
                 AND embedding_json IS NULL
+                AND (${queryTokens
+                  .map(() => "LOWER(content) LIKE ?")
+                  .join(" OR ")})
               ORDER BY created_at DESC
               LIMIT 240
-            `
+            `,
+            ...queryTokens.map((token) => `%${token}%`)
           )
         : [];
     const rows =

@@ -182,7 +182,7 @@ export class PromptManagedFragmentStore {
     );
     return this.get(normalizedId, options) ?? {
       id: normalizedId,
-      text: before?.text ?? "",
+      text: "",
       active: false,
     };
   }

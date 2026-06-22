@@ -89,6 +89,74 @@ test("falls back to sqlite vector search when qdrant is unavailable", async () =
   database.close();
 });
 
+test("semantic query narrows unembedded keyword fallback rows by query tokens", async () => {
+  const database = new AppDatabase(":memory:");
+  const qdrant = makeFakeVectorStore({ backend: "qdrant", available: true });
+  const memory = new MemoryStore(
+    database,
+    makeConfig(),
+    makeFakeEmbeddings({
+      "Release checklist exists": [1, 0, 0],
+      "release checklist": [1, 0, 0],
+    }),
+    qdrant,
+    makeFakeVectorStore({ backend: "sqlite_fallback", available: true })
+  );
+  const relevant = await memory.storeEntry({
+    category: "semantic",
+    content: "Release checklist exists",
+    sourceType: "semantic_fact",
+    importance: 0.8,
+    isFact: true,
+  });
+  database.run(
+    `
+      INSERT INTO memory_entries (
+        id, category, content, created_at, source_user_input, source_assistant_output, score,
+        embedding_json, embedding_model, source_type, importance, last_accessed_at, access_count,
+        is_summary, is_fact, parent_summary_id, source_session_id, source_run_id,
+        vector_backend, vector_synced_at, vector_sync_error, vector_point_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    "mem_unrelated_unembedded",
+    "procedural",
+    "Pizza oven calibration is important",
+    new Date().toISOString(),
+    null,
+    null,
+    0,
+    null,
+    null,
+    "procedural_note",
+    1,
+    null,
+    0,
+    0,
+    1,
+    null,
+    "session-1",
+    "run-1",
+    "sqlite_fallback",
+    null,
+    null,
+    "mem_unrelated_unembedded"
+  );
+
+  const result = await memory.query("release checklist");
+  const returned = [
+    ...result.summaries,
+    ...result.episodic,
+    ...result.semantic,
+    ...result.procedural,
+  ];
+  assert.ok(returned.some((entry) => entry.id === relevant.id));
+  assert.equal(
+    returned.some((entry) => entry.id === "mem_unrelated_unembedded"),
+    false
+  );
+  database.close();
+});
+
 test("backfills existing sqlite memories into qdrant", async () => {
   const database = new AppDatabase(":memory:");
   const qdrant = makeFakeVectorStore({ backend: "qdrant", available: true });
