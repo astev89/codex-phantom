@@ -16,6 +16,7 @@ import {
 } from "./policy.ts";
 import {
   dedupeStrings,
+  isActive,
   MEMORY_ROW_COLUMNS,
   type MemoryRow,
   normalizeText,
@@ -96,9 +97,12 @@ export class MemoryStore {
             ...ids
           )
         : [];
+    const activeVectorRows = vectorRows.filter((row) => isActive(row));
     const queryTokens = boundedKeywordFallbackTokens(input);
     const keywordRows =
-      queryEmbedding && queryTokens.length > 0
+      queryEmbedding &&
+      activeVectorRows.length < policy.memoryTopK &&
+      queryTokens.length > 0
         ? this.database.all<MemoryRow>(
             `
               SELECT ${MEMORY_ROW_COLUMNS}
@@ -115,7 +119,7 @@ export class MemoryStore {
           )
         : [];
     const rows =
-      queryEmbedding && (ids.length > 0 || keywordRows.length > 0)
+      queryEmbedding && (activeVectorRows.length > 0 || keywordRows.length > 0)
         ? dedupeMemoryRows([...vectorRows, ...keywordRows])
         : this.database.all<MemoryRow>(
             `

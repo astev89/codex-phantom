@@ -254,6 +254,161 @@ test("semantic query uses keyword fallback when vector search has no hits", asyn
   database.close();
 });
 
+test("semantic query uses keyword fallback when vector hits are inactive", async () => {
+  const database = new AppDatabase(":memory:");
+  const qdrant = makeFakeVectorStore({ backend: "qdrant", available: true });
+  const memory = new MemoryStore(
+    database,
+    makeConfig(".", { memoryTopK: 1 }),
+    makeFakeEmbeddings({
+      "Release checklist stale vector": [1, 0, 0],
+      "Replacement memory is intentionally distant": [0, 1, 0],
+      "release checklist": [1, 0, 0],
+    }),
+    qdrant,
+    makeFakeVectorStore({ backend: "sqlite_fallback", available: true })
+  );
+  const stale = await memory.storeEntry({
+    category: "semantic",
+    content: "Release checklist stale vector",
+    sourceType: "semantic_fact",
+    importance: 0.9,
+    isFact: true,
+  });
+  await memory.storeEntry({
+    category: "semantic",
+    content: "Replacement memory is intentionally distant",
+    sourceType: "semantic_fact",
+    importance: 0.9,
+    isFact: true,
+    supersedesMemoryIds: [stale.id],
+    lifecycleReason: "Stale vector should not fill retrieval budget",
+  });
+  database.run(
+    `
+      INSERT INTO memory_entries (
+        id, category, content, created_at, source_user_input, source_assistant_output, score,
+        embedding_json, embedding_model, source_type, importance, last_accessed_at, access_count,
+        is_summary, is_fact, parent_summary_id, source_session_id, source_run_id,
+        vector_backend, vector_synced_at, vector_sync_error, vector_point_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    "mem_unembedded_inactive_vector",
+    "procedural",
+    "Release checklist active unembedded fallback",
+    new Date().toISOString(),
+    null,
+    null,
+    0,
+    null,
+    null,
+    "procedural_note",
+    0.8,
+    null,
+    0,
+    0,
+    0,
+    null,
+    "session-1",
+    "run-1",
+    "sqlite_fallback",
+    null,
+    null,
+    "mem_unembedded_inactive_vector"
+  );
+
+  const result = await memory.query("release checklist");
+  const returned = [
+    ...result.summaries,
+    ...result.episodic,
+    ...result.semantic,
+    ...result.procedural,
+  ];
+  assert.equal(returned.length, 1);
+  assert.equal(returned[0]?.id, "mem_unembedded_inactive_vector");
+  assert.equal(
+    returned.some((entry) => entry.id === stale.id),
+    false
+  );
+  database.close();
+});
+
+test("semantic query skips keyword fallback when vector search fills the policy limit", async () => {
+  const database = new AppDatabase(":memory:");
+  const qdrant = makeFakeVectorStore({ backend: "qdrant", available: true });
+  const memory = new MemoryStore(
+    database,
+    makeConfig(".", { memoryTopK: 2 }),
+    makeFakeEmbeddings({
+      "Release checklist first": [1, 0, 0],
+      "Release checklist second": [1, 0, 0],
+      "release checklist": [1, 0, 0],
+    }),
+    qdrant,
+    makeFakeVectorStore({ backend: "sqlite_fallback", available: true })
+  );
+  await memory.storeEntry({
+    category: "semantic",
+    content: "Release checklist first",
+    sourceType: "semantic_fact",
+    importance: 0.5,
+    isFact: true,
+  });
+  await memory.storeEntry({
+    category: "semantic",
+    content: "Release checklist second",
+    sourceType: "semantic_fact",
+    importance: 0.5,
+    isFact: true,
+  });
+  database.run(
+    `
+      INSERT INTO memory_entries (
+        id, category, content, created_at, source_user_input, source_assistant_output, score,
+        embedding_json, embedding_model, source_type, importance, last_accessed_at, access_count,
+        is_summary, is_fact, parent_summary_id, source_session_id, source_run_id,
+        vector_backend, vector_synced_at, vector_sync_error, vector_point_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    "mem_unembedded_full_vector",
+    "procedural",
+    "Release checklist unembedded fallback should not run",
+    new Date().toISOString(),
+    null,
+    null,
+    0,
+    null,
+    null,
+    "procedural_note",
+    1,
+    null,
+    0,
+    0,
+    0,
+    null,
+    "session-1",
+    "run-1",
+    "sqlite_fallback",
+    null,
+    null,
+    "mem_unembedded_full_vector"
+  );
+
+  const result = await memory.query("release checklist");
+  const returned = [
+    ...result.summaries,
+    ...result.episodic,
+    ...result.semantic,
+    ...result.procedural,
+  ];
+  assert.equal(returned.length, 2);
+  assert.equal(
+    returned.some((entry) => entry.id === "mem_unembedded_full_vector"),
+    false
+  );
+  database.close();
+});
+
 test("semantic query bounds unembedded keyword fallback tokens", async () => {
   const database = new AppDatabase(":memory:");
   const qdrant = makeFakeVectorStore({ backend: "qdrant", available: true });

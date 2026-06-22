@@ -380,3 +380,61 @@ test("AutonomousMutationLedger finds affected-resource conflicts beyond unrelate
     database.close();
   }
 });
+
+test("AutonomousMutationLedger ignores affected-resource conflicts without concrete resource pairs", () => {
+  withLedger((ledger, assignments) => {
+    const assignment = assignments.create({
+      objective: "Ignore unscoped affected resource rollback conflicts",
+      autonomyLevel: "evolve",
+    });
+    const current = ledger.recordApplied(
+      ledger.recordPlanned({
+        assignmentId: assignment.assignment.id,
+        target: "project_file",
+        mutationType: "apply_patch",
+        autonomyLevel: "evolve",
+        authorizingPolicy: { rule: "test" },
+        rationale: "Apply legacy patch evidence.",
+        riskClass: "high",
+        affectedResources: [{ type: "project_file_patch" }],
+      }).id,
+      {
+        before: { file: "before" },
+        after: { file: "after" },
+        rollback: { file: "before" },
+        affectedResources: [{ type: "project_file_patch" }],
+      }
+    );
+    ledger.recordApplied(
+      ledger.recordPlanned({
+        assignmentId: assignment.assignment.id,
+        target: "project_file",
+        mutationType: "apply_patch",
+        autonomyLevel: "evolve",
+        authorizingPolicy: { rule: "test" },
+        rationale: "Apply newer patch on a concrete file.",
+        riskClass: "high",
+        affectedResources: [{ type: "file", path: "docs/newer.md" }],
+      }).id,
+      {
+        before: { file: "before" },
+        after: { file: "after" },
+        rollback: { file: "before" },
+        affectedResources: [{ type: "file", path: "docs/newer.md" }],
+      }
+    );
+
+    assert.equal(
+      ledger.findNewerApplied({
+        assignmentId: assignment.assignment.id,
+        target: current.target,
+        mutationType: current.mutationType,
+        appliedAt: current.appliedAt ?? "",
+        id: current.id,
+        scope: "affected_resources",
+        affectedResources: current.affectedResources,
+      }),
+      null
+    );
+  });
+});

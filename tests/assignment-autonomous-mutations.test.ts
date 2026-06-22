@@ -5090,6 +5090,100 @@ test("AutonomousMutationExecutor scopes project file patch rollback conflicts by
   assert.equal(readFileSync(firstPath, "utf8"), "first later\n");
 });
 
+test("AutonomousMutationExecutor blocks rollback with ambiguous affected-resource evidence", () => {
+  const database = new AppDatabase(":memory:");
+  const assignments = new AutonomousAssignmentService(database);
+  const ledger = new AutonomousMutationLedger(database, assignments);
+  const settings = new OperatorSettingsStore(database);
+  let rollbackCalled = false;
+  const adapter: AutonomousMutationAdapter = {
+    target: "project_file",
+    mutationType: "apply_patch",
+    mutationClass: "project_file.apply_patch",
+    affectedResources: [{ type: "project_file_patch" }],
+    minimumRiskClass: "high",
+    rollbackConflictScope: "affected_resources",
+    rollbackConflictMutationTypes: ["apply_patch", "apply_draft", "apply_bundle"],
+    apply() {
+      return {
+        before: { file: "before" },
+        after: { file: "after" },
+        rollback: { file: "before" },
+      };
+    },
+    rollback() {
+      rollbackCalled = true;
+      return { verificationMethod: "test_rollback" };
+    },
+  };
+  const executor = new AutonomousMutationExecutor({
+    assignments,
+    ledger,
+    settings,
+    adapters: [adapter],
+  });
+  try {
+    const assignment = assignments.create({
+      objective: "Reject ambiguous rollback evidence",
+      autonomyLevel: "evolve",
+    });
+    const current = ledger.recordApplied(
+      ledger.recordPlanned({
+        assignmentId: assignment.assignment.id,
+        target: "project_file",
+        mutationType: "apply_patch",
+        autonomyLevel: "evolve",
+        authorizingPolicy: { rule: "test" },
+        rationale: "Apply legacy patch evidence.",
+        riskClass: "high",
+        affectedResources: [{ type: "project_file_patch" }],
+      }).id,
+      {
+        before: { file: "before" },
+        after: { file: "after" },
+        rollback: { file: "before" },
+        affectedResources: [{ type: "project_file_patch" }],
+      }
+    );
+    ledger.recordApplied(
+      ledger.recordPlanned({
+        assignmentId: assignment.assignment.id,
+        target: "project_file",
+        mutationType: "apply_patch",
+        autonomyLevel: "evolve",
+        authorizingPolicy: { rule: "test" },
+        rationale: "Apply newer patch on the same file.",
+        riskClass: "high",
+        affectedResources: [{ type: "file", path: "docs/same.md" }],
+      }).id,
+      {
+        before: { file: "after" },
+        after: { file: "newer" },
+        rollback: { file: "after" },
+        affectedResources: [{ type: "file", path: "docs/same.md" }],
+      }
+    );
+
+    assert.throws(
+      () =>
+        executor.rollback({
+          assignmentId: assignment.assignment.id,
+          mutationId: current.id,
+        }),
+      (error) => {
+        assert.ok(error instanceof AutonomousMutationExecutionError);
+        assert.equal(error.status, 409);
+        assert.match(error.message, /affected resource evidence/);
+        return true;
+      }
+    );
+    assert.equal(rollbackCalled, false);
+    assert.equal(ledger.get(current.id)?.status, "applied");
+  } finally {
+    database.close();
+  }
+});
+
 test("AutonomousMutationExecutor atomically applies a project file draft bundle", (t) => {
   const { assignments, database, executor, projectFileDrafts } =
     createProjectFileDraftHarness();

@@ -481,6 +481,9 @@ export class AutonomousMutationLedger {
       scope === "affected_resources"
         ? affectedResourcePairs(input.affectedResources)
         : [];
+    if (scope === "affected_resources" && resourcePairs.length === 0) {
+      return null;
+    }
     const affectedResourceFilter =
       scope === "affected_resources" && resourcePairs.length > 0
         ? `AND EXISTS (

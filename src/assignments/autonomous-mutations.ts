@@ -277,6 +277,7 @@ export class AutonomousMutationExecutor {
         "Only applied autonomous mutations can be rolled back"
       );
     }
+    assertRollbackEvidenceSupportsScope(adapter, mutation);
     const newerMutation = this.ledger.findNewerApplied({
       assignmentId: mutation.assignmentId,
       target: mutation.target,
@@ -358,6 +359,7 @@ export class AutonomousMutationExecutor {
         "Only applied autonomous mutations can be rolled back"
       );
     }
+    assertRollbackEvidenceSupportsScope(adapter, mutation);
     const newerMutation = this.ledger.findNewerApplied({
       assignmentId: mutation.assignmentId,
       target: mutation.target,
@@ -601,6 +603,44 @@ function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
     "then" in value &&
     typeof value.then === "function"
   );
+}
+
+function assertRollbackEvidenceSupportsScope(
+  adapter: AutonomousMutationAdapter,
+  mutation: AutonomousMutationRecord
+): void {
+  if (adapter.rollbackConflictScope !== "affected_resources") {
+    return;
+  }
+  if (hasConcreteAffectedResource(mutation.affectedResources)) {
+    return;
+  }
+  throw new AutonomousMutationExecutionError(
+    409,
+    "Cannot roll back this autonomous mutation because affected resource evidence does not identify a concrete resource"
+  );
+}
+
+function hasConcreteAffectedResource(value: JsonValue): boolean {
+  if (!Array.isArray(value)) {
+    return false;
+  }
+  return value.some((item) => {
+    if (typeof item !== "object" || item === null || Array.isArray(item)) {
+      return false;
+    }
+    const resource = item as Record<string, JsonValue>;
+    return (
+      nonEmptyString(resource.id) !== undefined ||
+      nonEmptyString(resource.path) !== undefined
+    );
+  });
+}
+
+function nonEmptyString(value: JsonValue | undefined): string | undefined {
+  return typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : undefined;
 }
 
 function riskRank(riskClass: SelfEvolutionRiskClass): number {
