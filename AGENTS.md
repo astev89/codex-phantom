@@ -11,6 +11,8 @@ Tests live in `tests/`, with shared fixtures in `tests/helpers.ts`. Operational 
 - `npm install`: install the pinned Node dependencies.
 - `cp .env.example .env`: create local configuration before running the service.
 - `npm run dev`: run `src/index.ts` directly; defaults to `http://localhost:3210`.
+- `npm run local:up`: create `.env` if missing, then start Qdrant and the `codex-phantom` app container; see `docs/local-dev.md`.
+- `npm run phantom -- <command>`: operate the local runtime from a terminal (`doctor`, `status`, `chat`, `runs`, `sessions`, `tools`).
 - `npm run typecheck`: run strict TypeScript checks without emitting files.
 - `npm test`: run all `node:test` suites in `tests/*.test.ts`.
 - `npm run build`: compile production JavaScript into `dist/`.
