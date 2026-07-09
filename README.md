@@ -14,11 +14,15 @@ This branch also adds the first operator-trust foundation layer:
 
 ```bash
 npm install
-cp .env.example .env
-npm run dev
+npm run local:up
 ```
 
 The service starts on `http://localhost:3210` by default.
+The local helper creates a runnable `.env` on first run.
+Use `npm run phantom -- doctor` to check local reachability and operator auth.
+Use `npm run phantom -- chat "review https://example.com"` to talk to the local runtime from the terminal.
+Use `npm run local:tunnel` when Slack needs to call your laptop through Cloudflare.
+See `docs/local-dev.md` for the day-to-day Docker, tunnel, and stale-container recovery workflow.
 See `docs/configuration.md` for every supported environment variable, default, and production requirement.
 
 ## Production runtime
