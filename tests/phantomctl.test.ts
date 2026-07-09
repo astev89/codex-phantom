@@ -347,6 +347,88 @@ test("phantomctl auto transport does not replay failed side-effecting requests",
   );
 });
 
+test("phantomctl docker transport resolves the container from docker compose ps", async () => {
+  const result = (await runPhantomctlExpression(`
+    const config = {
+      baseUrl: "http://localhost:3210",
+      operatorToken: "token",
+      transport: "docker",
+      cwd: "/tmp/worktree-abc123",
+      dockerContainer: ""
+    };
+    const spawnCalls = [];
+    const requester = createRequester(config, {
+      fetch: async () => { throw new Error("http disabled"); },
+      spawnSync: (command, args) => {
+        spawnCalls.push({ command, args });
+        if (args[0] === "compose") {
+          return {
+            status: 0,
+            stdout: JSON.stringify({ Name: "worktree-abc123-codex-phantom-1", Service: "codex-phantom" }),
+            stderr: ""
+          };
+        }
+        return {
+          status: 0,
+          stdout: JSON.stringify({ status: 200, text: JSON.stringify({ ok: true }) }),
+          stderr: ""
+        };
+      }
+    });
+    const response = await requester("/health", { auth: false });
+    console.log(JSON.stringify({ response, spawnCalls }));
+  `)) as {
+    response: { status: number; transport: string; text: string };
+    spawnCalls: Array<{ command: string; args: string[] }>;
+  };
+
+  assert.equal(result.response.status, 200);
+  assert.equal(result.response.transport, "docker");
+  const composeCall = result.spawnCalls.find(
+    (call) => call.args[0] === "compose"
+  );
+  assert.ok(composeCall, "expected a docker compose ps call");
+  assert.deepEqual(composeCall?.args, [
+    "compose",
+    "ps",
+    "--format",
+    "json",
+    "codex-phantom",
+  ]);
+  const execCall = result.spawnCalls.find((call) => call.args[0] === "exec");
+  assert.ok(execCall, "expected a docker exec call");
+  assert.equal(execCall?.args[2], "worktree-abc123-codex-phantom-1");
+});
+
+test("phantomctl docker transport fails clearly when the container is not running", async () => {
+  const result = (await runPhantomctlExpression(`
+    const config = {
+      baseUrl: "http://localhost:3210",
+      operatorToken: "token",
+      transport: "docker",
+      cwd: "/tmp/worktree-abc123",
+      dockerContainer: ""
+    };
+    const requester = createRequester(config, {
+      fetch: async () => { throw new Error("http disabled"); },
+      spawnSync: (command, args) => {
+        if (args[0] === "compose") {
+          return { status: 0, stdout: "", stderr: "" };
+        }
+        throw new Error("should not exec when container is unresolved");
+      }
+    });
+    try {
+      await requester("/health", { auth: false });
+      console.log(JSON.stringify({ error: null }));
+    } catch (error) {
+      console.log(JSON.stringify({ error: error.message }));
+    }
+  `)) as { error: string | null };
+
+  assert.match(String(result.error), /container is not running/);
+});
+
 async function runPhantomctlExpression(expression: string): Promise<unknown> {
   const { stdout } = await execFileAsync(
     process.execPath,

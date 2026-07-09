@@ -57,6 +57,8 @@ The CLI reads `.env` and process environment values. Process environment wins wh
 
 `auto` tries direct HTTP first and falls back to `docker exec` against the Compose app container when the local port is not reachable from the host. Use `PHANTOM_TRANSPORT=docker` when you want to force the container path.
 
+The docker path resolves the running container name from `docker compose ps` for the `codex-phantom` service, so it works regardless of the checkout directory name. Set `PHANTOM_DOCKER_CONTAINER` to target a specific container explicitly.
+
 ## Slack Tunnel
 
 Run this in a terminal you can leave open:

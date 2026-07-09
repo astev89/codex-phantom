@@ -7,7 +7,8 @@ import { resolve } from "node:path";
 import { parseEnvText } from "./local-stack.mjs";
 
 const defaultBaseUrl = "http://localhost:3210";
-const defaultDockerContainer = "codex-phantom-codex-phantom-1";
+const composeService = "codex-phantom";
+const dockerContainerCache = new WeakMap();
 const commandNames = new Set([
   "help",
   "status",
@@ -72,6 +73,7 @@ export async function runCommand(args, context = {}) {
           requester,
           httpRequester,
           dockerRequester,
+          deps: transportDeps,
         })
       );
     } else if (parsed.command === "chat") {
@@ -153,10 +155,9 @@ export async function loadConfig({
     operatorToken:
       env.OPERATOR_BEARER_TOKEN ?? envFile.OPERATOR_BEARER_TOKEN ?? "",
     transport,
+    cwd,
     dockerContainer:
-      env.PHANTOM_DOCKER_CONTAINER ??
-      envFile.PHANTOM_DOCKER_CONTAINER ??
-      defaultDockerContainer,
+      env.PHANTOM_DOCKER_CONTAINER ?? envFile.PHANTOM_DOCKER_CONTAINER ?? "",
   };
 }
 
@@ -256,12 +257,13 @@ async function doctorCommand({
   requester,
   httpRequester,
   dockerRequester,
+  deps,
 }) {
   const lines = [
     "Phantom doctor",
     `Base URL: ${config.baseUrl}`,
     `Transport: ${config.transport}`,
-    `Docker container: ${config.dockerContainer}`,
+    `Docker container: ${describeDockerContainer(config, deps)}`,
     `Operator token: ${config.operatorToken ? "configured" : "missing"}`,
   ];
 
@@ -565,7 +567,94 @@ async function httpRequest(config, deps, request) {
   }
 }
 
+function describeDockerContainer(config, deps) {
+  if (config.dockerContainer) {
+    return config.dockerContainer;
+  }
+  try {
+    return `${resolveDockerContainer(config, deps)} (from docker compose)`;
+  } catch (error) {
+    return `unresolved - ${formatError(error)}`;
+  }
+}
+
+function resolveDockerContainer(config, deps) {
+  if (config.dockerContainer) {
+    return config.dockerContainer;
+  }
+  const cached = dockerContainerCache.get(config);
+  if (cached) {
+    return cached;
+  }
+  const container = discoverComposeContainer(config, deps);
+  dockerContainerCache.set(config, container);
+  return container;
+}
+
+function discoverComposeContainer(config, deps) {
+  const result = deps.spawnSync(
+    "docker",
+    ["compose", "ps", "--format", "json", composeService],
+    {
+      cwd: config.cwd,
+      encoding: "utf8",
+      timeout: 10_000,
+      maxBuffer: 20 * 1024 * 1024,
+    }
+  );
+  if (result.error || result.status !== 0) {
+    throw new Error(
+      `Could not resolve the ${composeService} Compose container${
+        result.stderr ? `: ${result.stderr.trim()}` : ""
+      }. Set PHANTOM_DOCKER_CONTAINER to target it explicitly.`
+    );
+  }
+  const name = parseComposeContainerName(result.stdout);
+  if (!name) {
+    throw new Error(
+      `The ${composeService} Compose container is not running. Start it with npm run local:up, or set PHANTOM_DOCKER_CONTAINER.`
+    );
+  }
+  return name;
+}
+
+function parseComposeContainerName(stdout) {
+  const text = typeof stdout === "string" ? stdout.trim() : "";
+  if (!text) {
+    return "";
+  }
+  const entries = [];
+  try {
+    const parsed = JSON.parse(text);
+    if (Array.isArray(parsed)) {
+      entries.push(...parsed);
+    } else {
+      entries.push(parsed);
+    }
+  } catch {
+    for (const line of text.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        continue;
+      }
+      try {
+        entries.push(JSON.parse(trimmed));
+      } catch {
+        continue;
+      }
+    }
+  }
+  for (const entry of entries) {
+    const name = entry?.Name ?? entry?.name;
+    if (typeof name === "string" && name) {
+      return name;
+    }
+  }
+  return "";
+}
+
 async function dockerRequest(config, deps, request) {
+  const container = resolveDockerContainer(config, deps);
   const dockerScript = `
 const input = await new Promise((resolve) => {
   let data = "";
@@ -592,7 +681,7 @@ console.log(JSON.stringify({
     [
       "exec",
       "-i",
-      config.dockerContainer,
+      container,
       "node",
       "--input-type=module",
       "--eval",
