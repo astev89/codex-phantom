@@ -102,6 +102,80 @@ test("phantomctl status summarizes blocked readiness instead of hard-failing", a
   assert.match(result.stdout, /Setup checks: 12 pass, 0 warning, 2 fail/);
 });
 
+test("phantomctl status tolerates optional admin probe failures", async () => {
+  const result = (await runPhantomctlExpression(`
+    const routes = {
+      "/health": { body: { ok: true, modelAdapter: "openai" } },
+      "/admin/readiness": {
+        body: {
+          readiness: {
+            status: "ready",
+            summary: { passing: 15, warnings: 0, failures: 0 }
+          }
+        }
+      },
+      "/admin/summary": {
+        status: 500,
+        body: { error: "summary unavailable" }
+      },
+      "/tools/dynamic": {
+        status: 503,
+        body: { error: "tools unavailable" }
+      }
+    };
+    const result = await runCommand(["status"], {
+      env: { OPERATOR_BEARER_TOKEN: "token" },
+      existsSync: () => false,
+      requester: mockRequester(routes, [])
+    });
+    console.log(JSON.stringify(result));
+  `)) as { exitCode: number; stdout: string };
+
+  assert.equal(result.exitCode, 0);
+  assert.match(result.stdout, /Health: ok/);
+  assert.match(result.stdout, /Readiness: ready/);
+  assert.match(result.stdout, /Model: openai/);
+  assert.match(result.stdout, /Tools: 0 dynamic/);
+  assert.match(result.stdout, /Warning: \/admin\/summary unavailable/);
+  assert.match(result.stdout, /Warning: \/tools\/dynamic unavailable/);
+});
+
+test("phantomctl status still fails when health is unavailable", async () => {
+  const result = (await runPhantomctlExpression(`
+    const result = await runCommand(["status"], {
+      env: { OPERATOR_BEARER_TOKEN: "token" },
+      existsSync: () => false,
+      requester: mockRequester({
+        "/health": { status: 500, body: { error: "health unavailable" } }
+      }, [])
+    });
+    console.log(JSON.stringify(result));
+  `)) as { exitCode: number; stderr: string };
+
+  assert.equal(result.exitCode, 1);
+  assert.match(result.stderr, /\/health returned HTTP 500/);
+});
+
+test("phantomctl status still fails when readiness is unavailable", async () => {
+  const result = (await runPhantomctlExpression(`
+    const result = await runCommand(["status"], {
+      env: { OPERATOR_BEARER_TOKEN: "token" },
+      existsSync: () => false,
+      requester: mockRequester({
+        "/health": { body: { ok: true, modelAdapter: "openai" } },
+        "/admin/readiness": {
+          status: 500,
+          body: { error: "readiness unavailable" }
+        }
+      }, [])
+    });
+    console.log(JSON.stringify(result));
+  `)) as { exitCode: number; stderr: string };
+
+  assert.equal(result.exitCode, 1);
+  assert.match(result.stderr, /\/admin\/readiness returned HTTP 500/);
+});
+
 test("phantomctl chat parses SSE tool progress and final output", async () => {
   const sse = [
     {

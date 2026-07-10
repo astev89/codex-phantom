@@ -236,19 +236,27 @@ export function parseSseEvents(text) {
 }
 
 async function statusCommand({ config, requester }) {
-  const [health, readiness, summary, dynamicTools] = await Promise.all([
-    requestJson(requester, "/health", { auth: Boolean(config.operatorToken) }),
-    requestJson(requester, "/admin/readiness", { allowStatuses: [503] }),
-    requestJson(requester, "/admin/summary"),
-    requestJson(requester, "/tools/dynamic"),
+  const health = await requestJson(requester, "/health", {
+    auth: Boolean(config.operatorToken),
+  });
+  const readiness = await requestJson(requester, "/admin/readiness", {
+    allowStatuses: [503],
+  });
+  const [summary, dynamicTools] = await Promise.all([
+    requestJsonOrNull(requester, "/admin/summary"),
+    requestJsonOrNull(requester, "/tools/dynamic"),
   ]);
 
   return formatStatus({
     transport: health.transport,
     health: health.body,
     readiness: readiness.body,
-    summary: summary.body,
-    dynamicTools: dynamicTools.body,
+    summary: summary?.body,
+    dynamicTools: dynamicTools?.body,
+    warnings: [
+      summary ? null : "/admin/summary unavailable",
+      dynamicTools ? null : "/tools/dynamic unavailable",
+    ].filter(Boolean),
   });
 }
 
@@ -415,7 +423,14 @@ async function toolsCommand({ requester }) {
   return `${lines.join("\n")}\n`;
 }
 
-function formatStatus({ transport, health, readiness, summary, dynamicTools }) {
+function formatStatus({
+  transport,
+  health,
+  readiness,
+  summary,
+  dynamicTools,
+  warnings = [],
+}) {
   const checks = readinessEnvelope(readiness)?.summary ?? {};
   const tools = Array.isArray(dynamicTools?.tools) ? dynamicTools.tools : [];
   const failures =
@@ -427,7 +442,7 @@ function formatStatus({ transport, health, readiness, summary, dynamicTools }) {
     health?.model?.name ??
     health?.modelAdapter ??
     "unknown";
-  return `${[
+  const lines = [
     `Phantom status (${transport})`,
     `Health: ${health?.ok === false ? "not ok" : "ok"}`,
     `Readiness: ${readinessStatus(readiness)}`,
@@ -435,7 +450,11 @@ function formatStatus({ transport, health, readiness, summary, dynamicTools }) {
     `Model: ${model}`,
     `Tools: ${tools.length} dynamic`,
     `Recent channel failures: ${failures}`,
-  ].join("\n")}\n`;
+  ];
+  for (const warning of warnings) {
+    lines.push(`Warning: ${warning}`);
+  }
+  return `${lines.join("\n")}\n`;
 }
 
 function formatChatTranscript({ message, events, transport, includeEvents }) {
@@ -517,6 +536,14 @@ async function requestJson(requester, path, options = {}) {
     ...response,
     body: response.text ? JSON.parse(response.text) : {},
   };
+}
+
+async function requestJsonOrNull(requester, path, options = {}) {
+  try {
+    return await requestJson(requester, path, options);
+  } catch {
+    return null;
+  }
 }
 
 async function requestText(requester, path, options = {}) {
